@@ -35,6 +35,57 @@ export const matchResponseSchema = z.object({
 export type MatchResponse = z.infer<typeof matchResponseSchema>;
 export type SkillItem = z.infer<typeof skillItemSchema>;
 
+const QUALIFICATION_STOP_WORDS = new Set([
+  "a", "an", "and", "degree", "experience", "in", "knowledge", "of",
+  "or", "programming", "proficiency", "skill", "skills", "the", "with",
+]);
+
+function qualificationTokens(value: string): string[] {
+  return Array.from(new Set(
+    (value.toLowerCase().match(/[a-z0-9][a-z0-9+.#-]*/g) ?? [])
+      .filter((token) => token.length > 1 && !QUALIFICATION_STOP_WORDS.has(token)),
+  ));
+}
+
+function allowedFactTypes(qualification: string): Set<string> | null {
+  const value = qualification.toLowerCase();
+  if (/\b(?:work\s+authori[sz]ation|authori[sz]ed\s+to\s+work|citizenship|visa|sponsorship|security\s+clearance|clearance\s+eligible|work\s+permit)\b/.test(value)) {
+    // ResumeFact has no authorization category. These facts belong in the
+    // explicitly confirmed application profile and must never be inferred
+    // from resume prose.
+    return new Set();
+  }
+  if (/\b(?:gpa|grade point average)\b/.test(value)) return new Set(["gpa"]);
+  if (/\b(?:graduation|graduate|class of)\b/.test(value)) {
+    return new Set(["graduationDate", "education"]);
+  }
+  if (/\b(?:course|coursework|class)\b/.test(value)) return new Set(["coursework"]);
+  if (/\b(?:degree|bachelor|master|phd|doctorate|major)\b/.test(value)) {
+    return new Set(["education"]);
+  }
+  return null;
+}
+
+function directlySupportsQualification(
+  qualification: string,
+  factText: string,
+  factType: string | undefined,
+): boolean {
+  const allowedTypes = allowedFactTypes(qualification);
+  if (allowedTypes && (!factType || !allowedTypes.has(factType))) return false;
+
+  const requiredDuration = qualification.toLowerCase().match(/\b(\d+)\+?\s*(?:years?|yrs?)\b/);
+  if (requiredDuration && !new RegExp(`\\b${requiredDuration[1]}\\+?\\s*(?:years?|yrs?)\\b`, "i").test(factText)) {
+    return false;
+  }
+
+  const tokens = qualificationTokens(qualification);
+  if (tokens.length === 0) return false;
+  const evidence = factText.toLowerCase();
+  const overlap = tokens.filter((token) => evidence.includes(token));
+  return tokens.length === 1 ? overlap.length === 1 : overlap.length >= 2;
+}
+
 // Grounding safety net: any skill claimed as "supported" must cite at least one
 // real approved-fact id, and that fact's text must actually contain a
 // reasonable overlap with the claimed skill. Otherwise it gets downgraded to
@@ -44,17 +95,18 @@ export function enforceGrounding(
   result: MatchResponse,
   validFactIds: Set<string>,
   factTextById: Map<string, string>,
+  factTypeById: Map<string, string> = new Map(),
 ): MatchResponse {
   const supported: SkillItem[] = [];
   const demoted: SkillItem[] = [];
 
   for (const item of result.skillsSupported) {
     const realIds = item.factIds.filter((id) => validFactIds.has(id));
-    const hasTextOverlap = realIds.some((id) => {
-      const text = factTextById.get(id)?.toLowerCase() ?? "";
-      const skillWords = item.skill.toLowerCase().split(/[^a-z0-9+.#]+/).filter(Boolean);
-      return skillWords.some((w) => w.length > 1 && text.includes(w));
-    });
+    const hasTextOverlap = realIds.some((id) => directlySupportsQualification(
+      item.skill,
+      factTextById.get(id) ?? "",
+      factTypeById.get(id),
+    ));
 
     if (realIds.length > 0 && hasTextOverlap) {
       const evidence = realIds

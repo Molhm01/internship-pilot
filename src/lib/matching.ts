@@ -3,7 +3,7 @@ import { ollamaGenerateJSON, OllamaError } from "@/lib/ollama";
 import { buildMatchPrompt } from "@/lib/prompts";
 import { enforceGrounding, matchResponseSchema } from "@/lib/validation";
 import { logAudit } from "@/lib/applications/audit";
-import { hasUsableJobDescription } from "@/lib/matchWorkflow";
+import { hasUsableJobDescription, matchJobDescriptionText } from "@/lib/matchWorkflow";
 
 export class MatchError extends Error {
   status: number;
@@ -19,7 +19,7 @@ export async function runMatchForJob(jobId: string) {
   const job = await prisma.job.findUnique({ where: { id: jobId } });
   if (!job) throw new MatchError("Job not found", 404);
 
-  if (!hasUsableJobDescription(job.description)) {
+  if (!hasUsableJobDescription(job)) {
     throw new MatchError(
       "This job does not have a usable job description yet. Add or refresh the description before running AI Match.",
       400,
@@ -38,7 +38,10 @@ export async function runMatchForJob(jobId: string) {
     );
   }
 
-  const prompt = buildMatchPrompt(facts, job);
+  const prompt = buildMatchPrompt(facts, {
+    ...job,
+    description: matchJobDescriptionText(job),
+  });
 
   let raw: unknown;
   try {
@@ -58,12 +61,16 @@ export async function runMatchForJob(jobId: string) {
 
   const validFactIds = new Set(facts.map((f) => f.id));
   const factTextById = new Map(facts.map((f) => [f.id, `${f.content} ${f.detail ?? ""}`]));
-  const grounded = enforceGrounding(parsed.data, validFactIds, factTextById);
+  const factTypeById = new Map(facts.map((f) => [f.id, f.type]));
+  const grounded = enforceGrounding(parsed.data, validFactIds, factTextById, factTypeById);
 
   const factsUsed = Array.from(
     new Set([...grounded.skillsSupported, ...grounded.skillsNeedConfirmation].flatMap((s) => s.factIds)),
   );
 
+  // Reruns are intentionally append-only versions. The job detail API sorts
+  // MatchResult rows newest-first, while these denormalized Job fields expose
+  // the current score to list/card queries.
   const [matchResult] = await prisma.$transaction([
     prisma.matchResult.create({
       data: {
@@ -90,13 +97,20 @@ export async function runMatchForJob(jobId: string) {
     }),
   ]);
 
-  await logAudit({
-    jobId,
-    actor: "ai-match",
-    action: "eligibility-scored",
-    detail: `Eligibility: ${grounded.eligibility} (score ${Math.round(grounded.matchScore)}/100). ${grounded.eligibilityReason}`,
-    metadata: { score: Math.round(grounded.matchScore), eligibility: grounded.eligibility, recommendation: grounded.recommendation },
-  });
+  try {
+    await logAudit({
+      jobId,
+      actor: "ai-match",
+      action: "eligibility-scored",
+      detail: `Eligibility: ${grounded.eligibility} (score ${Math.round(grounded.matchScore)}/100). ${grounded.eligibilityReason}`,
+      metadata: { score: Math.round(grounded.matchScore), eligibility: grounded.eligibility, recommendation: grounded.recommendation },
+    });
+  } catch (error) {
+    console.error("[ai-match] result persisted but audit logging failed", {
+      jobId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   return matchResult;
 }

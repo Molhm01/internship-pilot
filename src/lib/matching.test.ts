@@ -34,6 +34,7 @@ vi.mock("@/lib/applications/audit", () => ({
 }));
 
 import { runMatchForJob } from "./matching";
+import { OllamaError } from "./ollama";
 
 const job = {
   id: "job-1",
@@ -42,7 +43,9 @@ const job = {
   location: "Newark, NJ",
   internshipTerm: "Summer 2027",
   duration: "12 weeks",
-  description: "Build embedded firmware with Python tooling and test reliable device communications.",
+  description: "Build embedded firmware with Python tooling, test reliable device communications, document verification results, and collaborate with electrical and software engineers throughout the product lifecycle.",
+  jobResponsibilities: null,
+  jobQualifications: null,
 };
 
 const facts = [{
@@ -120,5 +123,30 @@ describe("runMatchForJob", () => {
     expect(findFacts).not.toHaveBeenCalled();
     expect(ollamaGenerateJSON).not.toHaveBeenCalled();
     expect(createMatchResult).not.toHaveBeenCalled();
+  });
+
+  it("returns a clear service error when the model fails without persisting anything", async () => {
+    ollamaGenerateJSON.mockRejectedValue(new OllamaError("The local model failed."));
+
+    await expect(runMatchForJob(job.id)).rejects.toMatchObject({
+      status: 503,
+      message: "The local model failed.",
+    });
+    expect(createMatchResult).not.toHaveBeenCalled();
+    expect(updateJob).not.toHaveBeenCalled();
+  });
+
+  it("intentionally versions reruns by appending a new result each time", async () => {
+    createMatchResult
+      .mockResolvedValueOnce({ id: "match-v1", jobId: job.id, score: 82, eligibility: "Pass" })
+      .mockResolvedValueOnce({ id: "match-v2", jobId: job.id, score: 82, eligibility: "Pass" });
+
+    const first = await runMatchForJob(job.id);
+    const second = await runMatchForJob(job.id);
+
+    expect(first).toMatchObject({ id: "match-v1" });
+    expect(second).toMatchObject({ id: "match-v2" });
+    expect(createMatchResult).toHaveBeenCalledTimes(2);
+    expect(transaction).toHaveBeenCalledTimes(2);
   });
 });

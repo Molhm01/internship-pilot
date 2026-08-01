@@ -54,6 +54,8 @@ type Job = {
   workplaceType: string | null;
   compensation: string | null;
   description: string;
+  jobResponsibilities: string | null;
+  jobQualifications: string | null;
   status: string;
   verificationStatus: string;
   verificationReason: string | null;
@@ -448,7 +450,7 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
   }
 
   const latestMatch = job.matchResults[0];
-  const canRunMatch = hasUsableJobDescription(job.description);
+  const canRunMatch = hasUsableJobDescription(job);
   const tailoring = parseStrings(latestMatch?.tailoringPreview ?? null);
   const { applicationUrl, sourceListingUrl } = selectStoredApplicationLinks(job);
 

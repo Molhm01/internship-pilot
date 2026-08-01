@@ -1,15 +1,37 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   hasUsableJobDescription,
+  MIN_MATCH_DESCRIPTION_CHARS,
   MatchRequestError,
+  matchJobDescriptionText,
   requestManualMatch,
 } from "./matchWorkflow";
 
 describe("manual AI Match browser workflow", () => {
   it("enables matching only when a usable job description exists", () => {
-    expect(hasUsableJobDescription("Build embedded systems and test firmware.")).toBe(true);
+    const enoughDescription = "Build embedded systems, test firmware, document results, and collaborate with electrical engineers. ".repeat(2);
+    expect(enoughDescription.length).toBeGreaterThanOrEqual(MIN_MATCH_DESCRIPTION_CHARS);
+    expect(hasUsableJobDescription(enoughDescription)).toBe(true);
+    expect(hasUsableJobDescription("Build embedded systems and test firmware.")).toBe(false);
     expect(hasUsableJobDescription("   ")).toBe(false);
     expect(hasUsableJobDescription("No description available")).toBe(false);
+  });
+
+  it("uses stored responsibilities and qualifications as job-description evidence", () => {
+    const source = {
+      description: "Firmware internship.",
+      jobResponsibilities: JSON.stringify([
+        "Build and test embedded firmware for production devices.",
+        "Document verification results and collaborate with hardware engineers.",
+      ]),
+      jobQualifications: JSON.stringify([
+        "Experience with Python or C++ and digital communication protocols.",
+      ]),
+    };
+
+    expect(matchJobDescriptionText(source)).toContain("Responsibilities:");
+    expect(matchJobDescriptionText(source)).toContain("Qualifications:");
+    expect(hasUsableJobDescription(source)).toBe(true);
   });
 
   it("posts the selected job and returns the persisted result", async () => {

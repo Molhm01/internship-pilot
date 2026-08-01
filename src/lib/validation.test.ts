@@ -55,4 +55,42 @@ describe("AI Match grounding", () => {
       new Map(),
     ).recommendation).toBe("Skip");
   });
+
+  it("never infers authorization, degrees, coursework, or quantified experience from weak overlap", () => {
+    const grounded = enforceGrounding(
+      result({
+        skillsSupported: [
+          { skill: "Python", reason: "Model claim", factIds: ["fact-python"] },
+          { skill: "10 years Python experience", reason: "Model claim", factIds: ["fact-python"] },
+          { skill: "Electrical Engineering degree", reason: "Model claim", factIds: ["fact-degree"] },
+          { skill: "U.S. work authorization", reason: "Model claim", factIds: ["fact-work"] },
+          { skill: "Digital Logic coursework", reason: "Model claim", factIds: ["fact-course"] },
+        ],
+      }),
+      new Set(["fact-python", "fact-degree", "fact-work", "fact-course"]),
+      new Map([
+        ["fact-python", "Python used for receiver test automation"],
+        ["fact-degree", "Bachelor of Science in Computer Engineering"],
+        ["fact-work", "Worked on an approved receiver project"],
+        ["fact-course", "Digital Logic"],
+      ]),
+      new Map([
+        ["fact-python", "skill"],
+        ["fact-degree", "education"],
+        ["fact-work", "experience"],
+        ["fact-course", "coursework"],
+      ]),
+    );
+
+    expect(grounded.skillsSupported.map((item) => item.skill)).toEqual([
+      "Python",
+      "Digital Logic coursework",
+    ]);
+    expect(grounded.skillsNeedConfirmation.map((item) => item.skill)).toEqual(expect.arrayContaining([
+      "10 years Python experience",
+      "Electrical Engineering degree",
+      "U.S. work authorization",
+    ]));
+    expect(JSON.stringify(grounded)).not.toContain("Model claim");
+  });
 });
