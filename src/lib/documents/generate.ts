@@ -4,18 +4,20 @@ import { prisma } from "@/lib/db";
 import { compileTypst, escapeTypstString, typstStringArray } from "@/lib/documents/typst";
 import { extractPdfText } from "@/lib/pdf";
 import { evaluateStrictDocumentQa } from "@/lib/documents/qa";
-import { evaluatePdfLayoutQa } from "@/lib/documents/layoutQa";
+import { evaluatePdfLayoutQa, evaluateResumeFormatPreservation } from "@/lib/documents/layoutQa";
 import { logAudit } from "@/lib/applications/audit";
 import { validateDocumentIdentity } from "@/lib/documents/identityGuard";
 import { selectContentForJob } from "@/lib/documents/select";
 import { hasUsableJobDescription, matchJobDescriptionText } from "@/lib/matchWorkflow";
 import {
   MASTER_ACTIVITIES, MASTER_EDUCATION, MASTER_EXPERIENCE, MASTER_PROJECTS, MASTER_SKILLS,
-  tailoredMasterContent, type EvidenceFact, type MasterEducation, type MasterEntry, type MasterSkillGroup,
+  isSupportedTransferableRequirement, tailoredMasterContent,
+  type EvidenceFact, type MasterEducation, type MasterEntry, type MasterSkillGroup,
 } from "@/lib/documents/masterResume";
 
 const GENERATED_DIR_REL = process.env.GENERATED_OUTPUT_DIR ?? "data/generated";
 const TEMPLATE_IMPORT = "/templates";
+const MASTER_RESUME_REFERENCE_REL = "templates/master_resume_reference.pdf";
 function absolute(relativePath: string) { return path.isAbsolute(relativePath) ? relativePath : path.join(/* turbopackIgnore: true */ process.cwd(), relativePath); }
 function s(value: string) { return `"${escapeTypstString(value)}"`; }
 function dict(fields: Record<string, string>) { return `(${Object.entries(fields).map(([key, value]) => `${key}: ${value}`).join(", ")})`; }
@@ -33,10 +35,7 @@ function skillsTypst(items: MasterSkillGroup[]) {
 type HeaderProfile = { fullName: string; email: string; phone: string; linkedin?: string | null; workAuthorization?: string | null; addressCity?: string | null; addressState?: string | null };
 type ResumeContent = { education: MasterEducation[]; experience: MasterEntry[]; projects: MasterEntry[]; skills: MasterSkillGroup[]; activities: string[] };
 export function buildMasterResumeSource(profile: HeaderProfile, content: ResumeContent = { education: MASTER_EDUCATION, experience: MASTER_EXPERIENCE, projects: MASTER_PROJECTS, skills: MASTER_SKILLS, activities: MASTER_ACTIVITIES }) {
-  const savedLocation = [profile.addressCity, profile.addressState]
-    .filter((value): value is string => Boolean(value?.trim()))
-    .join(", ");
-  const contact = [savedLocation, profile.email, profile.phone, profile.linkedin]
+  const contact = ["NYC Metro Area", profile.email, profile.phone, profile.linkedin, profile.workAuthorization]
     .filter((value): value is string => Boolean(value?.trim()));
   return `#import "${TEMPLATE_IMPORT}/resume-template.typ": resume\n#resume(name: ${s(profile.fullName)}, contact: ${typstStringArray(contact)}, education: ${educationTypst(content.education)}, experience: ${entriesTypst(content.experience)}, projects: ${entriesTypst(content.projects)}, skills: ${skillsTypst(content.skills)}, activities: ${typstStringArray(content.activities)})\n`;
 }
@@ -229,10 +228,28 @@ export async function generateDocumentsForJob(jobId: string, options: { includeC
       .filter((bullet) => selectedIdSet.has(bullet.id))
       .flatMap((bullet) => parseFactIds(bullet.factIds)),
   ));
-  const supportedKeywords = parseMatchSkills(latestMatch.skillsSupported);
-  const confirmationRequired = parseMatchSkills(latestMatch.skillsNeedConfirmation);
-  const developmentGaps = parseMatchSkills(latestMatch.skillsToLearn);
-  const neverClaim = parseMatchSkills(latestMatch.skillsNeverAdd);
+  const originallySupported = parseMatchSkills(latestMatch.skillsSupported);
+  const rawConfirmationRequired = parseMatchSkills(latestMatch.skillsNeedConfirmation);
+  const rawDevelopmentGaps = parseMatchSkills(latestMatch.skillsToLearn);
+  const rawNeverClaim = parseMatchSkills(latestMatch.skillsNeverAdd);
+  const reclassifiedTransferableCompetencies = Array.from(new Set([
+    ...rawConfirmationRequired,
+    ...rawDevelopmentGaps,
+    ...rawNeverClaim,
+  ].filter(isSupportedTransferableRequirement)));
+  const supportedKeywords = Array.from(new Set([
+    ...originallySupported,
+    ...reclassifiedTransferableCompetencies,
+  ]));
+  const confirmationRequired = rawConfirmationRequired.filter((item) =>
+    !isSupportedTransferableRequirement(item),
+  );
+  const developmentGaps = rawDevelopmentGaps.filter((item) =>
+    !isSupportedTransferableRequirement(item),
+  );
+  const neverClaim = rawNeverClaim.filter((item) =>
+    !isSupportedTransferableRequirement(item),
+  );
   const unsupportedQualifications = Array.from(new Set([
     ...confirmationRequired,
     ...developmentGaps,
@@ -245,10 +262,12 @@ export async function generateDocumentsForJob(jobId: string, options: { includeC
   const tailoring = tailoredMasterContent(generationJob, documentFacts, latestMatch.score, {
     selectedFactIds,
     unsupportedQualifications,
+    supportedRequirements: supportedKeywords,
   });
   const supportedKeywordCandidates = Array.from(new Set([
     ...supportedKeywords,
     ...tailoring.audit.supportedKeywords.map((item) => item.keyword),
+    ...tailoring.audit.keywordsAdded,
   ]));
   const keywordClassificationFor = (source: string) => ({
     supported: supportedKeywordCandidates.filter((keyword) =>
@@ -290,6 +309,14 @@ export async function generateDocumentsForJob(jobId: string, options: { includeC
   resumeQa.issues.push(...resumeIdentityIssues);
   const resumeLayoutQa = await evaluatePdfLayoutQa(resumeLayoutBytes, "resume");
   resumeQa.issues.push(...resumeLayoutQa.issues);
+  const referenceResumeBytes = new Uint8Array(await readFile(absolute(MASTER_RESUME_REFERENCE_REL)));
+  const formatQa = await evaluateResumeFormatPreservation(resumeLayoutBytes, referenceResumeBytes);
+  resumeQa.issues.push(...formatQa.issues);
+  tailoring.audit.formattingPreservation = {
+    status: formatQa.status,
+    method: "Compiled through the fixed master Typst template, then compared with templates/master_resume_reference.pdf for page size, margins, fonts, font sizes, date alignment, bullet indentation, activity rows, and line spacing.",
+    issues: formatQa.issues,
+  };
   if (resumeQa.issues.length && !resumeIdentityIssues.length) resumeQa.status = "fail";
   const resumeQaStatus = resumeIdentityIssues.length ? "INVALID_TEST_DATA" : resumeQa.status;
   const storedTailoringStatus = tailoring.audit.status;

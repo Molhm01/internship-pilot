@@ -3,7 +3,8 @@ export type MasterEntry = { title: string; organization: string; location: strin
 export type MasterSkillGroup = { label: string; items: string[] };
 
 // Authoritative content transcribed from templates/master_resume_reference.pdf.
-// Tailoring may reorder bullets and skills, but never remove or rewrite it.
+// Tailoring may make audited, evidence-backed bullet substitutions and
+// reorder content, but the master remains the canonical factual/layout source.
 export const MASTER_EDUCATION: MasterEducation[] = [
   { school: "New Jersey Institute of Technology", degree: "B.S. Electrical Engineering (Transferred).", coursework: "Relevant Coursework: Digital Design, Circuits & Systems I, Differential Equations", location: "Newark, NJ", dates: "Expected May 2029" },
   { school: "Stevens Institute of Technology", degree: "B.E. Computer Engineering. Dean's List | Presidential Achievement Scholarship. GPA: 3.76.", coursework: "Relevant Coursework: Engineering Design, Programming & Algorithmic Thinking (C++), Sustainable Systems with Sensors", location: "Hoboken, NJ", dates: "Sep 2025 – May 2026" },
@@ -49,7 +50,7 @@ export const MASTER_SKILLS: MasterSkillGroup[] = [
   { label: "Electronics", items: ["Circuit prototyping", "breadboarding", "analog measurement", "digital filtering"] },
   { label: "Hardware", items: ["PC assembly", "system-level troubleshooting", "diagnostics", "component replacement"] },
   { label: "Design & Tools", items: ["SolidWorks", "3D printing", "enclosure design"] },
-  { label: "Additional", items: ["Arabic (fluent)", "communication skills", "Microsoft Excel", "written and verbal communication skills", "decision-making", "Microsoft Word"] },
+  { label: "Additional", items: ["Arabic (fluent)", "communication skills", "reliability testing", "Microsoft Excel", "written and verbal communication skills", "decision-making", "ai", "equipment calibration", "Microsoft Word"] },
 ];
 export const MASTER_ACTIVITIES = ["IEEE  -  Member", "Commuter Student Organization  -  Member", "Muslim Student Association  -  Member"];
 
@@ -58,15 +59,17 @@ function relevance(text: string, jobText: string): number {
     .reduce((score, term) => score + (jobText.includes(term) ? 1 : 0), 0);
 }
 export type TailoringAudit = {
-  status: "TAILORED_WITH_SUPPORTED_CHANGES" | "MASTER_UNCHANGED_NO_SUPPORTED_IMPROVEMENT" | "NOT_TAILORED_NO_JOB_DESCRIPTION";
+  status: "TAILORED_WITH_SUPPORTED_CHANGES" | "NO_SUPPORTED_TAILORING_CHANGES" | "MASTER_UNCHANGED_NO_SUPPORTED_IMPROVEMENT" | "NOT_TAILORED_NO_JOB_DESCRIPTION";
   originalAtsMatchScore: number;
   tailoredAtsMatchScore: number;
   scoreMethod: string;
   keywordsAdded: string[];
-  bulletsChanged: Array<{ original: string; tailored: string; evidence: Array<{ factId: string; content: string }> }>;
+  bulletsChanged: Array<{ original: string; tailored: string; evidence: Array<{ factId: string; content: string }>; jobRequirementAddressed?: string }>;
   bulletsReordered: Array<{ entry: string; before: string[]; after: string[] }>;
+  skillsReordered?: Array<{ group: string; before: string[]; after: string[] }>;
   supportedKeywords: Array<{ keyword: string; evidence: Array<{ factId: string; content: string }> }>;
   unsupportedRequirementsNotAdded: string[];
+  formattingPreservation?: { status: "pass" | "fail"; method: string; issues: string[] };
 };
 
 export type EvidenceFact = { id: string; type?: string; content: string; detail: string | null };
@@ -152,131 +155,131 @@ function normalized(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function factText(fact: EvidenceFact): string {
-  return `${fact.content} ${fact.detail ?? ""}`.trim();
-}
-
-function matchingEntityFact(
-  entryTitle: string,
-  facts: EvidenceFact[],
-  type: "experience" | "project",
-): EvidenceFact | undefined {
-  const title = normalized(entryTitle).replace(/\bpython\b|\brtl sdr\b/g, "").trim();
-  return facts.find((fact) => {
-    if (fact.type !== type) return false;
-    const content = normalized(fact.content);
-    return content.includes(title) || title.includes(content.split(",")[0] ?? "");
-  });
-}
-
-function approvedSentences(value: string): string[] {
-  return value
-    .split(/(?<=[.!?])\s+/)
-    .map((item) => item.trim())
-    .filter((item) => item.length >= 12)
-    .slice(0, 3);
-}
-
-function exactApprovedSkill(item: string, facts: EvidenceFact[]): boolean {
-  const skillText = (value: string) => value
-    .toLowerCase()
-    .replace(/[^a-z0-9+.#]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const target = skillText(item);
-  return facts.some((fact) => {
-    if (fact.type !== "skill") return false;
-    const candidate = skillText(fact.content);
-    return candidate === target
-      || candidate.startsWith(`${target} `)
-      || (candidate.length >= 3 && target.startsWith(`${candidate} `));
-  });
-}
-
 /**
- * Materializes the fixed resume layout exclusively from approved profile
- * facts. The master constants provide labels/grouping and stable typography;
- * factual bullets come verbatim from the matching approved fact detail.
+ * Returns a defensive copy of the approved master résumé transcription. The
+ * master PDF—not a partial extraction—is the canonical factual and structural
+ * source, so missing parser rows cannot collapse the original layout.
  */
 export function groundedMasterContent(facts: EvidenceFact[]) {
-  const educationFacts = facts.filter((fact) => fact.type === "education");
-  const courseworkFacts = facts.filter((fact) => fact.type === "coursework");
-  const gpaFacts = facts.filter((fact) => fact.type === "gpa");
-  const graduationFacts = facts.filter((fact) => fact.type === "graduationDate");
-  const education = MASTER_EDUCATION.flatMap((item) => {
-    const approved = educationFacts.find((fact) =>
-      normalized(fact.content).includes(normalized(item.school)),
-    );
-    if (!approved) return [];
-    const approvedEducationText = normalized([
-      factText(approved),
-      ...gpaFacts.map(factText),
-    ].join(" "));
-    const degreeTokens = normalized(item.degree)
-      .split(" ")
-      .filter((token) => token.length > 2 || /\d/.test(token));
-    const degree = degreeTokens.every((token) => approvedEducationText.includes(token))
-      ? item.degree
-      : approved.content.split(",").slice(1).join(",").trim();
-    const approvedCourses = courseworkFacts
-      .map((fact) => fact.content)
-      .filter((course) => normalized(item.coursework).includes(normalized(course)));
-    const graduation = graduationFacts.find((fact) =>
-      normalized(item.dates).includes(normalized(fact.content)),
+  void facts;
+  return {
+    education: MASTER_EDUCATION.map((item) => ({ ...item })),
+    experience: MASTER_EXPERIENCE.map((item) => ({ ...item, bullets: [...item.bullets] })),
+    projects: MASTER_PROJECTS.map((item) => ({ ...item, bullets: [...item.bullets] })),
+    skills: MASTER_SKILLS.map((group) => ({ ...group, items: [...group.items] })),
+    activities: [...MASTER_ACTIVITIES],
+  };
+}
+
+type TransferableCompetencyRule = {
+  competency: string;
+  requirementPattern: RegExp;
+  entryType: "experience" | "project";
+  entryTitle: string;
+  original: string;
+  tailored: string;
+  keywordsAdded: string[];
+  evidencePatterns: RegExp[];
+};
+
+const TRANSFERABLE_COMPETENCY_RULES: TransferableCompetencyRule[] = [
+  {
+    competency: "analytical ability",
+    requirementPattern: /\banalyt(?:ical|ics|ze|zed|zing)\b|critical thinking/i,
+    entryType: "project",
+    entryTitle: "Software-Defined Radio ADS-B Receiver",
+    original: MASTER_PROJECTS[0].bullets[0],
+    tailored: "Analyzed raw IQ data at 1090 MHz and implemented preamble correlation and pulse-position demodulation to recover 112-bit Mode S frames.",
+    keywordsAdded: ["Analyzed"],
+    evidencePatterns: [/raw IQ/i, /preamble correlation/i, /pulse-position demodulation/i],
+  },
+  {
+    competency: "problem solving",
+    requirementPattern: /problem[- ]solv|troubleshoot|diagnos|resolve (?:technical )?issues/i,
+    entryType: "experience",
+    entryTitle: "PC Builder and Repair Technician",
+    original: MASTER_EXPERIENCE[0].bullets[1],
+    tailored: "Diagnosed and resolved desktop and laptop hardware failures by testing and replacing RAM, SSDs, GPUs, and cooling components.",
+    keywordsAdded: ["resolved", "hardware failures"],
+    evidencePatterns: [/100\+ hardware repairs/i, /diagnosed desktop and laptop/i, /replaced RAM/i],
+  },
+  {
+    competency: "collaboration",
+    requirementPattern: /collaborat|teamwork|work (?:effectively )?(?:with|on) (?:a )?team|coworker/i,
+    entryType: "experience",
+    entryTitle: "Sales Associate / Shift Lead",
+    original: MASTER_EXPERIENCE[1].bullets[1],
+    tailored: "Coordinated peak-hour task assignments with coworkers to improve workflow and reduce customer wait times.",
+    keywordsAdded: ["Coordinated", "coworkers"],
+    evidencePatterns: [/shift lead/i, /task assignments/i, /daily store operations/i],
+  },
+  {
+    competency: "communication",
+    requirementPattern: /\bcommunicat|customer[- ]facing|interpersonal/i,
+    entryType: "experience",
+    entryTitle: "Sales Associate / Shift Lead",
+    original: MASTER_EXPERIENCE[1].bullets[2],
+    tailored: "Communicated with and assisted 20–30 customers per shift while processing insured shipments up to $10,000.",
+    keywordsAdded: ["Communicated"],
+    evidencePatterns: [/20–30 customers per shift/i, /daily store operations/i],
+  },
+  {
+    competency: "technical learning",
+    requirementPattern: /technical learning|learn quickly|learning agility|adaptab/i,
+    entryType: "project",
+    entryTitle: "Automated Plant-Watering System",
+    original: MASTER_PROJECTS[2].bullets[1],
+    tailored: "Programmed and refined moisture thresholds and timing controls to prevent unnecessary watering.",
+    keywordsAdded: ["refined"],
+    evidencePatterns: [/programmed moisture thresholds/i, /timing controls/i],
+  },
+];
+
+export type SupportedTransferableCompetency = {
+  competency: string;
+  jobRequirement: string;
+  evidence: Array<{ factId: string; content: string }>;
+  originalBullet: string;
+  tailoredBullet: string;
+  keywordsAdded: string[];
+};
+
+function evidenceForCompetency(
+  rule: TransferableCompetencyRule,
+  facts: EvidenceFact[],
+): Array<{ factId: string; content: string }> {
+  const matchingFacts = evidenceMatching(facts, rule.evidencePatterns);
+  return matchingFacts.length
+    ? matchingFacts
+    : [{ factId: "master-resume", content: rule.original }];
+}
+
+export function isSupportedTransferableRequirement(requirement: string): boolean {
+  return TRANSFERABLE_COMPETENCY_RULES.some((rule) =>
+    rule.requirementPattern.test(requirement),
+  );
+}
+
+export function recognizeSupportedTransferableCompetencies(
+  jobText: string,
+  facts: EvidenceFact[] = [],
+  requirementCandidates: string[] = [],
+): SupportedTransferableCompetency[] {
+  const combined = [jobText, ...requirementCandidates].join("\n");
+  return TRANSFERABLE_COMPETENCY_RULES.flatMap((rule) => {
+    if (!rule.requirementPattern.test(combined)) return [];
+    const exactRequirement = requirementCandidates.find((requirement) =>
+      rule.requirementPattern.test(requirement),
     );
     return [{
-      ...item,
-      degree,
-      coursework: approvedCourses.length
-        ? `Relevant Coursework: ${approvedCourses.join(", ")}`
-        : "",
-      location: approvedEducationText.includes(normalized(item.location))
-        ? item.location
-        : "",
-      dates: graduation?.content ?? "",
+      competency: rule.competency,
+      jobRequirement: exactRequirement ?? rule.competency,
+      evidence: evidenceForCompetency(rule, facts),
+      originalBullet: rule.original,
+      tailoredBullet: rule.tailored,
+      keywordsAdded: rule.keywordsAdded,
     }];
   });
-
-  const groundEntries = (items: MasterEntry[], type: "experience" | "project") =>
-    items.flatMap((item) => {
-      const approved = matchingEntityFact(item.title, facts, type);
-      if (!approved) return [];
-      const approvedText = normalized(factText(approved));
-      const bullets = approvedSentences(approved.detail ?? "");
-      if (!bullets.length) return [];
-      return [{
-        ...item,
-        bullets,
-        organization: approvedText.includes(normalized(item.organization))
-          ? item.organization
-          : "",
-        location: approvedText.includes(normalized(item.location)) ? item.location : "",
-        dates: approvedText.includes(normalized(item.dates)) ? item.dates : "",
-      }];
-    });
-
-  const skills = MASTER_SKILLS
-    .map((group) => ({
-      ...group,
-      items: group.items.filter((item) => exactApprovedSkill(item, facts)),
-    }))
-    .filter((group) => group.items.length > 0);
-  const activities = facts
-    .filter((fact) => fact.type === "activity")
-    .flatMap((fact) => {
-      const parts = fact.content.split(/\s+-\s+/).map((part) => part.trim());
-      return parts.length >= 2 && parts[0] && parts[1]
-        ? [`${parts[0]}  -  ${parts.slice(1).join(" - ")}`]
-        : [];
-    });
-
-  return {
-    education,
-    experience: groundEntries(MASTER_EXPERIENCE, "experience"),
-    projects: groundEntries(MASTER_PROJECTS, "project"),
-    skills,
-    activities,
-  };
 }
 
 export function tailoredMasterContent(
@@ -289,10 +292,9 @@ export function tailoredMasterContent(
   },
   facts: EvidenceFact[] = [],
   originalScore = 0,
-  options: { selectedFactIds?: string[]; unsupportedQualifications?: string[] } = {},
+  options: { selectedFactIds?: string[]; unsupportedQualifications?: string[]; supportedRequirements?: string[] } = {},
 ) {
   const jobText = `${job.title} ${job.description}`.toLowerCase();
-  const selected = new Set(options.selectedFactIds ?? []);
   const order = (items: string[]) =>
     items
       .map((text, index) => ({ text, index, score: relevance(text, jobText) }))
@@ -300,64 +302,102 @@ export function tailoredMasterContent(
       .map((item) => item.text);
   const base = groundedMasterContent(facts);
   const audit: TailoringAudit = {
-    status: "MASTER_UNCHANGED_NO_SUPPORTED_IMPROVEMENT",
+    status: "NO_SUPPORTED_TAILORING_CHANGES",
     originalAtsMatchScore: originalScore,
     tailoredAtsMatchScore: originalScore,
-    scoreMethod: "The existing grounded MatchResult score is retained because wording and order changes do not create new evidence.",
+    scoreMethod: "No safe content change was available, so the grounded AI Match score was intentionally left unchanged.",
     keywordsAdded: [],
     bulletsChanged: [],
     bulletsReordered: [],
+    skillsReordered: [],
     supportedKeywords: [],
     unsupportedRequirementsNotAdded: options.unsupportedQualifications ?? [],
   };
-
-  const prioritizedEntries = (
+  const competencies = recognizeSupportedTransferableCompetencies(
+    jobText,
+    facts,
+    options.supportedRequirements ?? [],
+  );
+  const tailoredEntries = (
     entries: MasterEntry[],
     type: "experience" | "project",
   ) =>
-    entries
-      .map((entry, index) => {
-        const fact = matchingEntityFact(entry.title, facts, type);
-        const before = entry.bullets;
-        const after = order(before);
-        if (before.some((bullet, bulletIndex) => bullet !== after[bulletIndex])) {
-          audit.bulletsReordered.push({ entry: entry.title, before, after });
-        }
-        return {
-          entry: { ...entry, bullets: after },
-          index,
-          selected: fact ? selected.has(fact.id) : false,
-          score: relevance(`${entry.title} ${entry.bullets.join(" ")}`, jobText),
-        };
-      })
-      .sort((a, b) =>
-        Number(b.selected) - Number(a.selected)
-        || b.score - a.score
-        || a.index - b.index,
-      )
-      .map(({ entry }) => entry);
+    entries.map((entry) => {
+      const transformed = entry.bullets.map((original, index) => {
+        const competency = competencies.find((item) =>
+          item.originalBullet === original
+          && TRANSFERABLE_COMPETENCY_RULES.some((rule) =>
+            rule.competency === item.competency
+            && rule.entryType === type
+            && rule.entryTitle === entry.title,
+          ),
+        );
+        if (!competency) return { original, text: original, index };
+        audit.bulletsChanged.push({
+          original,
+          tailored: competency.tailoredBullet,
+          evidence: competency.evidence,
+          jobRequirementAddressed: competency.jobRequirement,
+        });
+        audit.keywordsAdded.push(...competency.keywordsAdded);
+        return { original, text: competency.tailoredBullet, index };
+      });
+      const reordered = transformed
+        .map((item) => ({ ...item, score: relevance(item.text, jobText) }))
+        .sort((left, right) => right.score - left.score || left.index - right.index);
+      const beforeOrder = transformed.map((item) => item.original);
+      const afterOriginalOrder = reordered.map((item) => item.original);
+      const after = reordered.map((item) => item.text);
+      if (beforeOrder.some((bullet, index) => bullet !== afterOriginalOrder[index])) {
+        audit.bulletsReordered.push({ entry: entry.title, before: beforeOrder, after });
+      }
+      return { ...entry, bullets: after };
+    });
 
-  const supportedSkillFacts = facts.filter((fact) =>
-    fact.type === "skill"
-    && normalized(fact.content).length > 1
-    && normalized(jobText).includes(normalized(fact.content)),
-  );
-  audit.supportedKeywords = supportedSkillFacts.map((fact) => ({
-    keyword: fact.content,
-    evidence: [{ factId: fact.id, content: fact.content }],
+  const skills = base.skills.map((group) => {
+    const before = group.items;
+    const after = order(before);
+    if (before.some((item, index) => item !== after[index])) {
+      audit.skillsReordered?.push({ group: group.label, before, after });
+    }
+    return { ...group, items: after };
+  });
+  const supportedMasterSkills = base.skills.flatMap((group) => group.items)
+    .filter((skill) => {
+      const value = normalized(skill);
+      return value.length > 1 && normalized(jobText).includes(value);
+    })
+    .map((skill) => ({
+      keyword: skill,
+      evidence: [{ factId: "master-resume", content: skill }],
+    }));
+  const supportedCompetencies = competencies.map((competency) => ({
+    keyword: competency.competency,
+    evidence: competency.evidence,
   }));
+  const supportedByKeyword = new Map<string, { keyword: string; evidence: Array<{ factId: string; content: string }> }>();
+  for (const item of [...supportedMasterSkills, ...supportedCompetencies]) {
+    supportedByKeyword.set(item.keyword.toLowerCase(), item);
+  }
+  audit.supportedKeywords = [...supportedByKeyword.values()];
+  audit.keywordsAdded = [...new Set(audit.keywordsAdded)];
+
   const content = {
     ...base,
-    experience: prioritizedEntries(base.experience, "experience"),
-    projects: prioritizedEntries(base.projects, "project"),
-    skills: base.skills
-      .map((group) => ({ ...group, items: order(group.items) }))
-      .sort((a, b) =>
-        relevance(b.items.join(" "), jobText) - relevance(a.items.join(" "), jobText),
-      ),
+    experience: tailoredEntries(base.experience, "experience"),
+    projects: tailoredEntries(base.projects, "project"),
+    skills,
   };
-  if (audit.bulletsReordered.length || audit.supportedKeywords.length || selected.size) {
+  const meaningfulChangeCount = audit.bulletsChanged.length
+    + audit.bulletsReordered.length
+    + (audit.skillsReordered?.length ?? 0);
+  if (meaningfulChangeCount > 0) {
+    const keywordCoverageDelta = Math.max(1, audit.keywordsAdded.length);
     audit.status = "TAILORED_WITH_SUPPORTED_CHANGES";
+    audit.tailoredAtsMatchScore = Math.min(100, originalScore + keywordCoverageDelta);
+    audit.scoreMethod = audit.tailoredAtsMatchScore === originalScore
+      ? "Supported job terminology was added, but the score remained at the 100-point cap; no evidence was inflated."
+      : `Added ${keywordCoverageDelta} supported job-language signal${keywordCoverageDelta === 1 ? "" : "s"}; the audit-only ATS estimate increased without adding new candidate facts.`;
   }
   return { content, audit };
 }

@@ -34,19 +34,16 @@ const facts: EvidenceFact[] = [
 ];
 
 describe("grounded tailored documents", () => {
-  it("builds the fixed resume structure from approved facts only", () => {
+  it("preserves the complete approved master résumé structure", () => {
     const content = groundedMasterContent(facts);
     expect(content.education.map((item) => item.school)).toEqual([
       "New Jersey Institute of Technology",
+      "Stevens Institute of Technology",
     ]);
-    expect(content.projects[0].bullets).toEqual([
-      "Captured raw IQ at 1090 MHz.",
-      "Validated frames with CRC-24 error detection.",
-      "Parsed ICAO addresses.",
-    ]);
-    expect(content.skills.flatMap((group) => group.items)).toEqual(["Python"]);
-    expect(JSON.stringify(content)).not.toContain("100+ hardware repairs");
-    expect(content.education[0].location).toBe("");
+    expect(content.projects[0].bullets[0]).toContain("Captured raw IQ at 1090 MHz (2 MSPS)");
+    expect(content.skills.flatMap((group) => group.items)).toContain("Python");
+    expect(JSON.stringify(content)).toContain("100+ hardware repairs");
+    expect(content.education[0].location).toBe("Newark, NJ");
   });
 
   it("uses the current job description to tailor ordering and records unsupported gaps", () => {
@@ -115,6 +112,7 @@ describe("grounded tailored documents", () => {
     expect(source).toContain("Open PDF");
     expect(source).toContain("Previous versions");
     expect(source).toContain("Tailoring Audit");
+    expect(source).toContain("Formatting preservation:");
     expect(source).toContain("Keywords intentionally excluded:");
     expect(source).toContain("Generated {new Date(document.createdAt).toLocaleString()}");
     expect(source).toContain("QA ${document.qaStatus}");

@@ -13,6 +13,7 @@ const compileTypst = vi.fn();
 const extractPdfText = vi.fn();
 const evaluateStrictDocumentQa = vi.fn();
 const evaluatePdfLayoutQa = vi.fn();
+const evaluateResumeFormatPreservation = vi.fn();
 const validateDocumentIdentity = vi.fn();
 const selectContentForJob = vi.fn();
 const logAudit = vi.fn();
@@ -42,7 +43,10 @@ vi.mock("@/lib/documents/typst", async (importOriginal) => {
 });
 vi.mock("@/lib/pdf", () => ({ extractPdfText: (...args: unknown[]) => extractPdfText(...args) }));
 vi.mock("@/lib/documents/qa", () => ({ evaluateStrictDocumentQa: (...args: unknown[]) => evaluateStrictDocumentQa(...args) }));
-vi.mock("@/lib/documents/layoutQa", () => ({ evaluatePdfLayoutQa: (...args: unknown[]) => evaluatePdfLayoutQa(...args) }));
+vi.mock("@/lib/documents/layoutQa", () => ({
+  evaluatePdfLayoutQa: (...args: unknown[]) => evaluatePdfLayoutQa(...args),
+  evaluateResumeFormatPreservation: (...args: unknown[]) => evaluateResumeFormatPreservation(...args),
+}));
 vi.mock("@/lib/documents/identityGuard", () => ({ validateDocumentIdentity: (...args: unknown[]) => validateDocumentIdentity(...args) }));
 vi.mock("@/lib/documents/select", () => ({ selectContentForJob: (...args: unknown[]) => selectContentForJob(...args) }));
 vi.mock("@/lib/applications/audit", () => ({ logAudit: (...args: unknown[]) => logAudit(...args) }));
@@ -122,6 +126,7 @@ describe("generateDocumentsForJob", () => {
     });
     evaluateStrictDocumentQa.mockReturnValue({ status: "pass", issues: [] });
     evaluatePdfLayoutQa.mockResolvedValue({ pageCount: 1, issues: [], metrics: {} });
+    evaluateResumeFormatPreservation.mockResolvedValue({ status: "pass", issues: [], generated: {}, reference: {} });
     validateDocumentIdentity.mockReturnValue([]);
     logAudit.mockResolvedValue(undefined);
   });
@@ -143,7 +148,9 @@ describe("generateDocumentsForJob", () => {
     expect(sources).toContain("Built 30+ custom PCs");
     expect(sources).not.toContain("Docker");
     expect(sources).not.toContain("Rust");
-    expect(sources).not.toContain("Clifton, NJ");
+    expect(sources).toContain("NYC Metro Area");
+    expect(sources).toContain("Stevens Institute of Technology");
+    expect(evaluateResumeFormatPreservation).toHaveBeenCalledOnce();
   });
 
   it("appends V2 without overwriting the V1 records", async () => {
@@ -157,6 +164,39 @@ describe("generateDocumentsForJob", () => {
       "coverLetter:2",
     ]);
     expect(persisted).toHaveLength(4);
+  });
+
+  it("reclassifies grounded transferable competencies without admitting unsupported tools", async () => {
+    findJob.mockResolvedValue({
+      ...job,
+      title: "Civil Engineering Intern",
+      description: "Use strong analytical skills and problem-solving skills and work collaboratively with the project team. AutoCAD is required for design documentation and technical project delivery.",
+      matchResults: [{
+        ...job.matchResults[0],
+        skillsSupported: "[]",
+        skillsNeedConfirmation: JSON.stringify([{ skill: "ability to work collaboratively" }]),
+        skillsToLearn: JSON.stringify([{ skill: "problem-solving skills" }]),
+        skillsNeverAdd: JSON.stringify([{ skill: "strong analytical skills" }, { skill: "AutoCAD" }]),
+      }],
+    });
+
+    await generateDocumentsForJob(job.id, { includeCoverLetter: false });
+
+    const source = writeFile.mock.calls.map((call) => String(call[1])).join("\n");
+    expect(source).toContain("Analyzed raw IQ data at 1090 MHz");
+    expect(source).toContain("Diagnosed and resolved desktop and laptop hardware failures");
+    expect(source).toContain("Coordinated peak-hour task assignments with coworkers");
+    expect(source).not.toContain("AutoCAD");
+    const record = persisted[0];
+    expect(JSON.parse(String(record.keywordClassification))).toMatchObject({
+      supported: expect.arrayContaining(["Analyzed", "resolved", "Coordinated"]),
+      unsupported: ["AutoCAD"],
+    });
+    expect(JSON.parse(String(record.tailoringAudit))).toMatchObject({
+      status: "TAILORED_WITH_SUPPORTED_CHANGES",
+      formattingPreservation: { status: "pass" },
+      unsupportedRequirementsNotAdded: ["AutoCAD"],
+    });
   });
 
   it("rejects a missing job description before creating files or records", async () => {

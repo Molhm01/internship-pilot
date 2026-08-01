@@ -255,22 +255,30 @@ function GeneratedDocumentCard({ document, onOpen }: { document: GeneratedDoc; o
           const audit = JSON.parse(document.tailoringAudit) as {
             originalAtsMatchScore: number;
             tailoredAtsMatchScore: number;
+            scoreMethod?: string;
             keywordsAdded: string[];
-            bulletsChanged: Array<{ original: string; tailored: string; evidence: Array<{ factId: string; content: string }> }>;
+            bulletsChanged: Array<{ original: string; tailored: string; evidence: Array<{ factId: string; content: string }>; jobRequirementAddressed?: string }>;
             bulletsReordered?: Array<{ entry: string; before: string[]; after: string[] }>;
+            skillsReordered?: Array<{ group: string; before: string[]; after: string[] }>;
             supportedKeywords: Array<{ keyword: string; evidence: Array<{ factId: string; content: string }> }>;
             unsupportedRequirementsNotAdded: string[];
+            formattingPreservation?: { status: "pass" | "fail"; method: string; issues: string[] };
           };
           return (
             <details className="text-xs rounded border border-slate-200 p-2">
               <summary className="cursor-pointer font-medium">Tailoring Audit</summary>
               <div className="mt-2 space-y-2">
                 <p>Original ATS match: {audit.originalAtsMatchScore} · Tailored ATS match: {audit.tailoredAtsMatchScore}</p>
+                {audit.scoreMethod && <p><strong>Score explanation:</strong> {audit.scoreMethod}</p>}
                 <p><strong>Keywords added:</strong> {audit.keywordsAdded.length ? audit.keywordsAdded.join(", ") : "None"}</p>
-                <div><strong>Exact bullets changed:</strong>{audit.bulletsChanged.length ? <ul className="list-disc pl-4">{audit.bulletsChanged.map((change, index) => <li key={index}><span className="line-through">{change.original}</span><br />→ {change.tailored}<br /><span className="text-slate-500">Evidence: {change.evidence.map((item) => `${item.content} (${item.factId})`).join("; ")}</span></li>)}</ul> : " None"}</div>
+                <div><strong>Exact bullets changed:</strong>{audit.bulletsChanged.length ? <ul className="list-disc pl-4">{audit.bulletsChanged.map((change, index) => <li key={index}><span className="line-through">{change.original}</span><br />→ {change.tailored}{change.jobRequirementAddressed && <><br /><span className="text-slate-500">Job requirement: {change.jobRequirementAddressed}</span></>}<br /><span className="text-slate-500">Evidence: {change.evidence.map((item) => `${item.content} (${item.factId})`).join("; ")}</span></li>)}</ul> : " None"}</div>
                 <div><strong>Bullet order changes:</strong>{audit.bulletsReordered?.length ? <ul className="list-disc pl-4">{audit.bulletsReordered.map((change) => <li key={change.entry}>{change.entry}: {change.after.map((bullet, index) => `${index + 1}. ${bullet}`).join(" ")}</li>)}</ul> : " None"}</div>
+                <div><strong>Skill order changes:</strong>{audit.skillsReordered?.length ? <ul className="list-disc pl-4">{audit.skillsReordered.map((change) => <li key={change.group}>{change.group}: {change.after.join(", ")}</li>)}</ul> : " None"}</div>
                 <div><strong>Supported keywords:</strong><ul className="list-disc pl-4">{audit.supportedKeywords.map((item) => <li key={item.keyword}>{item.keyword}: {item.evidence.map((fact) => fact.content).join("; ")}</li>)}</ul></div>
                 <div><strong>Intentionally not added:</strong><ul className="list-disc pl-4">{audit.unsupportedRequirementsNotAdded.map((item) => <li key={item}>{item}</li>)}</ul></div>
+                <div><strong>Formatting preservation:</strong> {audit.formattingPreservation ? audit.formattingPreservation.status.toUpperCase() : "Not recorded"}</div>
+                {audit.formattingPreservation && <p className="text-slate-500">{audit.formattingPreservation.method}</p>}
+                {audit.formattingPreservation?.issues.length ? <ul className="list-disc pl-4 text-rose-700">{audit.formattingPreservation.issues.map((issue) => <li key={issue}>{issue}</li>)}</ul> : null}
               </div>
             </details>
           );
