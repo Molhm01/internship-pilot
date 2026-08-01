@@ -1,0 +1,345 @@
+import path from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { prisma } from "@/lib/db";
+import { compileTypst, escapeTypstString, typstStringArray } from "@/lib/documents/typst";
+import { extractPdfText } from "@/lib/pdf";
+import { evaluateStrictDocumentQa } from "@/lib/documents/qa";
+import { evaluatePdfLayoutQa } from "@/lib/documents/layoutQa";
+import { logAudit } from "@/lib/applications/audit";
+import { validateDocumentIdentity } from "@/lib/documents/identityGuard";
+import { selectContentForJob } from "@/lib/documents/select";
+import { hasUsableJobDescription, matchJobDescriptionText } from "@/lib/matchWorkflow";
+import {
+  MASTER_ACTIVITIES, MASTER_EDUCATION, MASTER_EXPERIENCE, MASTER_PROJECTS, MASTER_SKILLS,
+  tailoredMasterContent, type EvidenceFact, type MasterEducation, type MasterEntry, type MasterSkillGroup,
+} from "@/lib/documents/masterResume";
+
+const GENERATED_DIR_REL = process.env.GENERATED_OUTPUT_DIR ?? "data/generated";
+const TEMPLATE_IMPORT = "/templates";
+function absolute(relativePath: string) { return path.isAbsolute(relativePath) ? relativePath : path.join(/* turbopackIgnore: true */ process.cwd(), relativePath); }
+function s(value: string) { return `"${escapeTypstString(value)}"`; }
+function dict(fields: Record<string, string>) { return `(${Object.entries(fields).map(([key, value]) => `${key}: ${value}`).join(", ")})`; }
+function dictArray(items: Record<string, string>[]) { return `(${items.map(dict).join(", ")}${items.length === 1 ? "," : ""})`; }
+function educationTypst(items: MasterEducation[]) {
+  return dictArray(items.map((x) => ({ school: s(x.school), degree: s(x.degree), coursework: s(x.coursework), location: s(x.location), dates: s(x.dates) })));
+}
+function entriesTypst(items: MasterEntry[]) {
+  return dictArray(items.map((x) => ({ title: s(x.title), organization: s(x.organization), location: s(x.location), dates: s(x.dates), bullets: typstStringArray(x.bullets) })));
+}
+function skillsTypst(items: MasterSkillGroup[]) {
+  return dictArray(items.map((x) => ({ label: s(x.label), items: typstStringArray(x.items) })));
+}
+
+type HeaderProfile = { fullName: string; email: string; phone: string; linkedin?: string | null; workAuthorization?: string | null; addressCity?: string | null; addressState?: string | null };
+type ResumeContent = { education: MasterEducation[]; experience: MasterEntry[]; projects: MasterEntry[]; skills: MasterSkillGroup[]; activities: string[] };
+export function buildMasterResumeSource(profile: HeaderProfile, content: ResumeContent = { education: MASTER_EDUCATION, experience: MASTER_EXPERIENCE, projects: MASTER_PROJECTS, skills: MASTER_SKILLS, activities: MASTER_ACTIVITIES }) {
+  const savedLocation = [profile.addressCity, profile.addressState]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .join(", ");
+  const contact = [savedLocation, profile.email, profile.phone, profile.linkedin]
+    .filter((value): value is string => Boolean(value?.trim()));
+  return `#import "${TEMPLATE_IMPORT}/resume-template.typ": resume\n#resume(name: ${s(profile.fullName)}, contact: ${typstStringArray(contact)}, education: ${educationTypst(content.education)}, experience: ${entriesTypst(content.experience)}, projects: ${entriesTypst(content.projects)}, skills: ${skillsTypst(content.skills)}, activities: ${typstStringArray(content.activities)})\n`;
+}
+
+function words(value: string): string[] {
+  return value.trim().split(/\s+/).filter(Boolean);
+}
+
+function takeWords(value: string, maximum: number): string {
+  const items = words(value);
+  const selected = items.length <= maximum ? value.trim() : `${items.slice(0, maximum).join(" ")}…`;
+  // A literal compound-word hyphen is a legal wrap point in Typst. Use the
+  // non-breaking form in cover-letter prose so QA does not archive an
+  // otherwise sound PDF merely because "peak-hour" wrapped at the hyphen.
+  return selected.replace(/(?<=\w)-(?=\w)/g, "‑");
+}
+
+function relevance(value: string, jobText: string): number {
+  return normalizedTerms(value).reduce(
+    (score, term) => score + (jobText.includes(term) ? 1 : 0),
+    0,
+  );
+}
+
+function normalizedTerms(value: string): string[] {
+  return value.toLowerCase().split(/[^a-z0-9+.#]+/).filter((term) => term.length > 2);
+}
+
+function factNarrative(fact: EvidenceFact): string {
+  return `${fact.content}${fact.detail ? `. ${fact.detail}` : "."}`;
+}
+
+export function buildGroundedCoverLetterParagraphs(
+  job: { title: string; company: string; description: string },
+  approvedFacts: EvidenceFact[],
+  selectedFactIds: string[] = [],
+): string[] {
+  const selected = new Set(selectedFactIds);
+  const jobText = `${job.title} ${job.description}`.toLowerCase();
+  const ranked = approvedFacts
+    .filter((fact) => ["experience", "project", "education", "coursework", "skill", "activity"].includes(fact.type ?? ""))
+    .map((fact, index) => ({
+      fact,
+      index,
+      selected: selected.has(fact.id),
+      score: relevance(factNarrative(fact), jobText),
+    }))
+    .sort((a, b) =>
+      Number(b.selected) - Number(a.selected)
+      || b.score - a.score
+      || a.index - b.index,
+    );
+  const evidence = ranked.map(({ fact }) => factNarrative(fact)).join(" ");
+  const evidenceWords = words(evidence).slice(0, 158);
+  const midpoint = Math.ceil(evidenceWords.length / 2);
+  const firstEvidence = evidenceWords.slice(0, midpoint).join(" ");
+  const secondEvidence = evidenceWords.slice(midpoint).join(" ");
+
+  return [
+    `I am applying for the ${job.title} position at ${job.company}. The responsibilities and qualifications in the current posting are the basis for the evidence selected in this letter.`,
+    `My approved candidate profile documents this work and education: ${takeWords(firstEvidence, 82)}`,
+    `The same approved profile also records: ${takeWords(secondEvidence, 82)}`,
+    `I would welcome the opportunity to discuss this role and the approved experience above. I would be direct about which qualifications are supported by my record and which ones I still need to learn.`,
+  ];
+}
+
+function parseFactIds(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseMatchSkills(value: string | null | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.flatMap((item) =>
+        item && typeof item === "object" && typeof (item as { skill?: unknown }).skill === "string"
+          ? [(item as { skill: string }).skill]
+          : [],
+      )
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizedClaimText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9+#]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function findUnsupportedClaims(text: string, unsupportedQualifications: string[]): string[] {
+  const normalizedText = ` ${normalizedClaimText(text)} `;
+  return unsupportedQualifications.filter((qualification) => {
+    const normalizedQualification = normalizedClaimText(qualification);
+    return normalizedQualification.length >= 2
+      && normalizedText.includes(` ${normalizedQualification} `);
+  });
+}
+
+export function approvedFactsExcludingUnsupportedClaims(
+  facts: EvidenceFact[],
+  unsupportedQualifications: string[],
+): EvidenceFact[] {
+  return facts.filter((fact) =>
+    findUnsupportedClaims(factNarrative(fact), unsupportedQualifications).length === 0,
+  );
+}
+
+function unsupportedClaimPatterns(unsupportedQualifications: string[]): RegExp[] {
+  return unsupportedQualifications.flatMap((qualification) => {
+    const terms = qualification
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    if (!terms.length) return [];
+    return [new RegExp(`(?:^|\\s)${terms.join("\\s+")}(?=$|\\s|[.,;:!?()])`, "i")];
+  });
+}
+
+export class DocumentGenerationError extends Error {}
+export type GeneratedDocSummary = { id: string; type: string; version: number; storagePath: string; qaStatus: string; qaIssues: string[] };
+
+export async function generateDocumentsForJob(jobId: string, options: { includeCoverLetter?: boolean } = {}) {
+  const job = await prisma.job.findUnique({ where: { id: jobId }, include: { matchResults: { orderBy: { createdAt: "desc" }, take: 1 } } });
+  if (!job) throw new DocumentGenerationError("Job not found.");
+  if (!hasUsableJobDescription(job)) {
+    throw new DocumentGenerationError("A usable job description is required before tailored documents can be generated.");
+  }
+  const description = matchJobDescriptionText(job);
+  const generationJob = { ...job, description };
+  const latestMatch = job.matchResults[0];
+  if (!latestMatch) throw new DocumentGenerationError("Run AI Match before generating tailored documents.");
+  if (latestMatch.eligibility === "Fail") throw new DocumentGenerationError("Eligibility is Fail for this job — documents are not generated.");
+  const profile = await prisma.applicationProfile.findUnique({ where: { id: "default" } });
+  if (!profile?.fullName?.trim()) throw new DocumentGenerationError("Add your full name on the Documents page before generating documents.");
+  if (!profile.email?.trim() || !profile.phone?.trim()) throw new DocumentGenerationError("Add both email and telephone to the Candidate Profile before generating documents.");
+
+  const jobDirRel = `${GENERATED_DIR_REL}/${jobId}`;
+  await mkdir(absolute(jobDirRel), { recursive: true });
+  const facts = await prisma.resumeFact.findMany({ where: { status: { in: ["approved", "edited"] } } });
+  if (!facts.length) {
+    throw new DocumentGenerationError("No approved profile facts are available for document generation.");
+  }
+  const validFactIds = new Set(facts.map((fact) => fact.id));
+  const bullets = (await prisma.resumeBullet.findMany({ orderBy: { createdAt: "asc" } }))
+    .filter((bullet) => {
+      const factIds = parseFactIds(bullet.factIds);
+      return factIds.length > 0 && factIds.every((factId) => validFactIds.has(factId));
+    });
+  let selectedBulletIds: string[] = [];
+  if (bullets.length) {
+    try {
+      const selection = await selectContentForJob(generationJob, bullets, facts);
+      selectedBulletIds = [
+        ...selection.experienceBulletIds,
+        ...selection.projectBulletIds,
+        ...selection.activityBulletIds,
+      ];
+    } catch {
+      // Keep generation available if the selector model is unavailable. The
+      // deterministic fallback still uses the current description and only
+      // existing fact-linked bullet IDs.
+      const jobText = `${job.title} ${description}`.toLowerCase();
+      selectedBulletIds = bullets
+        .map((bullet, index) => ({
+          id: bullet.id,
+          index,
+          score: relevance(bullet.text, jobText),
+        }))
+        .sort((a, b) => b.score - a.score || a.index - b.index)
+        .slice(0, 6)
+        .map((item) => item.id);
+    }
+  }
+  const selectedIdSet = new Set(selectedBulletIds);
+  const selectedFactIds = Array.from(new Set(
+    bullets
+      .filter((bullet) => selectedIdSet.has(bullet.id))
+      .flatMap((bullet) => parseFactIds(bullet.factIds)),
+  ));
+  const supportedKeywords = parseMatchSkills(latestMatch.skillsSupported);
+  const confirmationRequired = parseMatchSkills(latestMatch.skillsNeedConfirmation);
+  const developmentGaps = parseMatchSkills(latestMatch.skillsToLearn);
+  const neverClaim = parseMatchSkills(latestMatch.skillsNeverAdd);
+  const unsupportedQualifications = Array.from(new Set([
+    ...confirmationRequired,
+    ...developmentGaps,
+    ...neverClaim,
+  ]));
+  const documentFacts = approvedFactsExcludingUnsupportedClaims(facts, unsupportedQualifications);
+  if (!documentFacts.length) {
+    throw new DocumentGenerationError("No approved profile facts remain after excluding unsupported AI Match claims.");
+  }
+  const tailoring = tailoredMasterContent(generationJob, documentFacts, latestMatch.score, {
+    selectedFactIds,
+    unsupportedQualifications,
+  });
+  const supportedKeywordCandidates = Array.from(new Set([
+    ...supportedKeywords,
+    ...tailoring.audit.supportedKeywords.map((item) => item.keyword),
+  ]));
+  const keywordClassificationFor = (source: string) => ({
+    supported: supportedKeywordCandidates.filter((keyword) =>
+      findUnsupportedClaims(source, [keyword]).length > 0,
+    ),
+    confirmationRequired,
+    developmentGap: developmentGaps,
+    unsupported: neverClaim,
+  });
+  const header = { fullName: profile.fullName, email: profile.email, phone: profile.phone, linkedin: profile.linkedin, workAuthorization: profile.workAuthorization, addressCity: profile.addressCity, addressState: profile.addressState };
+  const resumeVersion = await prisma.generatedDocument.count({ where: { jobId, type: "resume" } }) + 1;
+  const resumeSourceRel = `${jobDirRel}/resume-v${resumeVersion}.typ`;
+  const resumePdfRel = `${jobDirRel}/resume-v${resumeVersion}.pdf`;
+  const resumeSource = buildMasterResumeSource(header, tailoring.content);
+  const unsupportedResumeClaims = findUnsupportedClaims(resumeSource, unsupportedQualifications);
+  if (unsupportedResumeClaims.length) {
+    throw new DocumentGenerationError(`Generation stopped because unsupported qualifications appeared in the resume: ${unsupportedResumeClaims.join(", ")}.`);
+  }
+  const resumeKeywordClassification = keywordClassificationFor(resumeSource);
+  await writeFile(absolute(resumeSourceRel), resumeSource, "utf-8");
+  const resumeCompile = await compileTypst(absolute(resumeSourceRel), absolute(resumePdfRel), absolute(""));
+  if (!resumeCompile.ok) throw new DocumentGenerationError(`Resume compilation failed: ${resumeCompile.stderr}`);
+  const resumeBytes = new Uint8Array(await readFile(absolute(resumePdfRel)));
+  const resumeLayoutBytes = resumeBytes.slice();
+  const resumeExtraction = await extractPdfText(resumeBytes);
+  const resumeQa = evaluateStrictDocumentQa(
+    resumeExtraction.text,
+    ["EDUCATION", "EXPERIENCE", "PROJECTS", "SKILLS", "ACTIVITIES & LEADERSHIP"],
+    [
+      ...tailoring.content.education.flatMap((item) => [item.school, item.degree, item.coursework, item.location, item.dates]),
+      ...tailoring.content.experience.flatMap((item) => [item.title, item.organization, item.location, item.dates, ...item.bullets]),
+      ...tailoring.content.projects.flatMap((item) => [item.title, item.organization, item.location, item.dates, ...item.bullets]),
+      ...tailoring.content.skills.flatMap((group) => group.items),
+      ...tailoring.content.activities,
+    ].filter(Boolean),
+    { kind: "resume", candidateName: profile.fullName, contactValues: [profile.email, profile.phone], requiredHeadings: ["EDUCATION", "EXPERIENCE", "PROJECTS", "SKILLS", "ACTIVITIES & LEADERSHIP"], requiredProjectTitles: tailoring.content.projects.map((x) => x.title), pageCount: resumeExtraction.pageCount, forbiddenText: [/\b(?:TBD|TODO|PLACEHOLDER)\b/i, /Expected\s+Expected/i, ...unsupportedClaimPatterns(unsupportedQualifications)] },
+  );
+  const resumeIdentityIssues = validateDocumentIdentity(resumeExtraction.text, profile);
+  resumeQa.issues.push(...resumeIdentityIssues);
+  const resumeLayoutQa = await evaluatePdfLayoutQa(resumeLayoutBytes, "resume");
+  resumeQa.issues.push(...resumeLayoutQa.issues);
+  if (resumeQa.issues.length && !resumeIdentityIssues.length) resumeQa.status = "fail";
+  const resumeQaStatus = resumeIdentityIssues.length ? "INVALID_TEST_DATA" : resumeQa.status;
+  const storedTailoringStatus = tailoring.audit.status;
+  const resumeDoc = await prisma.generatedDocument.create({ data: { jobId, type: "resume", version: resumeVersion, storagePath: resumePdfRel, typstSourcePath: resumeSourceRel, qaStatus: resumeQaStatus, qaIssues: JSON.stringify(resumeQa.issues), keywordClassification: JSON.stringify(resumeKeywordClassification), tailoringStatus: storedTailoringStatus, tailoringAudit: JSON.stringify(tailoring.audit), identityVerified: resumeIdentityIssues.length === 0, bulletIdsUsed: JSON.stringify(selectedBulletIds), matchResultId: latestMatch?.id ?? null } });
+  const result: { resume: GeneratedDocSummary; coverLetter?: GeneratedDocSummary } = { resume: { id: resumeDoc.id, type: "resume", version: resumeVersion, storagePath: resumePdfRel, qaStatus: resumeQaStatus, qaIssues: resumeQa.issues } };
+  if (resumeQaStatus !== "pass") {
+    throw new DocumentGenerationError(`Resume generation failed QA: ${resumeQa.issues.join(" ")}`);
+  }
+
+  if (options.includeCoverLetter !== false) {
+    const paragraphs = buildGroundedCoverLetterParagraphs(generationJob, documentFacts, selectedFactIds);
+    const coverVersion = await prisma.generatedDocument.count({ where: { jobId, type: "coverLetter" } }) + 1;
+    const coverSourceRel = `${jobDirRel}/cover-letter-v${coverVersion}.typ`;
+    const coverPdfRel = `${jobDirRel}/cover-letter-v${coverVersion}.pdf`;
+    const savedLocation = [profile.addressCity, profile.addressState]
+      .filter((value): value is string => Boolean(value?.trim()))
+      .join(", ");
+    const contact = [savedLocation, profile.phone, profile.email, profile.linkedin].filter((value): value is string => !!value?.trim());
+    const date = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "America/New_York" }).format(new Date());
+    const coverSource = `#import "${TEMPLATE_IMPORT}/cover-letter-template.typ": coverLetter\n#coverLetter(name: ${s(profile.fullName)}, location: "", contact: ${typstStringArray(contact)}, date: ${s(date)}, company: ${s(job.company)}, jobTitle: ${s(job.title)}, paragraphs: ${typstStringArray(paragraphs)})\n`;
+    const unsupportedCoverClaims = findUnsupportedClaims(coverSource, unsupportedQualifications);
+    if (unsupportedCoverClaims.length) {
+      throw new DocumentGenerationError(`Generation stopped because unsupported qualifications appeared in the cover letter: ${unsupportedCoverClaims.join(", ")}.`);
+    }
+    const coverKeywordClassification = keywordClassificationFor(coverSource);
+    await writeFile(absolute(coverSourceRel), coverSource, "utf-8");
+    const coverCompile = await compileTypst(absolute(coverSourceRel), absolute(coverPdfRel), absolute(""));
+    if (!coverCompile.ok) throw new DocumentGenerationError(`Cover letter compilation failed: ${coverCompile.stderr}`);
+    const coverBytes = new Uint8Array(await readFile(absolute(coverPdfRel)));
+    const coverLayoutBytes = coverBytes.slice();
+    const coverExtraction = await extractPdfText(coverBytes);
+    const coverQa = evaluateStrictDocumentQa(coverExtraction.text, [], [job.company, profile.fullName, ...paragraphs], { kind: "coverLetter", candidateName: profile.fullName, contactValues: [profile.email ?? "", profile.phone ?? ""], pageCount: coverExtraction.pageCount, wordCount: paragraphs.join(" ").split(/\s+/).filter(Boolean).length, forbiddenText: [/\b(?:TBD|TODO|PLACEHOLDER)\b/i, /I am eager to contribute/i, /I am particularly drawn to/i, /I am passionate about/i, /skills align perfectly/i, ...unsupportedClaimPatterns(unsupportedQualifications)] });
+    const coverIdentityIssues = validateDocumentIdentity(coverExtraction.text, profile);
+    coverQa.issues.push(...coverIdentityIssues);
+    const titleOccurrences = coverExtraction.text.split(job.title).length - 1;
+    if (titleOccurrences !== 1) coverQa.issues.push(`Complete job title must appear exactly once; found ${titleOccurrences}.`);
+    const coverLayoutQa = await evaluatePdfLayoutQa(coverLayoutBytes, "coverLetter");
+    coverQa.issues.push(...coverLayoutQa.issues);
+    if (coverQa.issues.length && !coverIdentityIssues.length) coverQa.status = "fail";
+    const coverQaStatus = coverIdentityIssues.length ? "INVALID_TEST_DATA" : coverQa.status;
+    const coverDoc = await prisma.generatedDocument.create({ data: { jobId, type: "coverLetter", version: coverVersion, storagePath: coverPdfRel, typstSourcePath: coverSourceRel, qaStatus: coverQaStatus, qaIssues: JSON.stringify(coverQa.issues), keywordClassification: JSON.stringify(coverKeywordClassification), tailoringStatus: storedTailoringStatus, tailoringAudit: JSON.stringify(tailoring.audit), identityVerified: coverIdentityIssues.length === 0, bulletIdsUsed: JSON.stringify(selectedBulletIds), matchResultId: latestMatch?.id ?? null } });
+    result.coverLetter = { id: coverDoc.id, type: "coverLetter", version: coverVersion, storagePath: coverPdfRel, qaStatus: coverQaStatus, qaIssues: coverQa.issues };
+    if (coverQaStatus !== "pass") {
+      throw new DocumentGenerationError(`Cover letter generation failed QA: ${coverQa.issues.join(" ")}`);
+    }
+  }
+  try {
+    await logAudit({ jobId, actor: "document-generation", action: "documents-generated", detail: `Generated a master-preserving resume (QA: ${result.resume.qaStatus})${result.coverLetter ? ` and grounded cover letter (QA: ${result.coverLetter.qaStatus})` : ""}.`, metadata: { resumeVersion } });
+  } catch (error) {
+    console.error("Document generation completed, but the audit log write failed.", { jobId, error });
+  }
+  return result;
+}

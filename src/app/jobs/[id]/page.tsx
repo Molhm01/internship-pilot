@@ -13,6 +13,12 @@ import {
   selectStoredApplicationLinks,
 } from "@/lib/jobs/applicationUrl";
 import { hasUsableJobDescription, requestManualMatch } from "@/lib/matchWorkflow";
+import {
+  fetchDocumentPdf,
+  fetchJobDocuments,
+  generateTailoredDocuments,
+  type StoredGeneratedDocument,
+} from "@/lib/documents/client";
 
 type MatchResultRaw = {
   id: string;
@@ -67,18 +73,7 @@ type Job = {
   matchResults: MatchResultRaw[];
 };
 
-type GeneratedDoc = {
-  id: string;
-  type: string;
-  version: number;
-  qaStatus: string;
-  qaIssues: string | null;
-  keywordClassification: string | null;
-  tailoringStatus: string | null;
-  tailoringAudit: string | null;
-  identityVerified: boolean;
-  createdAt: string;
-};
+type GeneratedDoc = StoredGeneratedDocument;
 
 type ApplicationRun = {
   id: string;
@@ -164,6 +159,28 @@ function parseStrings(json: string | null): string[] {
   }
 }
 
+function parseKeywordClassification(json: string | null): {
+  supported: string[];
+  confirmationRequired: string[];
+  developmentGap: string[];
+  unsupported: string[];
+} {
+  try {
+    const parsed = JSON.parse(json ?? "{}") as Record<string, unknown>;
+    const strings = (value: unknown) => Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === "string")
+      : [];
+    return {
+      supported: strings(parsed.supported),
+      confirmationRequired: strings(parsed.confirmationRequired),
+      developmentGap: strings(parsed.developmentGap),
+      unsupported: strings(parsed.unsupported),
+    };
+  } catch {
+    return { supported: [], confirmationRequired: [], developmentGap: [], unsupported: [] };
+  }
+}
+
 function friendlyRunError(error: string): string {
   if (/launchPersistentContext|profile is already in use|existing browser session/i.test(error)) {
     return "The application browser was busy. The background worker will handle browser access without opening a competing session.";
@@ -192,13 +209,14 @@ function displayRunState(run: ApplicationRun): string {
   return run.status.replace(/_/g, " ").toUpperCase();
 }
 
-function GeneratedDocumentCard({ document }: { document: GeneratedDoc }) {
+function GeneratedDocumentCard({ document, onOpen }: { document: GeneratedDoc; onOpen: (document: GeneratedDoc) => void }) {
   const issues = parseStrings(document.qaIssues);
+  const keywords = parseKeywordClassification(document.keywordClassification);
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-2">
       <div className="flex items-center justify-between">
         <span className="font-medium text-slate-800 capitalize">
-          {document.type === "coverLetter" ? "Cover letter" : "Resume"} (v{document.version})
+          {document.type === "coverLetter" ? "Cover Letter" : "Resume"} (V{document.version})
         </span>
         <span className={`text-xs rounded-full border px-2 py-1 ${
           document.qaStatus === "pass" && document.identityVerified
@@ -208,23 +226,31 @@ function GeneratedDocumentCard({ document }: { document: GeneratedDoc }) {
           {document.qaStatus === "INVALID_TEST_DATA" ? "INVALID TEST DATA" : `QA ${document.qaStatus}`}
         </span>
       </div>
-      <a
-        href={`/api/documents/${document.id}/download`}
-        target="_blank"
-        rel="noopener noreferrer"
+      <button
+        type="button"
+        onClick={() => onOpen(document)}
         className="text-sm text-brand hover:underline"
       >
         Open PDF ↗
-      </a>
+      </button>
+      <p className="text-xs text-slate-500">
+        Generated {new Date(document.createdAt).toLocaleString()}
+      </p>
       {issues.length > 0 && (
         <ul className="text-xs text-amber-700 list-disc list-inside">
           {issues.map((issue, index) => <li key={index}>{issue}</li>)}
         </ul>
       )}
-      {document.type === "resume" && document.tailoringStatus && (
+      {document.tailoringStatus && (
         <p className="text-xs font-medium text-slate-700">{document.tailoringStatus}</p>
       )}
-      {document.type === "resume" && document.tailoringAudit && (() => {
+      {(keywords.supported.length > 0 || keywords.confirmationRequired.length > 0 || keywords.developmentGap.length > 0 || keywords.unsupported.length > 0) && (
+        <div className="text-xs text-slate-600 space-y-1">
+          <p><strong>Keywords used:</strong> {keywords.supported.length ? keywords.supported.join(", ") : "None"}</p>
+          <p><strong>Keywords intentionally excluded:</strong> {[...keywords.confirmationRequired, ...keywords.developmentGap, ...keywords.unsupported].join(", ") || "None"}</p>
+        </div>
+      )}
+      {document.tailoringAudit && (() => {
         try {
           const audit = JSON.parse(document.tailoringAudit) as {
             originalAtsMatchScore: number;
@@ -291,11 +317,14 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
     setLoading(false);
   }, [id]);
 
-  const loadDocuments = useCallback(async () => {
-    const res = await fetch(`/api/jobs/${id}/documents`);
-    if (res.ok) {
-      const data = await res.json();
-      setDocuments(data.documents ?? []);
+  const loadDocuments = useCallback(async (showError = true) => {
+    try {
+      setDocuments(await fetchJobDocuments(id));
+      if (showError) setDocError(null);
+    } catch (error) {
+      if (showError) {
+        setDocError(error instanceof Error ? error.message : "Could not load saved tailored documents.");
+      }
     }
   }, [id]);
 
@@ -377,21 +406,32 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
     setGeneratingDocs(true);
     setDocError(null);
     try {
-      const res = await fetch(`/api/jobs/${id}/generate-documents`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ includeCoverLetter: true }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setDocError(data.error ?? "Could not generate documents.");
-        return;
-      }
+      await generateTailoredDocuments(id);
       await Promise.all([loadDocuments(), loadAuditLog()]);
     } catch (error) {
       setDocError(error instanceof Error ? error.message : "Could not generate documents.");
+      await loadDocuments(false);
     } finally {
       setGeneratingDocs(false);
+    }
+  }
+
+  async function openDocument(document: GeneratedDoc) {
+    setDocError(null);
+    const popup = window.open("", "_blank");
+    if (!popup) {
+      setDocError("Allow pop-ups for this site, then try Open PDF again.");
+      return;
+    }
+    popup.opener = null;
+    try {
+      const blob = await fetchDocumentPdf(document.id);
+      const url = URL.createObjectURL(blob);
+      popup.location.href = url;
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (error) {
+      popup.close();
+      setDocError(error instanceof Error ? error.message : "The generated PDF could not be opened.");
     }
   }
 
@@ -643,13 +683,13 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
           {documents.length > 0 && (
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-4">
-                {newestValidDocuments.map((document) => <GeneratedDocumentCard key={document.id} document={document} />)}
+                {newestValidDocuments.map((document) => <GeneratedDocumentCard key={document.id} document={document} onOpen={openDocument} />)}
               </div>
               {previousValidDocuments.length > 0 && (
                 <details className="rounded-xl border border-slate-200 bg-white p-4">
                   <summary className="cursor-pointer text-sm font-medium text-slate-700">Previous versions ({previousValidDocuments.length})</summary>
                   <div className="mt-3 grid grid-cols-2 gap-4">
-                    {previousValidDocuments.map((document) => <GeneratedDocumentCard key={document.id} document={document} />)}
+                    {previousValidDocuments.map((document) => <GeneratedDocumentCard key={document.id} document={document} onOpen={openDocument} />)}
                   </div>
                 </details>
               )}
@@ -658,7 +698,7 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
                   <summary className="cursor-pointer text-sm font-medium text-amber-800">Archived invalid documents ({archivedInvalidDocuments.length})</summary>
                   <p className="mt-2 text-xs text-amber-700">These documents are never selected or uploaded by the Application Agent.</p>
                   <div className="mt-3 grid grid-cols-2 gap-4">
-                    {archivedInvalidDocuments.map((document) => <GeneratedDocumentCard key={document.id} document={document} />)}
+                    {archivedInvalidDocuments.map((document) => <GeneratedDocumentCard key={document.id} document={document} onOpen={openDocument} />)}
                   </div>
                 </details>
               )}
