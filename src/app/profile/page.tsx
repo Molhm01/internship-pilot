@@ -4,6 +4,13 @@ import ProfileEntriesSection from "@/components/ProfileEntriesSection";
 import ResumeFactsSection from "@/components/ResumeFactsSection";
 import { isSingleUserMode } from "@/lib/singleUser";
 
+/**
+ * Rendered per request so INTERNSHIP_PILOT_SINGLE_USER is read when the page is
+ * asked for rather than baked in at build time. Otherwise switching deployment
+ * mode would need a rebuild, and a statically-404'd /login could never return.
+ */
+export const dynamic = "force-dynamic";
+
 export const metadata = { title: "Profile — Internship Pilot" };
 
 /**

@@ -232,3 +232,95 @@ nothing imports, a schema nothing versions — not annotated.
 | A password reaching a model or a log | The model never receives a password field: password fields are filtered out of the answerable set, and filling is done by the deterministic executor reading the vault directly. |
 | Auto-creating an account the user did not want | Default off; enabling requires one explicit confirmation; a blocked page (CAPTCHA/MFA/verification) always wins and pauses. |
 | Clicking a final submit | Unchanged. The existing schema, database constraint, and test remain. |
+
+---
+
+## 10. What was done, and how it was verified
+
+Added after the work, with the numbers each claim rests on.
+
+### Commits
+
+| Repo | Hash | Unit |
+| --- | --- | --- |
+| Internship-AI | `5f72b64` | Interrupted-state recovery |
+| Internship-AI | `248462e` | Local profile access and bundle contract |
+| Internship-Agent | `63fe509` | Profile schema v2 and bundle versioning |
+| Internship-Agent | `beee185` | Employer account creation and credential vault |
+| Internship-Agent | `1dcf158` | Taleo fields, company facts, required-field audit |
+
+### Migrations
+
+Both additive, applied, and verified against row counts taken before and after.
+
+| Migration | What it does |
+| --- | --- |
+| `20260802180000_canonical_profile_fields` | 11 `ADD COLUMN` on `ApplicationProfile`, plus `CompanyRelationshipFact`. No drop, rename, retype, or `NOT NULL`. |
+| `20260802190000_local_profile_entries` | Relaxes `userId` to nullable on `Education`/`Experience`/`Project`. All three were empty (verified `COUNT(*) = 0` first), so the rebuild copied nothing. |
+
+Row counts unchanged across both: Job 551, MatchResult 676, GeneratedDocument
+127, ResumeFact 51, ApprovedAnswer 1, ApplicationProfile 1.
+
+### Test and build results
+
+| Check | Before | After |
+| --- | --- | --- |
+| Extension tests | 694 passed, 1 skipped | **824 passed, 1 skipped** |
+| Website tests | 414 passed | **439 passed** |
+| Playwright | 21 passed | **21 passed** |
+| Extension typecheck / lint / build / manifest verify | pass | pass |
+| Website build | pass | pass |
+| Website lint | 11 problems | 11 problems (identical; all pre-existing, none in changed files) |
+
+### Bugs found by the new tests
+
+Four, all of which would have misfired on a real employer form:
+
+1. A stated password minimum of 8 was raised to the built-in default of 12,
+   reporting a rule the site never made and becoming unsatisfiable on a site
+   capped at 10.
+2. `\b` word boundaries missed every plural — "special characters",
+   "Passwords" — so a symbol prohibition was read as a demand.
+3. Splitting page text into sentences cut a symbol allow-list in half at its
+   own `!`.
+4. `Master's Degree` normalized to `master s degree` and could never match a
+   saved `Masters Degree` — a silent near-miss on a real degree dropdown.
+
+Plus one regression left by the interrupted session: `ApprovedAnswer` gained a
+compound unique key and three call sites still queried the old one.
+
+And two greedy rules the existing lab caught: `/\bjob location\b/` swallowed
+"Would you consider moving to the job location?", turning a relocation question
+into a location preference.
+
+### Live verification (HTTP)
+
+Against the running instance on `localhost:3000`:
+
+- `/profile` → 200, no redirect, renders "local single-user mode".
+- `/login`, `/signup` → 404 in local mode; `POST /api/auth/signup` → 404 with a
+  message naming `/profile`.
+- `POST /api/application-profile` with no session → 200; reload returns every
+  new field, and `gaps` goes from 11 entries to empty.
+- The bundle carries `bundleVersion: 2`, `address.line2: "Apt 4C"` distinct
+  from `line1`, `metroRegion` distinct from `city`, and
+  `portalStrategy: create_when_required`.
+- `companyRelationship` is present for an employer with saved facts, carrying
+  `previouslyApplied: true` and `hasReferral: false` while **omitting** the two
+  facts never recorded — and is absent entirely for an unknown employer.
+- No password-shaped key or value anywhere in the bundle.
+
+### Not verified
+
+The end-to-end browser walkthrough was **not** performed: the Claude browser
+extension is not connected to Chrome in this session, so no page was driven.
+Everything above is HTTP-level or test-level evidence. The browser steps are
+listed in the final report for the user to run.
+
+### Preserved, not deleted
+
+`ProfileSections.tsx`, `AuthForm.tsx`, `lib/auth/*`, `/api/auth/*`,
+`/api/profile/{personal,preferences,sensitive,answers}`, `/login`, `/signup`,
+`/logout`, and the `User`/`UserSession`/`UserProfile`/`ApplicationPreferences`/
+`SensitiveAnswerPreferences` tables. All inert in local mode, all live when
+`INTERNSHIP_PILOT_SINGLE_USER=false`.

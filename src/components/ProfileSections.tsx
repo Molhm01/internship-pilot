@@ -3,7 +3,17 @@
 import { useCallback, useEffect, useState } from "react";
 
 /**
- * The canonical profile the Application Agent fills from.
+ * The multi-user profile editor. Not mounted in local single-user mode.
+ *
+ * This writes to the per-account `UserProfile` / `ApplicationPreferences` /
+ * `SensitiveAnswerPreferences` tables through `/api/profile/*`. In the local
+ * deployment the canonical profile is the single `ApplicationProfile` row and
+ * `CanonicalProfileForm` is what `/profile` renders instead — that row is the
+ * one holding real data and the one the extension bundle is built from.
+ *
+ * Kept, unmounted, for the multi-user release this was written for. Deleting it
+ * would mean rewriting it; it costs nothing to hold, and the routes it calls
+ * are still live whenever INTERNSHIP_PILOT_SINGLE_USER is false.
  *
  * Every input is optional and empty means "not answered". Nothing here is
  * defaulted on the user's behalf, because a value they did not choose is one
