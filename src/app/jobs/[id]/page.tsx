@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useCallback, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import StatusSelector from "@/components/StatusSelector";
@@ -12,13 +12,23 @@ import {
   openStoredApplicationUrl,
   selectStoredApplicationLinks,
 } from "@/lib/jobs/applicationUrl";
-import { hasUsableJobDescription, requestManualMatch } from "@/lib/matchWorkflow";
+import { postedLabel } from "@/lib/jobs/postedAge";
+import {
+  hasUsableJobDescription,
+  manualMatchToImmediateDisplay,
+  runManualMatchAndRefresh,
+} from "@/lib/matchWorkflow";
 import {
   fetchDocumentPdf,
   fetchJobDocuments,
-  generateTailoredDocuments,
+  runTailoredDocumentGeneration,
   type StoredGeneratedDocument,
 } from "@/lib/documents/client";
+import {
+  applyEligibility,
+  applyWithApplicationAgent,
+} from "@/lib/applications/applyWithAgent";
+import { isExtensionBridgeAvailable } from "@/lib/applications/extensionBridge";
 
 type MatchResultRaw = {
   id: string;
@@ -26,7 +36,7 @@ type MatchResultRaw = {
   eligibilityReason: string;
   score: number;
   explanation: string;
-  recommendation: string;
+  recommendation: string | null;
   skillsSupported: string;
   skillsNeedConfirmation: string;
   skillsToLearn: string;
@@ -41,6 +51,9 @@ type Job = {
   company: string;
   location: string | null;
   postingDate: string | null;
+  sourcePostedAt?: string | null;
+  sourcePostedText?: string | null;
+  sourceDateConfidence?: string | null;
   internshipTerm: string | null;
   duration: string | null;
   url: string | null;
@@ -296,36 +309,81 @@ const RECOMMENDATION_STYLE: Record<string, string> = {
   Consider: "bg-amber-50 border-amber-200 text-amber-800",
 };
 
+function logJobPageTiming(operation: string, jobId: string, startedAt: number) {
+  if (process.env.NODE_ENV !== "development") return;
+  console.info(JSON.stringify({
+    event: "job-page-timing",
+    operation,
+    jobId,
+    durationMs: Math.round(performance.now() - startedAt),
+  }));
+}
+
 export default function JobDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
   const [job, setJob] = useState<Job | null>(null);
   const [loading, setLoading] = useState(true);
-  const [matching, setMatching] = useState(false);
-  const [matchError, setMatchError] = useState<string | null>(null);
+  const [matchingJobs, setMatchingJobs] = useState<Record<string, boolean>>({});
+  const activeMatchRequests = useRef(new Map<string, AbortController>());
+  const [matchErrors, setMatchErrors] = useState<Record<string, string>>({});
   const [verifying, setVerifying] = useState(false);
   const [documents, setDocuments] = useState<GeneratedDoc[]>([]);
-  const [generatingDocs, setGeneratingDocs] = useState(false);
+  const [generatingDocumentJobs, setGeneratingDocumentJobs] = useState<Record<string, boolean>>({});
+  const activeDocumentRequests = useRef(new Map<string, AbortController>());
   const [docError, setDocError] = useState<string | null>(null);
   const [runs, setRuns] = useState<ApplicationRun[]>([]);
   const [answerDrafts, setAnswerDrafts] = useState<Record<string, string>>({});
   const [answerReuse, setAnswerReuse] = useState<Record<string, boolean>>({});
   const [savingAnswerId, setSavingAnswerId] = useState<string | null>(null);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
+  // Handing the tailored documents to the extension. `null` means the probe has
+  // not run yet, which is distinct from "the extension is not there".
+  const [bridgeAvailable, setBridgeAvailable] = useState<boolean | null>(null);
+  const [handoffState, setHandoffState] = useState<"idle" | "sending" | "sent">("idle");
+  const [handoffError, setHandoffError] = useState<string | null>(null);
+  const initialLoadJobId = useRef<string | null>(null);
+  const matching = matchingJobs[id] === true;
+  const matchError = matchErrors[id] ?? null;
+  const generatingDocs = generatingDocumentJobs[id] === true;
+  const evidence = job?.evidence ?? null;
+  const formattedEvidence = useMemo(() => {
+    if (!evidence) return null;
+    try {
+      return JSON.stringify(JSON.parse(evidence), null, 2);
+    } catch {
+      return evidence;
+    }
+  }, [evidence]);
+
+  function setMatchError(message: string | null) {
+    setMatchErrors((current) => {
+      if (message) return { ...current, [id]: message };
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }
 
   const load = useCallback(async () => {
-    const res = await fetch(`/api/jobs/${id}`);
-    if (res.status === 404) {
-      setJob(null);
+    const startedAt = performance.now();
+    try {
+      const res = await fetch(`/api/jobs/${id}`);
+      if (res.status === 404) {
+        setJob(null);
+        setLoading(false);
+        return;
+      }
+      const data = await res.json();
+      setJob(data.job);
       setLoading(false);
-      return;
+    } finally {
+      logJobPageTiming("job-fetch", id, startedAt);
     }
-    const data = await res.json();
-    setJob(data.job);
-    setLoading(false);
   }, [id]);
 
   const loadDocuments = useCallback(async (showError = true) => {
+    const startedAt = performance.now();
     try {
       setDocuments(await fetchJobDocuments(id));
       if (showError) setDocError(null);
@@ -333,34 +391,104 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
       if (showError) {
         setDocError(error instanceof Error ? error.message : "Could not load saved tailored documents.");
       }
+    } finally {
+      logJobPageTiming("tailored-document-metadata-fetch", id, startedAt);
     }
   }, [id]);
 
   const loadRuns = useCallback(async () => {
-    const res = await fetch(`/api/jobs/${id}/applications`);
-    if (res.ok) {
-      const data = await res.json();
-      setRuns(data.runs ?? []);
+    const startedAt = performance.now();
+    try {
+      const res = await fetch(`/api/jobs/${id}/applications`);
+      if (res.ok) {
+        const data = await res.json();
+        const nextRuns = data.runs ?? [];
+        setRuns(nextRuns);
+        return nextRuns as ApplicationRun[];
+      }
+      return [];
+    } finally {
+      logJobPageTiming("application-run-fetch", id, startedAt);
     }
   }, [id]);
 
   const loadAuditLog = useCallback(async () => {
-    const res = await fetch(`/api/jobs/${id}/audit-log`);
-    if (res.ok) {
-      const data = await res.json();
-      setAuditLog(data.entries ?? []);
+    const startedAt = performance.now();
+    try {
+      const res = await fetch(`/api/jobs/${id}/audit-log`);
+      if (res.ok) {
+        const data = await res.json();
+        setAuditLog(data.entries ?? []);
+      }
+    } finally {
+      logJobPageTiming("activity-timeline-fetch", id, startedAt);
     }
   }, [id]);
 
   useEffect(() => {
-    load();
-    loadDocuments();
-    loadRuns();
-    loadAuditLog();
-  }, [load, loadDocuments, loadRuns, loadAuditLog]);
+    if (initialLoadJobId.current === id) return;
+    initialLoadJobId.current = id;
+    const startedAt = performance.now();
+    void Promise.all([load(), loadDocuments(), loadRuns(), loadAuditLog()])
+      .catch(() => setLoading(false))
+      .finally(() => logJobPageTiming("initial-job-page-load", id, startedAt));
+  }, [id, load, loadDocuments, loadRuns, loadAuditLog]);
+
+  // The extension may be installed, disabled, or mid-reload. Probing once per
+  // job view keeps the button honest without polling.
+  useEffect(() => {
+    let cancelled = false;
+    void isExtensionBridgeAvailable()
+      .then((available) => {
+        if (!cancelled) setBridgeAvailable(available);
+      })
+      .catch(() => {
+        if (!cancelled) setBridgeAvailable(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  useEffect(() => () => {
+    activeDocumentRequests.current.get(id)?.abort();
+    activeDocumentRequests.current.delete(id);
+  }, [id]);
+
+  useEffect(() => () => {
+    activeMatchRequests.current.get(id)?.abort();
+    activeMatchRequests.current.delete(id);
+  }, [id]);
 
   function applyToJob() {
     if (job) openStoredApplicationUrl(job);
+  }
+
+  async function applyWithAgent() {
+    if (!job) return;
+    const { applicationUrl: url } = selectStoredApplicationLinks(job);
+    if (!url) return;
+    setHandoffState("sending");
+    setHandoffError(null);
+    try {
+      await applyWithApplicationAgent({
+        websiteJobId: job.id,
+        company: job.company,
+        jobTitle: job.title,
+        jobDescription: job.description ?? "",
+        officialApplicationUrl: url,
+        documents,
+        coverLetterRequired: false,
+      });
+      setHandoffState("sent");
+    } catch (error) {
+      setHandoffState("idle");
+      setHandoffError(
+        error instanceof Error
+          ? error.message
+          : "The tailored documents could not be sent to the Application Agent.",
+      );
+    }
   }
 
   async function saveAnswerAndRetry(runId: string) {
@@ -391,36 +519,55 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
     }
   }
 
-  const validDocuments = documents.filter((document) =>
-    document.qaStatus === "pass"
-    && document.identityVerified,
-  );
-  const newestValidDocuments = ["resume", "coverLetter"]
-    .map((type) => validDocuments.find((document) => document.type === type))
-    .filter((document): document is GeneratedDoc => Boolean(document));
-  const newestValidIds = new Set(newestValidDocuments.map((document) => document.id));
-  const previousValidDocuments = validDocuments.filter((document) => !newestValidIds.has(document.id));
-  const archivedInvalidDocuments = documents.filter((document) => !validDocuments.some((valid) => valid.id === document.id));
-
-  useEffect(() => {
-    if (!runs.some((run) => run.status === "queued" || run.status === "running")) return;
-    const timer = window.setInterval(() => {
-      void Promise.all([loadRuns(), load(), loadAuditLog()]);
-    }, 1_500);
-    return () => window.clearInterval(timer);
-  }, [runs, loadRuns, load, loadAuditLog]);
+  const {
+    newestValidDocuments,
+    previousValidDocuments,
+    archivedInvalidDocuments,
+  } = useMemo(() => {
+    const validDocuments = documents.filter((document) =>
+      document.qaStatus === "pass" && document.identityVerified,
+    );
+    const newest = ["resume", "coverLetter"]
+      .map((type) => validDocuments.find((document) => document.type === type))
+      .filter((document): document is GeneratedDoc => Boolean(document));
+    const newestIds = new Set(newest.map((document) => document.id));
+    return {
+      newestValidDocuments: newest,
+      previousValidDocuments: validDocuments.filter((document) => !newestIds.has(document.id)),
+      archivedInvalidDocuments: documents.filter((document) =>
+        !validDocuments.some((valid) => valid.id === document.id),
+      ),
+    };
+  }, [documents]);
 
   async function generateDocuments() {
-    setGeneratingDocs(true);
+    if (activeDocumentRequests.current.has(id)) return;
+    const controller = new AbortController();
+    activeDocumentRequests.current.set(id, controller);
     setDocError(null);
     try {
-      await generateTailoredDocuments(id);
-      await Promise.all([loadDocuments(), loadAuditLog()]);
+      await runTailoredDocumentGeneration({
+        jobId: id,
+        signal: controller.signal,
+        onLoadingChange: (jobId, active) => {
+          setGeneratingDocumentJobs((current) => {
+            if (active) return { ...current, [jobId]: true };
+            const next = { ...current };
+            delete next[jobId];
+            return next;
+          });
+        },
+        refreshDocuments: async () => {
+          await Promise.all([loadDocuments(), loadAuditLog()]);
+        },
+      });
     } catch (error) {
       setDocError(error instanceof Error ? error.message : "Could not generate documents.");
       await loadDocuments(false);
     } finally {
-      setGeneratingDocs(false);
+      if (activeDocumentRequests.current.get(id) === controller) {
+        activeDocumentRequests.current.delete(id);
+      }
     }
   }
 
@@ -444,15 +591,53 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
   }
 
   async function runMatch() {
+    if (activeMatchRequests.current.has(id)) return;
+    const controller = new AbortController();
+    activeMatchRequests.current.set(id, controller);
     setMatchError(null);
-    setMatching(true);
     try {
-      await requestManualMatch(id);
-      await Promise.all([load(), loadAuditLog()]);
+      await runManualMatchAndRefresh({
+        jobId: id,
+        signal: controller.signal,
+        onLoadingChange: (jobId, active) => {
+          setMatchingJobs((current) => {
+            if (active) return { ...current, [jobId]: true };
+            const next = { ...current };
+            delete next[jobId];
+            return next;
+          });
+        },
+        onResult: (jobId, result) => {
+          const immediate = manualMatchToImmediateDisplay(result);
+          setJob((current) => current?.id === jobId
+            ? { ...current, matchResults: [immediate, ...current.matchResults] }
+            : current);
+        },
+        refreshMatch: async () => {
+          await Promise.all([load(), loadAuditLog()]);
+        },
+        onRefreshError: (jobId) => {
+          if (process.env.NODE_ENV === "development") {
+            console.warn(JSON.stringify({
+              event: "job-page-refresh-failed",
+              jobId,
+              operation: "post-match-refresh",
+            }));
+          }
+        },
+      });
     } catch (error) {
       setMatchError(error instanceof Error ? error.message : "Could not run match.");
     } finally {
-      setMatching(false);
+      setMatchingJobs((current) => {
+        if (!current[id]) return current;
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+      if (activeMatchRequests.current.get(id) === controller) {
+        activeMatchRequests.current.delete(id);
+      }
     }
   }
 
@@ -498,9 +683,21 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
   }
 
   const latestMatch = job.matchResults[0];
+  const displayedEligibility = latestMatch?.eligibility === "Unknown"
+    ? "BORDERLINE"
+    : latestMatch?.eligibility.toUpperCase();
   const canRunMatch = hasUsableJobDescription(job);
   const tailoring = parseStrings(latestMatch?.tailoringPreview ?? null);
   const { applicationUrl, sourceListingUrl } = selectStoredApplicationLinks(job);
+  // The button is enabled only when there is somewhere to apply, a tailored
+  // résumé exists, and the extension is actually listening. Each "no" carries
+  // the sentence the UI shows instead of a bare disabled control.
+  const agentApply = applyEligibility({
+    officialApplicationUrl: applicationUrl,
+    documents,
+    coverLetterRequired: false,
+    bridgeAvailable: bridgeAvailable === true,
+  });
 
   return (
     <div className="max-w-4xl mx-auto px-8 py-10 space-y-8">
@@ -522,7 +719,14 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
           {job.internshipTerm && <span>🗓 {job.internshipTerm}</span>}
           {job.duration && <span>⏱ {job.duration}</span>}
           {job.compensation && <span>💵 {job.compensation}</span>}
-          {job.postingDate && <span>Posted {new Date(job.postingDate).toLocaleDateString()}</span>}
+          {(() => {
+            const posted = postedLabel(job);
+            return (
+              <span title={posted.title} className={posted.unknown ? "italic text-slate-400" : undefined}>
+                {posted.text}
+              </span>
+            );
+          })()}
         </div>
 
         <div className="flex flex-wrap items-center gap-3 pt-1">
@@ -554,11 +758,11 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
           {job.requisitionId && <span>Requisition ID: {job.requisitionId}</span>}
           {job.verificationMethod && <span>Method: {job.verificationMethod}</span>}
         </div>
-        {job.evidence && (
+        {formattedEvidence && (
           <details className="text-xs text-slate-500">
             <summary className="cursor-pointer hover:text-brand">Show verification evidence</summary>
             <pre className="mt-2 whitespace-pre-wrap bg-slate-50 rounded-lg p-3 text-[11px]">
-              {JSON.stringify(JSON.parse(job.evidence), null, 2)}
+              {formattedEvidence}
             </pre>
           </details>
         )}
@@ -595,7 +799,7 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
             disabled={matching || !canRunMatch}
             className="rounded-lg bg-brand text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-brand-dark transition-colors"
           >
-            {matching ? "Matching… (can take a minute)" : latestMatch ? "Re-run AI Match" : "Run AI Match"}
+            {matching ? "Matching…" : latestMatch ? "Re-run AI Match" : "Run AI Match"}
           </button>
         </div>
         <OllamaStatusBadge />
@@ -621,8 +825,12 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
         {latestMatch && (
           <div className="space-y-4">
             <div className="bg-white rounded-xl border border-slate-200 p-6 flex items-start gap-6">
-              <MatchScoreBadge score={latestMatch.score} eligibility={latestMatch.eligibility} />
+              <MatchScoreBadge score={latestMatch.score} eligibility={displayedEligibility ?? latestMatch.eligibility} />
               <div className="space-y-2">
+                <p className="text-sm text-slate-700">
+                  <span className="font-semibold">Score: </span>
+                  {latestMatch.score}/100
+                </p>
                 <p className="text-sm text-slate-700">
                   <span className="font-semibold">Eligibility reason: </span>
                   {latestMatch.eligibilityReason}
@@ -637,12 +845,14 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
               </div>
             </div>
 
-            <div className={`rounded-xl border p-4 ${RECOMMENDATION_STYLE[latestMatch.recommendation] ?? RECOMMENDATION_STYLE.Consider}`}>
-              <span className="font-semibold">{latestMatch.recommendation}: </span>
-              {latestMatch.recommendation === "Apply" && "This looks like a strong, eligible match worth applying to."}
-              {latestMatch.recommendation === "Skip" && "An explicit eligibility requirement isn't met — applying isn't recommended."}
-              {latestMatch.recommendation === "Consider" && "A borderline match — worth a closer look before deciding."}
-            </div>
+            {latestMatch.recommendation && (
+              <div className={`rounded-xl border p-4 ${RECOMMENDATION_STYLE[latestMatch.recommendation] ?? RECOMMENDATION_STYLE.Consider}`}>
+                <span className="font-semibold">{latestMatch.recommendation}: </span>
+                {latestMatch.recommendation === "Apply" && "This looks like a strong, eligible match worth applying to."}
+                {latestMatch.recommendation === "Skip" && "An explicit eligibility requirement isn't met — applying isn't recommended."}
+                {latestMatch.recommendation === "Consider" && "A borderline match — worth a closer look before deciding."}
+              </div>
+            )}
 
             {tailoring.length > 0 && (
               <div className="rounded-xl border border-slate-200 bg-white p-4">
@@ -720,12 +930,24 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
           <div className="flex items-center justify-between">
             <h2 className="font-medium text-slate-900">Application</h2>
             {applicationUrl ? (
-              <button
-                onClick={applyToJob}
-                className="rounded-lg bg-brand text-white text-sm font-medium px-4 py-2.5 hover:bg-brand-dark transition-colors"
-              >
-                Apply
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => void applyWithAgent()}
+                  disabled={!agentApply.ready || handoffState === "sending"}
+                  title={agentApply.ready ? undefined : agentApply.reason}
+                  className="rounded-lg bg-brand text-white text-sm font-medium px-4 py-2.5 hover:bg-brand-dark transition-colors disabled:opacity-40 disabled:hover:bg-brand"
+                >
+                  {handoffState === "sending"
+                    ? "Sending documents…"
+                    : "Apply with Application Agent"}
+                </button>
+                <button
+                  onClick={applyToJob}
+                  className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Open without agent
+                </button>
+              </div>
             ) : (
               <a
                 href={sourceListingUrl ?? undefined}
@@ -738,15 +960,31 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
             )}
           </div>
           <p className="text-xs text-slate-500">
-            {applicationUrl
-              ? "Opens the official employer application page in a new tab. Use the independently installed Internship-Agent extension to autofill."
-              : "The official employer application page has not been resolved yet."}
+            {!applicationUrl
+              ? "The official employer application page has not been resolved yet."
+              : agentApply.ready
+                ? "Sends the tailored résumé and cover letter to the Application Agent extension, waits for it to confirm they are saved, then opens the official employer application page."
+                : agentApply.reason}
           </p>
+          {handoffError && (
+            <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800" role="alert">
+              {handoffError}
+            </p>
+          )}
+          {handoffState === "sent" && (
+            <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800" role="status">
+              The Application Agent confirmed the tailored documents were saved. Open the extension
+              on the employer page and click Autofill Application.
+            </p>
+          )}
           {runs.length === 0 && (
             <p className="text-sm text-slate-500">No application runs yet.</p>
           )}
           {runs.length > 0 && (
             <div className="space-y-3">
+              {runs.length === 50 && (
+                <p className="text-xs text-slate-500">Showing the 50 most recent application runs.</p>
+              )}
               {runs.map((r) => (
               <div key={r.id} className="bg-white rounded-xl border border-slate-200 p-4 space-y-1.5">
                 <div className="flex items-center justify-between">
@@ -857,7 +1095,7 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
         <h2 className="font-medium text-slate-900">Activity timeline</h2>
         <p className="text-xs text-slate-500">
           A permanent, append-only record of every automated decision made about this job — never
-          edited or deleted.
+          edited or deleted. This page shows the 100 most recent entries.
         </p>
         {auditLog.length === 0 ? (
           <p className="text-sm text-slate-500">No activity recorded yet.</p>
