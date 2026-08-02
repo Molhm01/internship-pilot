@@ -89,7 +89,11 @@ model ApplicationProfile {
   // on whitespace without guessing where a middle name ends.
   legalFirstName  String?
   legalMiddleName String?
+  // "I have no middle name" is an answer; a null middle name is not. Forms ask
+  // both questions and only this can answer the second.
+  noMiddleName    Boolean?
   legalLastName   String?
+  suffix          String?
   preferredName String?
   pronouns      String?
   email        String?
@@ -103,6 +107,9 @@ model ApplicationProfile {
   school       String? // current school (e.g. NJIT)
   previousSchool String? // e.g. Stevens, if transferred — reference only, not deeply wired into per-field autofill
   addressStreet String?
+  // A real second address line. Without one the agent had nothing to put in an
+  // employer's "Address Line 2" box, and copied line 1 into it.
+  addressLine2  String?
   addressCity   String?
   addressState  String?
   addressZip    String?
@@ -145,6 +152,51 @@ model ApplicationProfile {
   applicationEmail       String? // the address used to register on employer sites
   preferredUsername      String?
   wantsAccountCreationHelp Boolean?
+  // prefer_guest | create_when_required | always_ask. Null means the user has
+  // not chosen, and the extension asks rather than assuming.
+  employerPortalStrategy String?
+  // The closest metropolitan area, which an ATS often asks for and which is
+  // usually not the city of residence.
+  metroRegion            String?
+  // Which stored link answers a form that offers exactly one "Website" box:
+  // linkedin | github | portfolio | website. Chosen, never inferred by order.
+  preferredWebsiteField  String?
+  // Distinct from degreeType, which is what the applicant is currently pursuing.
+  highestDegreeAwarded   String?
+  // negotiable | specific | decline — plus the figure, when there is one.
+  salaryStrategy         String?
+  salaryMinimum          String?
+  // Opt-in only. Null is not consent.
+  marketingTextConsent   Boolean?
+  // The clearance answer in words; clearanceEligible remains the boolean.
+  securityClearanceStatus String?
+  updatedAt DateTime @updatedAt
+}
+
+// What the applicant knows about one employer.
+//
+// Per company, never profile-wide: "have you worked here before" answered from
+// a global default would be a fabrication. No row means the user has told us
+// nothing about this company, and the agent must ask rather than answer.
+model CompanyRelationshipFact {
+  id          String @id @default(cuid())
+  /// Lower-cased, whitespace-collapsed company name.
+  companyKey  String @unique
+  /// As the user typed it.
+  companyName String
+
+  previouslyEmployed    Boolean?
+  previouslyInterviewed Boolean?
+  previouslyApplied     Boolean?
+  familyMemberEmployed  Boolean?
+  hasReferral           Boolean?
+  referralName          String?
+  referralEmail         String?
+  referralRelationship  String?
+  /// JSON object of company-specific answer overrides, keyed by question text.
+  overrides             String?
+
+  createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
 
@@ -758,8 +810,9 @@ model UserProfile {
 
 model Education {
   id     String @id @default(cuid())
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Null in local single-user mode, where there is no account to own the row.
+  userId String?
+  user   User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   school             String
   degree             String?
@@ -780,8 +833,9 @@ model Education {
 
 model Experience {
   id     String @id @default(cuid())
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Null in local single-user mode, where there is no account to own the row.
+  userId String?
+  user   User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   employer         String
   title            String?
@@ -801,8 +855,9 @@ model Experience {
 
 model Project {
   id     String @id @default(cuid())
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Null in local single-user mode, where there is no account to own the row.
+  userId String?
+  user   User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   name         String
   startDate    String?

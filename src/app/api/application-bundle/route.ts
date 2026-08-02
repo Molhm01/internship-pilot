@@ -2,8 +2,12 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import {
   buildAccountPreferences,
+  buildCompanyRelationship,
   buildProfileSnapshot,
+  companyKey,
   missingProfileFields,
+  PROFILE_SNAPSHOT_VERSION,
+  type CompanyRelationshipRow,
   type ProfileRow,
 } from "@/lib/applications/profileSnapshot";
 
@@ -16,9 +20,14 @@ import {
  * because an answer the user already wrote is preferable to anything a model
  * would compose.
  *
+ * `?company=` scopes the company-relationship facts. When the user has said
+ * nothing about that employer the key is absent rather than filled with
+ * negatives — "we do not know" has to reach the extension intact so it can ask
+ * instead of answering "have you worked here before" out of thin air.
+ *
  * No password or credential is read, returned, or logged here.
  */
-export async function GET() {
+export async function GET(request: Request) {
   const row = await prisma.applicationProfile.findUnique({ where: { id: "default" } });
   if (!row) {
     return NextResponse.json(
@@ -27,16 +36,30 @@ export async function GET() {
     );
   }
 
-  const [facts, answers] = await Promise.all([
+  const company = new URL(request.url).searchParams.get("company")?.trim();
+
+  const [facts, answers, experiences, projects, educations, relationship] = await Promise.all([
     prisma.resumeFact.findMany({ where: { status: { in: ["approved", "edited"] } } }),
     prisma.approvedAnswer.findMany({ orderBy: { updatedAt: "desc" }, take: 500 }),
+    prisma.experience.findMany({ orderBy: { sortOrder: "asc" } }),
+    prisma.project.findMany({ orderBy: { sortOrder: "asc" } }),
+    prisma.education.findMany({ orderBy: { sortOrder: "asc" } }),
+    company
+      ? prisma.companyRelationshipFact.findUnique({ where: { companyKey: companyKey(company) } })
+      : Promise.resolve(null),
   ]);
 
   const profileRow = row as unknown as ProfileRow;
+  const companyRelationship = buildCompanyRelationship(
+    relationship as CompanyRelationshipRow | null,
+  );
+
   return NextResponse.json(
     {
-      profile: buildProfileSnapshot(profileRow, facts),
+      bundleVersion: PROFILE_SNAPSHOT_VERSION,
+      profile: buildProfileSnapshot(profileRow, { facts, experiences, projects, educations }),
       accountPreferences: buildAccountPreferences(profileRow),
+      ...(companyRelationship ? { companyRelationship } : {}),
       approvedAnswers: answers.map((answer) => ({
         id: answer.id,
         canonicalQuestion: answer.questionText,

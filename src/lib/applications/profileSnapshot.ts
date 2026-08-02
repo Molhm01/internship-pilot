@@ -16,28 +16,51 @@
  * No password or credential of any kind appears in this snapshot.
  */
 
+/**
+ * The bundle contract version.
+ *
+ * Bumped whenever a field the extension reads is added, removed, or given a new
+ * meaning. The extension validates it and refuses a bundle it cannot read,
+ * rather than silently treating a missing field as an unanswered question —
+ * which would look identical to a blank profile and produce a half-filled form.
+ */
+export const PROFILE_SNAPSHOT_VERSION = 2;
+
 export type SnapshotAddress = {
   line1?: string;
+  /** A real second line. Never a copy of line 1; an empty line 2 stays absent. */
+  line2?: string;
   city?: string;
   state?: string;
   postalCode?: string;
   country?: string;
+  /** The nearest metropolitan area, when it differs from the city. */
+  metroRegion?: string;
 };
 
 export type SnapshotPersonal = {
   legalFirstName?: string;
   legalMiddleName?: string;
+  /** True only when the user said they have no middle name. */
+  noMiddleName?: boolean;
   legalLastName?: string;
+  suffix?: string;
   preferredName?: string;
   pronouns?: string;
   email?: string;
   alternateEmail?: string;
   phone?: string;
+  phoneCountryCode?: string;
   address: SnapshotAddress;
   linkedin?: string;
   github?: string;
   portfolio?: string;
   personalWebsite?: string;
+  /**
+   * Which of the links above answers a form offering exactly one "Website" box.
+   * Set by the user; nothing here picks one by precedence.
+   */
+  preferredWebsiteField?: "linkedin" | "github" | "portfolio" | "website";
 };
 
 export type SnapshotEducation = {
@@ -76,6 +99,7 @@ export type SnapshotProject = {
 };
 
 export type ProfileSnapshot = {
+  version: number;
   id: string;
   personal: SnapshotPersonal;
   education: SnapshotEducation[];
@@ -84,12 +108,15 @@ export type ProfileSnapshot = {
   skills: { technical: string[]; programmingLanguages: string[] };
   eligibility: {
     workAuthorization?: string;
+    /** "Do you need sponsorship now?" — a different question from the next one. */
+    requiresSponsorshipNow?: boolean;
     requiresFutureSponsorship?: boolean;
     willingToRelocate?: boolean;
     hasDriversLicense?: boolean;
     meetsMinimumAge?: boolean;
     earliestStartDate?: string;
     internshipAvailability?: string;
+    securityClearanceStatus?: string;
   };
   preferences: {
     targetRoles: string[];
@@ -98,17 +125,52 @@ export type ProfileSnapshot = {
     discoverySource?: string;
     remotePreference?: "remote" | "hybrid" | "onsite" | "no_preference";
     salaryPreference?: string;
+    salaryStrategy?: "negotiable" | "specific" | "decline";
+    salaryMinimum?: string;
+    /** Opt-in only. Absent means the user has not consented. */
+    marketingTextConsent?: boolean;
     resumeSelectionRules: never[];
   };
   sensitivePolicies: Array<{ category: string; policy: string; value?: string }>;
   updatedAt: string;
 };
 
-/** The account-creation preferences. Never includes a password. */
+/**
+ * How the applicant wants employer portals handled. Never includes a password:
+ * the website never sees one, and the extension's vault is the only place a
+ * credential exists.
+ */
 export type AccountPreferences = {
   applicationEmail?: string;
   preferredUsername?: string;
   wantsAccountCreationHelp: boolean;
+  /**
+   * prefer_guest | create_when_required | always_ask. Absent means the user has
+   * not chosen and the extension asks rather than assuming a route.
+   */
+  portalStrategy?: "prefer_guest" | "create_when_required" | "always_ask";
+};
+
+/**
+ * What the applicant has told us about one employer.
+ *
+ * Every field is optional and absence is meaningful: it means "unknown", and an
+ * unknown that a form requires becomes a question for the user. None of these
+ * may ever be answered from a profile-wide default, because "have you worked
+ * here before" has no default that is not a fabrication.
+ */
+export type CompanyRelationship = {
+  companyKey: string;
+  companyName: string;
+  previouslyEmployed?: boolean;
+  previouslyInterviewed?: boolean;
+  previouslyApplied?: boolean;
+  familyMemberEmployed?: boolean;
+  hasReferral?: boolean;
+  referralName?: string;
+  referralEmail?: string;
+  referralRelationship?: string;
+  overrides?: Record<string, string>;
 };
 
 /** Shape read from the database. Kept structural so tests need no Prisma. */
@@ -116,7 +178,9 @@ export type ProfileRow = {
   fullName: string | null;
   legalFirstName: string | null;
   legalMiddleName: string | null;
+  noMiddleName: boolean | null;
   legalLastName: string | null;
+  suffix: string | null;
   preferredName: string | null;
   pronouns: string | null;
   email: string | null;
@@ -127,8 +191,11 @@ export type ProfileRow = {
   github: string | null;
   website: string | null;
   portfolio: string | null;
+  preferredWebsiteField: string | null;
   school: string | null;
   addressStreet: string | null;
+  addressLine2: string | null;
+  metroRegion: string | null;
   addressCity: string | null;
   addressState: string | null;
   addressZip: string | null;
@@ -137,14 +204,19 @@ export type ProfileRow = {
   locationPreferences: string | null;
   internshipTermAvailability: string | null;
   salaryAnswerPreference: string | null;
+  salaryStrategy: string | null;
+  salaryMinimum: string | null;
+  marketingTextConsent: boolean | null;
   workAuthorization: string | null;
   requiresSponsorship: boolean | null;
   clearanceEligible: boolean | null;
+  securityClearanceStatus: string | null;
   eeoGender: string | null;
   eeoRaceEthnicity: string | null;
   eeoVeteranStatus: string | null;
   eeoDisabilityStatus: string | null;
   degreeType: string | null;
+  highestDegreeAwarded: string | null;
   educationLevel: string | null;
   major: string | null;
   minor: string | null;
@@ -161,10 +233,68 @@ export type ProfileRow = {
   applicationEmail: string | null;
   preferredUsername: string | null;
   wantsAccountCreationHelp: boolean | null;
+  employerPortalStrategy: string | null;
   updatedAt: Date | string;
 };
 
 export type FactRow = { id: string; type: string; content: string; detail: string | null; status: string };
+
+/** A structured work-history row, as the user entered it on the Profile page. */
+export type ExperienceRow = {
+  id: string;
+  employer: string;
+  title: string | null;
+  location: string | null;
+  startDate: string | null;
+  endDate: string | null;
+  currentlyEmployed: boolean;
+  responsibilities: string | null;
+  approvedBullets: string | null;
+};
+
+export type ProjectRow = {
+  id: string;
+  name: string;
+  description: string | null;
+  technologies: string | null;
+  approvedSkills: string | null;
+};
+
+export type EducationRow = {
+  id: string;
+  school: string;
+  degree: string | null;
+  major: string | null;
+  minor: string | null;
+  startMonth: string | null;
+  startYear: string | null;
+  graduationMonth: string | null;
+  graduationYear: string | null;
+  gpa: string | null;
+  relevantCoursework: string | null;
+};
+
+export type CompanyRelationshipRow = {
+  companyKey: string;
+  companyName: string;
+  previouslyEmployed: boolean | null;
+  previouslyInterviewed: boolean | null;
+  previouslyApplied: boolean | null;
+  familyMemberEmployed: boolean | null;
+  hasReferral: boolean | null;
+  referralName: string | null;
+  referralEmail: string | null;
+  referralRelationship: string | null;
+  overrides: string | null;
+};
+
+/** Everything the snapshot builder may read. Structural, so tests need no Prisma. */
+export type ProfileSources = {
+  facts?: readonly FactRow[];
+  experiences?: readonly ExperienceRow[];
+  projects?: readonly ProjectRow[];
+  educations?: readonly EducationRow[];
+};
 
 /** Trimmed, or undefined when the user has not entered anything. */
 function text(value: string | null | undefined): string | undefined {
@@ -240,14 +370,58 @@ function approvedFacts(facts: readonly FactRow[], type: string): FactRow[] {
   return facts.filter((fact) => fact.type === type && (fact.status === "approved" || fact.status === "edited"));
 }
 
+/** `YYYY-MM` from a separate month and year, or undefined. Never half-guessed. */
+function monthYear(month: string | null, year: string | null): string | undefined {
+  const cleanYear = year?.trim();
+  if (!cleanYear || !/^\d{4}$/.test(cleanYear)) return undefined;
+  const cleanMonth = month?.trim();
+  if (!cleanMonth) return cleanYear;
+  const padded = cleanMonth.padStart(2, "0");
+  const value = Number(padded);
+  return /^\d{2}$/.test(padded) && value >= 1 && value <= 12 ? `${cleanYear}-${padded}` : cleanYear;
+}
+
+const WEBSITE_FIELDS = ["linkedin", "github", "portfolio", "website"] as const;
+
+function preferredWebsiteField(
+  value: string | null,
+): SnapshotPersonal["preferredWebsiteField"] {
+  const trimmed = value?.trim();
+  return WEBSITE_FIELDS.find((entry) => entry === trimmed);
+}
+
+const SALARY_STRATEGIES = ["negotiable", "specific", "decline"] as const;
+
+function salaryStrategy(value: string | null): ProfileSnapshot["preferences"]["salaryStrategy"] {
+  const trimmed = value?.trim();
+  return SALARY_STRATEGIES.find((entry) => entry === trimmed);
+}
+
+const PORTAL_STRATEGIES = ["prefer_guest", "create_when_required", "always_ask"] as const;
+
+function portalStrategy(value: string | null): AccountPreferences["portalStrategy"] {
+  const trimmed = value?.trim();
+  return PORTAL_STRATEGIES.find((entry) => entry === trimmed);
+}
+
 /**
- * Builds the snapshot. `facts` supplies the approved experience, project and
- * skill entries that live in the resume-fact library; nothing unapproved is
- * ever included.
+ * Builds the snapshot.
+ *
+ * Structured `experiences`/`projects`/`educations` rows are preferred wherever
+ * they exist, because an application form asks for an employer, a title and two
+ * dates as separate answers and a résumé fact is one line of prose that cannot
+ * be split into them without guessing. Résumé facts remain the fallback so a
+ * profile that has only ever been populated from a résumé still works.
  */
-export function buildProfileSnapshot(row: ProfileRow, facts: readonly FactRow[] = []): ProfileSnapshot {
+export function buildProfileSnapshot(
+  row: ProfileRow,
+  sources: readonly FactRow[] | ProfileSources = [],
+): ProfileSnapshot {
+  const { facts = [], experiences = [], projects: projectRows = [], educations = [] } =
+    Array.isArray(sources) ? { facts: sources as readonly FactRow[] } : (sources as ProfileSources);
+
   const institution = text(row.school);
-  const education: SnapshotEducation[] = institution
+  const primaryEducation: SnapshotEducation[] = institution
     ? [
         {
           id: "education-primary",
@@ -266,24 +440,74 @@ export function buildProfileSnapshot(row: ProfileRow, facts: readonly FactRow[] 
       ]
     : [];
 
-  const experience: SnapshotExperience[] = approvedFacts(facts, "experience").map((fact) => ({
-    id: fact.id,
-    employer: fact.content,
-    ...(fact.detail ? { title: undefined } : {}),
-    current: false,
-    responsibilities: fact.detail ? [fact.detail] : [],
-    achievements: [],
-  }));
+  const education: SnapshotEducation[] = [
+    ...primaryEducation,
+    ...educations.map((entry) => ({
+      id: entry.id,
+      institution: entry.school,
+      ...(text(entry.degree) ? { degree: text(entry.degree) } : {}),
+      ...(text(entry.major) ? { major: text(entry.major) } : {}),
+      ...(text(entry.minor) ? { minor: text(entry.minor) } : {}),
+      ...(monthYear(entry.startMonth, entry.startYear)
+        ? { startDate: monthYear(entry.startMonth, entry.startYear) }
+        : {}),
+      ...(monthYear(entry.graduationMonth, entry.graduationYear)
+        ? { graduationDate: monthYear(entry.graduationMonth, entry.graduationYear) }
+        : {}),
+      ...(numeric(entry.gpa) !== undefined ? { gpa: numeric(entry.gpa) } : {}),
+      coursework: jsonArray(entry.relevantCoursework),
+      honors: [],
+      activities: [],
+    })),
+  ];
 
-  const projects: SnapshotProject[] = approvedFacts(facts, "project").map((fact) => ({
-    id: fact.id,
-    name: fact.content,
-    ...(fact.detail ? { description: fact.detail } : {}),
-    technologies: [],
-    accomplishments: [],
-  }));
+  const experience: SnapshotExperience[] = experiences.length
+    ? experiences.map((entry) => ({
+        id: entry.id,
+        employer: entry.employer,
+        ...(text(entry.title) ? { title: text(entry.title) } : {}),
+        ...(text(entry.location) ? { location: text(entry.location) } : {}),
+        ...(text(entry.startDate) ? { startDate: text(entry.startDate) } : {}),
+        ...(text(entry.endDate) ? { endDate: text(entry.endDate) } : {}),
+        current: entry.currentlyEmployed,
+        responsibilities: jsonArray(entry.responsibilities),
+        achievements: jsonArray(entry.approvedBullets),
+      }))
+    : approvedFacts(facts, "experience").map((fact) => ({
+        id: fact.id,
+        employer: fact.content,
+        current: false,
+        responsibilities: fact.detail ? [fact.detail] : [],
+        achievements: [],
+      }));
 
-  const skills = approvedFacts(facts, "skill").map((fact) => fact.content);
+  const projects: SnapshotProject[] = projectRows.length
+    ? projectRows.map((entry) => ({
+        id: entry.id,
+        name: entry.name,
+        ...(text(entry.description) ? { description: text(entry.description) } : {}),
+        technologies: jsonArray(entry.technologies),
+        accomplishments: jsonArray(entry.approvedSkills),
+      }))
+    : approvedFacts(facts, "project").map((fact) => ({
+        id: fact.id,
+        name: fact.content,
+        ...(fact.detail ? { description: fact.detail } : {}),
+        technologies: [],
+        accomplishments: [],
+      }));
+
+  // Skills the user approved on the résumé, plus every technology and skill a
+  // project entry evidences. Deduplicated, order preserved.
+  const skills = [
+    ...new Set([
+      ...approvedFacts(facts, "skill").map((fact) => fact.content),
+      ...projectRows.flatMap((entry) => [
+        ...jsonArray(entry.technologies),
+        ...jsonArray(entry.approvedSkills),
+      ]),
+    ]),
+  ];
 
   const sensitivePolicies = [
     sensitivePolicy("gender", row.eeoGender),
@@ -301,13 +525,21 @@ export function buildProfileSnapshot(row: ProfileRow, facts: readonly FactRow[] 
         }
       : null,
     // Clearance is a yes/no the user set deliberately; false is as explicit as true.
-    typeof row.clearanceEligible === "boolean"
+    // The status in words wins when the user wrote one, because a form usually
+    // wants "Not eligible" rather than "No".
+    text(row.securityClearanceStatus)
       ? {
           category: "security_clearance",
           policy: "approved_auto_fill",
-          value: row.clearanceEligible ? "Yes" : "No",
+          value: text(row.securityClearanceStatus)!,
         }
-      : null,
+      : typeof row.clearanceEligible === "boolean"
+        ? {
+            category: "security_clearance",
+            policy: "approved_auto_fill",
+            value: row.clearanceEligible ? "Yes" : "No",
+          }
+        : null,
     text(row.salaryAnswerPreference)
       ? {
           category: "salary_expectation",
@@ -318,11 +550,17 @@ export function buildProfileSnapshot(row: ProfileRow, facts: readonly FactRow[] 
   ].filter((entry): entry is { category: string; policy: string; value?: string } => entry !== null);
 
   return {
+    version: PROFILE_SNAPSHOT_VERSION,
     id: "primary",
     personal: {
       ...(text(row.legalFirstName) ? { legalFirstName: text(row.legalFirstName) } : {}),
       ...(text(row.legalMiddleName) ? { legalMiddleName: text(row.legalMiddleName) } : {}),
+      // Emitted only when true. A false here would be indistinguishable from
+      // "the user has not said", and a form asking to confirm no middle name
+      // would then be answered from silence.
+      ...(row.noMiddleName === true ? { noMiddleName: true } : {}),
       ...(text(row.legalLastName) ? { legalLastName: text(row.legalLastName) } : {}),
+      ...(text(row.suffix) ? { suffix: text(row.suffix) } : {}),
       ...(text(row.preferredName) ? { preferredName: text(row.preferredName) } : {}),
       ...(text(row.pronouns) ? { pronouns: text(row.pronouns) } : {}),
       // The application email wins when set: it is the address the user chose
@@ -332,17 +570,25 @@ export function buildProfileSnapshot(row: ProfileRow, facts: readonly FactRow[] 
         : {}),
       ...(text(row.alternateEmail) ? { alternateEmail: text(row.alternateEmail) } : {}),
       ...(text(row.phone) ? { phone: text(row.phone) } : {}),
+      ...(text(row.phoneCountryCode) ? { phoneCountryCode: text(row.phoneCountryCode) } : {}),
       address: {
         ...(text(row.addressStreet) ? { line1: text(row.addressStreet) } : {}),
+        // Only a genuine second line. When the user left it empty the key is
+        // absent, which is what stops the executor copying line 1 into it.
+        ...(text(row.addressLine2) ? { line2: text(row.addressLine2) } : {}),
         ...(text(row.addressCity) ? { city: text(row.addressCity) } : {}),
         ...(text(row.addressState) ? { state: text(row.addressState) } : {}),
         ...(text(row.addressZip) ? { postalCode: text(row.addressZip) } : {}),
         ...(text(row.countryOfResidence) ? { country: text(row.countryOfResidence) } : {}),
+        ...(text(row.metroRegion) ? { metroRegion: text(row.metroRegion) } : {}),
       },
       ...(text(row.linkedin) ? { linkedin: text(row.linkedin) } : {}),
       ...(text(row.github) ? { github: text(row.github) } : {}),
       ...(text(row.portfolio) ? { portfolio: text(row.portfolio) } : {}),
       ...(text(row.website) ? { personalWebsite: text(row.website) } : {}),
+      ...(preferredWebsiteField(row.preferredWebsiteField)
+        ? { preferredWebsiteField: preferredWebsiteField(row.preferredWebsiteField) }
+        : {}),
     },
     education,
     experience,
@@ -351,7 +597,13 @@ export function buildProfileSnapshot(row: ProfileRow, facts: readonly FactRow[] 
     eligibility: {
       ...(text(row.workAuthorization) ? { workAuthorization: text(row.workAuthorization) } : {}),
       ...(bool(row.requiresSponsorship) !== undefined
-        ? { requiresFutureSponsorship: bool(row.requiresSponsorship) }
+        ? {
+            requiresSponsorshipNow: bool(row.requiresSponsorship),
+            requiresFutureSponsorship: bool(row.requiresSponsorship),
+          }
+        : {}),
+      ...(text(row.securityClearanceStatus)
+        ? { securityClearanceStatus: text(row.securityClearanceStatus) }
         : {}),
       ...(bool(row.willingToRelocate) !== undefined ? { willingToRelocate: bool(row.willingToRelocate) } : {}),
       ...(bool(row.hasDriversLicense) !== undefined ? { hasDriversLicense: bool(row.hasDriversLicense) } : {}),
@@ -368,6 +620,11 @@ export function buildProfileSnapshot(row: ProfileRow, facts: readonly FactRow[] 
       ...(text(row.referralSource) ? { discoverySource: text(row.referralSource) } : {}),
       ...(remotePreference(row.remotePreference) ? { remotePreference: remotePreference(row.remotePreference) } : {}),
       ...(text(row.salaryAnswerPreference) ? { salaryPreference: text(row.salaryAnswerPreference) } : {}),
+      ...(salaryStrategy(row.salaryStrategy) ? { salaryStrategy: salaryStrategy(row.salaryStrategy) } : {}),
+      ...(text(row.salaryMinimum) ? { salaryMinimum: text(row.salaryMinimum) } : {}),
+      // Emitted only when the user opted in. Absence is not consent, and a
+      // `false` would read as an explicit refusal the user never gave.
+      ...(row.marketingTextConsent === true ? { marketingTextConsent: true } : {}),
       resumeSelectionRules: [],
     },
     sensitivePolicies,
@@ -382,6 +639,59 @@ export function buildAccountPreferences(row: ProfileRow): AccountPreferences {
       : {}),
     ...(text(row.preferredUsername) ? { preferredUsername: text(row.preferredUsername) } : {}),
     wantsAccountCreationHelp: row.wantsAccountCreationHelp === true,
+    ...(portalStrategy(row.employerPortalStrategy)
+      ? { portalStrategy: portalStrategy(row.employerPortalStrategy) }
+      : {}),
+  };
+}
+
+/** Normalizes a company name to the key relationship facts are stored under. */
+export function companyKey(name: string): string {
+  return name.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/**
+ * The relationship facts for one company, in bundle shape.
+ *
+ * Returns null when there is no row: "we know nothing about this employer" must
+ * stay distinguishable from "we know the answer is no".
+ */
+export function buildCompanyRelationship(
+  row: CompanyRelationshipRow | null | undefined,
+): CompanyRelationship | null {
+  if (!row) return null;
+  let overrides: Record<string, string> | undefined;
+  if (row.overrides) {
+    try {
+      const parsed: unknown = JSON.parse(row.overrides);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        overrides = Object.fromEntries(
+          Object.entries(parsed as Record<string, unknown>).filter(
+            (entry): entry is [string, string] => typeof entry[1] === "string",
+          ),
+        );
+      }
+    } catch {
+      // A corrupt override blob loses the overrides, not the whole relationship.
+      overrides = undefined;
+    }
+  }
+  return {
+    companyKey: row.companyKey,
+    companyName: row.companyName,
+    ...(bool(row.previouslyEmployed) !== undefined ? { previouslyEmployed: bool(row.previouslyEmployed) } : {}),
+    ...(bool(row.previouslyInterviewed) !== undefined
+      ? { previouslyInterviewed: bool(row.previouslyInterviewed) }
+      : {}),
+    ...(bool(row.previouslyApplied) !== undefined ? { previouslyApplied: bool(row.previouslyApplied) } : {}),
+    ...(bool(row.familyMemberEmployed) !== undefined
+      ? { familyMemberEmployed: bool(row.familyMemberEmployed) }
+      : {}),
+    ...(bool(row.hasReferral) !== undefined ? { hasReferral: bool(row.hasReferral) } : {}),
+    ...(text(row.referralName) ? { referralName: text(row.referralName) } : {}),
+    ...(text(row.referralEmail) ? { referralEmail: text(row.referralEmail) } : {}),
+    ...(text(row.referralRelationship) ? { referralRelationship: text(row.referralRelationship) } : {}),
+    ...(overrides && Object.keys(overrides).length ? { overrides } : {}),
   };
 }
 
@@ -408,6 +718,8 @@ export function missingProfileFields(row: ProfileRow): string[] {
     ["Work authorization", Boolean(text(row.workAuthorization))],
     ["Sponsorship requirement", bool(row.requiresSponsorship) !== undefined],
     ["Earliest start date", Boolean(isoDate(row.earliestStartDate))],
+    // Needed the moment an employer portal wants an account rather than a form.
+    ["Application email for employer accounts", Boolean(text(row.applicationEmail))],
   ];
   return checks.filter(([, present]) => !present).map(([label]) => label);
 }

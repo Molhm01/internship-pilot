@@ -1,56 +1,64 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
-import { currentUser } from "@/lib/auth/session";
-import ProfileSections from "@/components/ProfileSections";
+import CanonicalProfileForm from "@/components/CanonicalProfileForm";
+import ProfileEntriesSection from "@/components/ProfileEntriesSection";
 import ResumeFactsSection from "@/components/ResumeFactsSection";
+import { isSingleUserMode } from "@/lib/singleUser";
 
 export const metadata = { title: "Profile — Internship Pilot" };
 
 /**
  * The Profile page.
  *
- * Server-rendered behind the session so an unauthenticated visitor is redirected
- * rather than shown an empty form that silently fails to save. The résumé-fact
- * review that used to live at this path is kept below the canonical profile —
- * it feeds document generation and is unchanged.
+ * In local single-user mode this opens directly. There is deliberately no
+ * redirect to a login: this is the user's own data on their own machine, and an
+ * account in front of it would only stand between them and their own name.
+ *
+ * Everything the Application Agent fills an employer form from lives here, and
+ * nothing else does. A blank field stays blank on the form — it is never
+ * guessed, defaulted, or inferred from a neighbouring value.
  */
-export default async function ProfilePage() {
-  const user = await currentUser();
-  if (!user) redirect("/login");
+export default function ProfilePage() {
+  const local = isSingleUserMode();
 
   return (
     <div className="max-w-4xl mx-auto px-8 py-10 space-y-10">
-      <header className="flex items-start justify-between gap-6">
-        <div>
-          <h1 className="text-2xl font-semibold">Your profile</h1>
-          <p className="mt-1 text-sm text-slate-600">
-            Signed in as {user.displayName ? `${user.displayName} · ` : ""}
-            {user.email}
+      <header>
+        <h1 className="text-2xl font-semibold">Your profile</h1>
+        <p className="mt-1 text-sm text-slate-600">
+          The Application Agent fills employer forms from this. Anything left blank is left blank on
+          the form too — it is never guessed.
+        </p>
+        {local ? (
+          <p className="mt-2 text-sm text-slate-500">
+            Running in local single-user mode: this profile is stored on this machine and needs no
+            sign-in.
           </p>
-          <p className="mt-1 text-sm text-slate-500">
-            The Application Agent fills employer forms from this. Anything left blank is left blank
-            on the form too — it is never guessed.
-          </p>
-        </div>
-        <Link
-          href="/logout"
-          className="shrink-0 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-        >
-          Log out
-        </Link>
+        ) : null}
       </header>
 
-      <ProfileSections />
+      <CanonicalProfileForm />
+
+      <ProfileEntriesSection />
 
       <div className="border-t border-slate-200 pt-8">
         <h2 className="text-lg font-semibold text-slate-900">Résumé facts</h2>
         <p className="mt-1 text-sm text-slate-600">
-          Extracted from your uploaded résumé and used for tailored document generation.
+          Extracted from your uploaded résumé and used for tailored document generation. Structured
+          experience and project entries above take precedence when an employer form asks for an
+          employer, a title and dates as separate answers.
         </p>
         <div className="mt-4">
           <ResumeFactsSection />
         </div>
       </div>
+
+      <p className="text-sm text-slate-500">
+        Cover letters and the reusable bullet library live on the{" "}
+        <Link href="/documents" className="text-brand hover:underline">
+          Documents page
+        </Link>
+        .
+      </p>
     </div>
   );
 }

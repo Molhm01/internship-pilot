@@ -38,10 +38,18 @@ export type ApplicationBundleInput = {
   jobDescription: string;
   officialApplicationUrl: string;
   documents: BundleDocumentInput[];
+  /**
+   * The contract version of everything below. The extension refuses a version
+   * it cannot read rather than treating fields it does not understand as
+   * unanswered questions, which would look exactly like a blank profile.
+   */
+  bundleVersion?: number;
   /** Canonical profile snapshot from Internship Pilot, the source of truth. */
   profile?: unknown;
   approvedAnswers?: unknown[];
   accountPreferences?: unknown;
+  /** Facts about this employer. Absent means the user has told us nothing. */
+  companyRelationship?: unknown;
   createdAt?: string;
 };
 
@@ -147,9 +155,11 @@ export async function sendApplicationBundle(
     jobDescription: input.jobDescription,
     officialApplicationUrl: input.officialApplicationUrl,
     createdAt: input.createdAt ?? new Date().toISOString(),
+    ...(typeof input.bundleVersion === "number" ? { bundleVersion: input.bundleVersion } : {}),
     ...(input.profile ? { profile: input.profile } : {}),
     approvedAnswers: input.approvedAnswers ?? [],
     ...(input.accountPreferences ? { accountPreferences: input.accountPreferences } : {}),
+    ...(input.companyRelationship ? { companyRelationship: input.companyRelationship } : {}),
     documents: input.documents.map((document) => ({
       kind: document.kind,
       filename: document.filename,

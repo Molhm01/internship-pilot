@@ -1,19 +1,18 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { currentUser } from "@/lib/auth/session";
-import { projectData } from "@/lib/profile/service";
+import { projectData, resolveProfileOwner } from "@/lib/profile/service";
 
 /** Ownership is re-checked on every write; an id from a request is not trusted. */
-async function ownedEntry(userId: string, id: string) {
+async function ownedEntry(userId: string | null, id: string) {
   const entry = await prisma.project.findUnique({ where: { id } });
   return entry && entry.userId === userId ? entry : null;
 }
 
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
-  const user = await currentUser();
-  if (!user) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
+  const owner = await resolveProfileOwner();
+  if (owner === undefined) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
   const { id } = await params;
-  if (!(await ownedEntry(user.id, id))) {
+  if (!(await ownedEntry(owner, id))) {
     return NextResponse.json({ error: "Not found." }, { status: 404 });
   }
   const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
@@ -23,10 +22,10 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
 }
 
 export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
-  const user = await currentUser();
-  if (!user) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
+  const owner = await resolveProfileOwner();
+  if (owner === undefined) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
   const { id } = await params;
-  if (!(await ownedEntry(user.id, id))) {
+  if (!(await ownedEntry(owner, id))) {
     return NextResponse.json({ error: "Not found." }, { status: 404 });
   }
   await prisma.project.delete({ where: { id } });

@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { websiteAuthDisabledResponse } from "@/lib/auth/mode";
 import { normalizeEmail, verifyPassword } from "@/lib/auth/password";
 import { createSession, pruneExpiredSessions, setSessionCookie } from "@/lib/auth/session";
 
 export async function POST(request: Request) {
+  const disabled = websiteAuthDisabledResponse();
+  if (disabled) return disabled;
+
   const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
   if (!body) return NextResponse.json({ error: "Send a JSON body." }, { status: 400 });
 

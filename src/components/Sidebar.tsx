@@ -19,15 +19,21 @@ const NAV_ITEMS = [
 
 export default function Sidebar() {
   const pathname = usePathname();
-  // Who is signed in, so the account links say the right thing. `undefined`
-  // means "not asked yet", which is different from "signed out".
-  const [account, setAccount] = useState<{ email: string } | null | undefined>(undefined);
+  // Three states, not two: not asked yet, signed in, and "this deployment has
+  // no accounts at all". The third is why `singleUserMode` is read rather than
+  // inferred from a null user — otherwise local mode would permanently offer a
+  // "Log in" link to a page that does not exist.
+  const [account, setAccount] = useState<
+    { user: { email: string } | null; singleUserMode: boolean } | undefined
+  >(undefined);
 
   useEffect(() => {
     void fetch("/api/auth/me")
-      .then((response) => (response.ok ? response.json() : { user: null }))
-      .then((data: { user: { email: string } | null }) => setAccount(data.user))
-      .catch(() => setAccount(null));
+      .then((response) => (response.ok ? response.json() : { user: null, singleUserMode: true }))
+      .then((data: { user: { email: string } | null; singleUserMode?: boolean }) =>
+        setAccount({ user: data.user, singleUserMode: data.singleUserMode !== false }),
+      )
+      .catch(() => setAccount({ user: null, singleUserMode: true }));
   }, [pathname]);
 
   return (
@@ -66,10 +72,10 @@ export default function Sidebar() {
       </nav>
 
       <div className="px-3 py-3 border-t border-white/10 space-y-1">
-        {account === undefined ? null : account ? (
+        {account === undefined || account.singleUserMode ? null : account.user ? (
           <>
-            <p className="px-3 pb-1 text-xs text-slate-400 truncate" title={account.email}>
-              {account.email}
+            <p className="px-3 pb-1 text-xs text-slate-400 truncate" title={account.user.email}>
+              {account.user.email}
             </p>
             <Link
               href="/logout"

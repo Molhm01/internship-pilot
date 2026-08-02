@@ -9,16 +9,28 @@ export function normalizeQuestionText(label: string): string {
 // EEO categories, which always re-ask unless the user has set a profile
 // field explicitly. This is for things like repeated "Why this company?"
 // or employer-specific screening questions across applications.
+/**
+ * Answers are keyed by (owner, question). In local single-user mode the owner
+ * is null — the same key the rows created before accounts existed already
+ * carry, so nothing has to be migrated for them to keep resolving.
+ *
+ * `findFirst` rather than `findUnique` because Prisma's compound-unique lookup
+ * cannot express a null component, even though SQLite indexes one perfectly
+ * well. The pair is still unique; only the way it is queried differs.
+ */
 export async function getApprovedAnswer(label: string): Promise<string | null> {
-  const row = await prisma.approvedAnswer.findUnique({ where: { questionText: normalizeQuestionText(label) } });
+  const row = await prisma.approvedAnswer.findFirst({
+    where: { userId: null, questionText: normalizeQuestionText(label) },
+  });
   return row?.answer ?? null;
 }
 
 export async function saveApprovedAnswer(label: string, answer: string): Promise<void> {
   const questionText = normalizeQuestionText(label);
-  await prisma.approvedAnswer.upsert({
-    where: { questionText },
-    update: { answer },
-    create: { questionText, answer },
-  });
+  const existing = await prisma.approvedAnswer.findFirst({ where: { userId: null, questionText } });
+  if (existing) {
+    await prisma.approvedAnswer.update({ where: { id: existing.id }, data: { answer } });
+    return;
+  }
+  await prisma.approvedAnswer.create({ data: { questionText, answer } });
 }

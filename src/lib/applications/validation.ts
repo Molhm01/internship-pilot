@@ -194,7 +194,9 @@ export async function validateAndNormalizeApplicationRun(runId: string) {
   for (const answer of approvedAnswers) {
     const normalizedQuestion = normalizeQuestionText(answer.questionText);
     if (normalizedQuestion !== answer.questionText) {
-      const conflicting = await prisma.approvedAnswer.findUnique({ where: { questionText: normalizedQuestion } });
+      // findFirst, not findUnique: the pair is unique, but Prisma's compound
+      // lookup cannot express the null owner that local rows carry.
+      const conflicting = await prisma.approvedAnswer.findFirst({ where: { userId: answer.userId, questionText: normalizedQuestion } });
       if (!conflicting) await prisma.approvedAnswer.update({ where: { id: answer.id }, data: { questionText: normalizedQuestion, answer: answer.answer.trim() } });
       else if (conflicting.answer.trim() !== answer.answer.trim()) {
         throw new ApplicationValidationError("VALIDATING_RUN", "ApprovedAnswerBank", [{ path: answer.questionText, expected: "one unambiguous normalized answer", received: JSON.stringify([answer.answer, conflicting.answer]), message: "Conflicting legacy answers exist for the same normalized question." }]);

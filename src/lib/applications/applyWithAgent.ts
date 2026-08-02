@@ -79,18 +79,29 @@ export type ApplyWithAgentInput = {
 };
 
 export type ProfileBundlePart = {
+  bundleVersion?: number;
   profile?: unknown;
   approvedAnswers?: unknown[];
   accountPreferences?: unknown;
+  /** Absent when the user has told us nothing about this employer. */
+  companyRelationship?: unknown;
   missingFields?: string[];
 };
 
 /**
  * Reads the canonical profile the moment before the handoff, so the extension
  * receives what the user has saved now rather than a copy that drifted.
+ *
+ * The company is passed so the employer-specific facts — previous employment,
+ * a referral, a prior application — come back scoped to the employer actually
+ * being applied to.
  */
-export async function fetchProfileBundlePart(fetcher: typeof fetch = fetch): Promise<ProfileBundlePart> {
-  const response = await fetcher("/api/application-bundle");
+export async function fetchProfileBundlePart(
+  company?: string,
+  fetcher: typeof fetch = fetch,
+): Promise<ProfileBundlePart> {
+  const query = company ? `?company=${encodeURIComponent(company)}` : "";
+  const response = await fetcher(`/api/application-bundle${query}`);
   if (!response.ok) {
     throw new ExtensionBridgeError(
       "Your application profile could not be read. Open the Profile page, fill it in, and try again.",
@@ -170,7 +181,7 @@ export async function applyWithApplicationAgent(
 
   // The profile travels with the documents: one handoff, one consistent view
   // of who is applying and with what.
-  const profilePart = await fetchProfile();
+  const profilePart = await fetchProfile(input.company);
 
   const bundle: ApplicationBundleInput = {
     websiteJobId: input.websiteJobId,
@@ -179,9 +190,15 @@ export async function applyWithApplicationAgent(
     jobDescription: input.jobDescription,
     officialApplicationUrl: input.officialApplicationUrl,
     documents,
+    ...(typeof profilePart.bundleVersion === "number"
+      ? { bundleVersion: profilePart.bundleVersion }
+      : {}),
     ...(profilePart.profile ? { profile: profilePart.profile } : {}),
     approvedAnswers: profilePart.approvedAnswers ?? [],
     ...(profilePart.accountPreferences ? { accountPreferences: profilePart.accountPreferences } : {}),
+    ...(profilePart.companyRelationship
+      ? { companyRelationship: profilePart.companyRelationship }
+      : {}),
   };
 
   // Navigation happens only after this resolves. If the extension never

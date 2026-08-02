@@ -1,4 +1,25 @@
 import { prisma } from "@/lib/db";
+import { currentUser } from "@/lib/auth/session";
+import { isSingleUserMode } from "@/lib/singleUser";
+
+/**
+ * Who owns the profile rows this request may touch.
+ *
+ * In local single-user mode the answer is `null` — the same owner the rows that
+ * predate accounts already carry — and no sign-in is required, because there is
+ * nobody to sign in as and the profile is the user's own data on their own
+ * machine. In multi-user mode it is the session user, or `undefined` when there
+ * is no session, which the caller turns into a 401.
+ *
+ * Returning `null` and `undefined` as different answers is deliberate: `null`
+ * is a real owner value used in queries, and collapsing the two would let an
+ * unauthenticated multi-user request read the local profile.
+ */
+export async function resolveProfileOwner(): Promise<string | null | undefined> {
+  if (isSingleUserMode()) return null;
+  const user = await currentUser();
+  return user ? user.id : undefined;
+}
 
 /**
  * Reading and writing the canonical profile.

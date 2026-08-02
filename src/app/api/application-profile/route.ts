@@ -1,9 +1,26 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { missingProfileFields, type ProfileRow } from "@/lib/applications/profileSnapshot";
 
+/**
+ * The canonical single-row application profile.
+ *
+ * Reachable without a sign-in: in local single-user mode this is the user's own
+ * data on their own machine, and an account in front of it would only stand
+ * between them and their own name.
+ *
+ * `gaps` is returned alongside so the Profile page can show what an employer
+ * form will still be unable to answer, before the user reaches one.
+ */
 export async function GET() {
   const profile = await prisma.applicationProfile.findUnique({ where: { id: "default" } });
-  return NextResponse.json({ profile });
+  return NextResponse.json(
+    {
+      profile,
+      gaps: profile ? missingProfileFields(profile as unknown as ProfileRow) : [],
+    },
+    { headers: { "cache-control": "no-store" } },
+  );
 }
 
 export async function POST(req: Request) {
@@ -62,6 +79,20 @@ export async function POST(req: Request) {
     meetsMinimumAge: typeof body.meetsMinimumAge === "boolean" ? body.meetsMinimumAge : null,
     wantsAccountCreationHelp: typeof body.wantsAccountCreationHelp === "boolean" ? body.wantsAccountCreationHelp : null,
     relevantCoursework: Array.isArray(body.relevantCoursework) ? JSON.stringify(body.relevantCoursework) : null,
+    // The rest of the canonical profile. Every one of these is null unless the
+    // user set it: an unset field is unanswerable, not a value of "no".
+    addressLine2: body.addressLine2?.trim() || null,
+    noMiddleName: typeof body.noMiddleName === "boolean" ? body.noMiddleName : null,
+    suffix: body.suffix?.trim() || null,
+    metroRegion: body.metroRegion?.trim() || null,
+    preferredWebsiteField: body.preferredWebsiteField?.trim() || null,
+    highestDegreeAwarded: body.highestDegreeAwarded?.trim() || null,
+    salaryStrategy: body.salaryStrategy?.trim() || null,
+    salaryMinimum: body.salaryMinimum?.trim() || null,
+    marketingTextConsent:
+      typeof body.marketingTextConsent === "boolean" ? body.marketingTextConsent : null,
+    employerPortalStrategy: body.employerPortalStrategy?.trim() || null,
+    securityClearanceStatus: body.securityClearanceStatus?.trim() || null,
   };
 
   const profile = await prisma.applicationProfile.upsert({

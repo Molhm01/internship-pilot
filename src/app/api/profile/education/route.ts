@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { currentUser } from "@/lib/auth/session";
-import { educationData } from "@/lib/profile/service";
+import { educationData, resolveProfileOwner } from "@/lib/profile/service";
 
 /** Adds one Education entry. Several may exist; each is edited on its own. */
 export async function POST(request: Request) {
-  const user = await currentUser();
-  if (!user) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
+  const owner = await resolveProfileOwner();
+  if (owner === undefined) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
   const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
   if (!body) return NextResponse.json({ error: "Send a JSON body." }, { status: 400 });
 
@@ -20,6 +19,6 @@ export async function POST(request: Request) {
       { status: 422 },
     );
   }
-  const created = await prisma.education.create({ data: { userId: user.id, ...data } });
+  const created = await prisma.education.create({ data: { userId: owner, ...data } });
   return NextResponse.json({ entry: created }, { status: 201 });
 }
