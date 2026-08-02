@@ -4,12 +4,14 @@ import { useState } from "react";
 import Link from "next/link";
 import StatusBadge from "@/components/StatusBadge";
 import MatchScoreBadge from "@/components/MatchScoreBadge";
-import VerificationBadge, { postingAge } from "@/components/VerificationBadge";
+import VerificationBadge from "@/components/VerificationBadge";
+import { postedLabel } from "@/lib/jobs/postedAge";
 import {
   openStoredApplicationUrl,
   selectStoredApplicationLinks,
 } from "@/lib/jobs/applicationUrl";
 import { hasUsableJobDescription, requestManualMatch } from "@/lib/matchWorkflow";
+import { initialMatchUiStatus } from "@/lib/matching/initialMatchStatus";
 
 export type JobCardData = {
   id: string;
@@ -17,6 +19,9 @@ export type JobCardData = {
   company: string;
   location: string | null;
   postingDate: string | null;
+  sourcePostedAt?: string | null;
+  sourcePostedText?: string | null;
+  sourceDateConfidence?: string | null;
   firstSeenAt?: string | null;
   internshipTerm: string | null;
   duration: string | null;
@@ -34,6 +39,7 @@ export type JobCardData = {
   status: string;
   verificationStatus?: string;
   workplaceType?: string | null;
+  scoringState?: string | null;
   matchResults?: { score: number; eligibility: string }[];
 };
 
@@ -41,9 +47,13 @@ export default function JobCard({ job }: { job: JobCardData }) {
   const [latestMatch, setLatestMatch] = useState(job.matchResults?.[0]);
   const [matching, setMatching] = useState(false);
   const [matchError, setMatchError] = useState<string | null>(null);
-  const age = postingAge(job.postingDate ?? job.firstSeenAt ?? null);
+  // Age comes from the SOURCE posting date only. firstSeenAt is deliberately
+  // not a fallback here: "when this app first saw it" is not "when it was
+  // posted", and using it would relabel an old posting as brand new.
+  const posted = postedLabel(job);
   const { applicationUrl, sourceListingUrl } = selectStoredApplicationLinks(job);
   const canRunMatch = hasUsableJobDescription(job.description);
+  const automaticMatchStatus = initialMatchUiStatus(job.scoringState, Boolean(latestMatch));
 
   function handleApply(event: React.MouseEvent) {
     event.preventDefault();
@@ -87,6 +97,17 @@ export default function JobCard({ job }: { job: JobCardData }) {
         {latestMatch && (
           <MatchScoreBadge score={latestMatch.score} eligibility={latestMatch.eligibility} />
         )}
+        {automaticMatchStatus && (
+          <span className={`rounded-full border px-2 py-1 text-xs font-medium ${
+            automaticMatchStatus === "Scoring"
+              ? "border-sky-200 bg-sky-50 text-sky-700"
+              : automaticMatchStatus === "Scoring delayed"
+                ? "border-amber-200 bg-amber-50 text-amber-700"
+                : "border-slate-200 bg-slate-50 text-slate-600"
+          }`}>
+            {automaticMatchStatus}
+          </span>
+        )}
       </div>
 
       <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
@@ -94,7 +115,13 @@ export default function JobCard({ job }: { job: JobCardData }) {
         {job.workplaceType && <span>{job.workplaceType}</span>}
         {job.internshipTerm && <span>🗓 {job.internshipTerm}</span>}
         {job.duration && <span>⏱ {job.duration}</span>}
-        {age && <span>Posted {age}</span>}
+        <span
+          title={posted.title}
+          className={posted.unknown ? "text-slate-400 italic" : undefined}
+          data-testid="job-posted-age"
+        >
+          {posted.text}
+        </span>
       </div>
 
       <div className="mt-3 flex items-center justify-between gap-2 flex-wrap">

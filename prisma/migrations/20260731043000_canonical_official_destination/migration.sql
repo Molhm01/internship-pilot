@@ -1,0 +1,7 @@
+ALTER TABLE "Job" ADD COLUMN "sourceListingUrl" TEXT;
+ALTER TABLE "Job" ADD COLUMN "officialApplicationUrl" TEXT;
+ALTER TABLE "Job" ADD COLUMN "originalJobPostUrl" TEXT;
+ALTER TABLE "Job" ADD COLUMN "resolutionStatus" TEXT NOT NULL DEFAULT 'UNRESOLVED';
+ALTER TABLE "Job" ADD COLUMN "resolutionMethod" TEXT;
+ALTER TABLE "Job" ADD COLUMN "resolvedAt" DATETIME;
+ALTER TABLE "Job" ADD COLUMN "resolutionError" TEXT;

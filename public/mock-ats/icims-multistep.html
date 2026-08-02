@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Mock iCIMS Application — Step 1</title></head>
+<body>
+  <h1>Contact Information</h1>
+  <form id="step1-form">
+    <label for="name">Full Name*</label>
+    <input id="name" name="name" type="text" required />
+    <label for="email">Email*</label>
+    <input id="email" name="email" type="email" required />
+    <label for="resume">Resume*</label>
+    <input id="resume" name="resume" type="file" required />
+    <button type="button" id="next-btn">Next</button>
+  </form>
+  <script>
+    document.getElementById("next-btn").addEventListener("click", function () {
+      window.location.href = "/mock-ats/icims-multistep-step2.html";
+    });
+  </script>
+</body>
+</html>

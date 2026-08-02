@@ -1,13 +1,23 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { TRACKER_STATUSES } from "@/lib/statuses";
+import { parseSourcePostedAt } from "@/lib/sync/sourceDate";
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  const startedAt = performance.now();
   const job = await prisma.job.findUnique({
     where: { id },
-    include: { matchResults: { orderBy: { createdAt: "desc" } } },
+    include: { matchResults: { orderBy: { createdAt: "desc" }, take: 1 } },
   });
+  if (process.env.NODE_ENV === "development") {
+    console.info(JSON.stringify({
+      event: "job-page-db-timing",
+      operation: "job-with-latest-match",
+      jobId: id,
+      durationMs: Math.round(performance.now() - startedAt),
+    }));
+  }
   if (!job) return NextResponse.json({ error: "Job not found" }, { status: 404 });
   return NextResponse.json({ job });
 }
@@ -22,7 +32,14 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     if (typeof body[field] === "string") data[field] = body[field].trim() || null;
   }
   if (body.postingDate !== undefined) {
-    data.postingDate = body.postingDate ? new Date(body.postingDate) : null;
+    // An explicit user edit is the one case where the canonical posting date is
+    // deliberately overwritten — the user is a more reliable source than the
+    // aggregator. Keep both fields in step so the feed reflects the correction.
+    const edited = parseSourcePostedAt(body.postingDate || null, new Date());
+    data.postingDate = edited.sourcePostedAt;
+    data.sourcePostedAt = edited.sourcePostedAt;
+    data.sourcePostedText = edited.sourcePostedText;
+    data.sourceDateConfidence = edited.sourceDateConfidence;
   }
   if (typeof body.status === "string") {
     if (!TRACKER_STATUSES.includes(body.status)) {

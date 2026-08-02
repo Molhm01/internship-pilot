@@ -1,0 +1,684 @@
+// Prisma schema for Internship Pilot (Phase 1)
+// Local-only SQLite database. No cloud services.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// One row per fact extracted from the user's resume by the local AI model.
+// Nothing in here is ever shown as "true" until the user approves it.
+model ResumeFact {
+  id        String   @id @default(cuid())
+  type      String // education | gpa | graduationDate | coursework | skill | project | experience | activity
+  content   String // human-readable text of the fact, e.g. "Python (used in 2 projects)"
+  detail    String? // optional longer context pulled from the resume (dates, org, description)
+  status    String   @default("pending") // pending | approved | edited | rejected
+  source    String   @default("ai") // ai | manual
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// A resume or cover-letter PDF the user uploaded. The original file lives on
+// disk under data/resumes/ (path stored in storagePath); this row tracks its
+// extracted text and lets the Profile/Documents pages show filename/size/
+// page count/status.
+model ResumeDocument {
+  id            String   @id @default(cuid())
+  kind          String   @default("resume") // resume | coverLetter
+  filename      String
+  sizeBytes     Int
+  pageCount     Int
+  storagePath   String
+  extractedText String
+  status        String // "ok" | "scanned"
+  createdAt     DateTime @default(now())
+}
+
+// Milestone 5: a reusable, pre-approved resume bullet. Generated once from
+// approved ResumeFacts (never freely rewritten per job) — every bullet cites
+// the exact fact ids it's grounded in, so per-job document generation only
+// ever SELECTS from this library rather than writing new prose, which is
+// what makes "never invent a sentence" structurally true rather than a
+// hopeful instruction to the model.
+model ResumeBullet {
+  id        String   @id @default(cuid())
+  category  String // education | skill | project | experience | activity
+  text      String
+  factIds   String // JSON array of ResumeFact ids this bullet is grounded in
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// One row per resume/cover-letter PDF generated for a specific job. Never
+// shared between jobs — storagePath always lives under a per-job folder.
+model GeneratedDocument {
+  id                    String   @id @default(cuid())
+  jobId                 String
+  job                   Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  type                  String // resume | coverLetter
+  version               Int      @default(1)
+  storagePath           String // PDF location under data/generated/<jobId>/
+  typstSourcePath        String?
+  qaStatus              String // pass | fail
+  qaIssues              String? // JSON array of strings
+  keywordClassification String? // JSON: {supported,confirmationRequired,developmentGap,unsupported}
+  tailoringStatus        String? // TAILORED_WITH_SUPPORTED_CHANGES | MASTER_UNCHANGED_NO_SUPPORTED_IMPROVEMENT | NOT_TAILORED_NO_JOB_DESCRIPTION
+  tailoringAudit         String? // JSON audit with scores, changes, evidence, and intentionally omitted requirements
+  identityVerified       Boolean  @default(false)
+  bulletIdsUsed         String? // JSON array of ResumeBullet ids actually included
+  matchResultId         String? // which MatchResult this was generated from
+  createdAt             DateTime @default(now())
+
+  @@index([jobId])
+}
+
+// Locked application profile — the one place identity/contact answers live
+// for resume headers now, and Milestone 6's application-form autofill later.
+// Singleton row (id is always "default").
+model ApplicationProfile {
+  id           String   @id @default("default")
+  fullName     String? // legal name
+  // Split legal name. `fullName` stays as-is for everything that already reads
+  // it; these are what an application form actually asks for, and a form that
+  // wants "Legal first name" can never be answered by splitting a display name
+  // on whitespace without guessing where a middle name ends.
+  legalFirstName  String?
+  legalMiddleName String?
+  legalLastName   String?
+  preferredName String?
+  pronouns      String?
+  email        String?
+  alternateEmail String?
+  phone        String?
+  phoneCountryCode String?
+  linkedin     String?
+  github       String?
+  website      String?
+  portfolio    String?
+  school       String? // current school (e.g. NJIT)
+  previousSchool String? // e.g. Stevens, if transferred — reference only, not deeply wired into per-field autofill
+  addressStreet String?
+  addressCity   String?
+  addressState  String?
+  addressZip    String?
+  countryOfResidence String? // distinct from citizenship/work authorization
+  willingToRelocate      Boolean?
+  locationPreferences    String? // JSON array of strings
+  internshipTermAvailability String? // e.g. "Summer 2027"
+  salaryAnswerPreference String? // e.g. "Negotiable", or a specific figure — used verbatim only
+  // Milestone 6: these are ALL left null until the user explicitly sets
+  // them. Null means "unknown" — the application agent must stop for
+  // NEEDS_USER_ACTION on any question in that category rather than guess,
+  // per the spec's citizenship/clearance/sponsorship/EEO stopping rules.
+  workAuthorization  String? // e.g. "U.S. Citizen", "Green Card", "F-1 OPT/CPT" — free text, used verbatim only
+  requiresSponsorship Boolean?
+  clearanceEligible   Boolean?
+  eeoGender           String?
+  eeoRaceEthnicity    String?
+  eeoVeteranStatus    String?
+  eeoDisabilityStatus String?
+  // Structured education. Previously only `school` existed and everything else
+  // lived in ResumeFact free text, which an application form cannot be filled
+  // from: "Degree type" needs a degree, not a sentence mentioning one.
+  degreeType        String? // e.g. "Bachelor's Degree"
+  educationLevel    String? // e.g. "Undergraduate"
+  major             String?
+  minor             String?
+  educationStartDate String? // YYYY-MM
+  graduationDate     String? // YYYY-MM
+  gpa                String? // stored verbatim as the user wrote it
+  gpaScale           String?
+  relevantCoursework String? // JSON array of strings
+  // Remaining application facts a form asks for that the profile could not answer.
+  remotePreference    String? // remote | hybrid | onsite | no_preference
+  earliestStartDate   String? // YYYY-MM-DD
+  hasDriversLicense   Boolean?
+  meetsMinimumAge     Boolean?
+  referralSource      String? // explicit answer to "How did you hear about us?"
+  // Account-creation preferences. No password is ever stored here; see the
+  // extension's encrypted credential vault.
+  applicationEmail       String? // the address used to register on employer sites
+  preferredUsername      String?
+  wantsAccountCreationHelp Boolean?
+  updatedAt DateTime @updatedAt
+}
+
+// The Company Watchlist (Milestone 1 / 2): every employer whose official
+// career page we know about and check on a schedule. Seeded with named
+// employers plus anything discovered via nearby-firm search; fully
+// expandable — never hardcoded to a fixed list.
+model Company {
+  id                    String    @id @default(cuid())
+  name                  String    @unique
+  industry              String?
+  website               String?
+  careersUrl            String?
+  atsType               String? // greenhouse | lever | ashby | smartrecruiters | workday | icims | taleo | successfactors | custom | unknown
+  atsIdentifier         String? // board slug / tenant / company id for the ATS, when known
+  locations             String? // JSON array of strings
+  priority              String    @default("standard") // priority | standard | low
+  lastCheckedAt         DateTime?
+  nextCheckAt           DateTime?
+  activeInternshipCount Int       @default(0)
+  source                String    @default("seed") // csv | manual | intern-list-approved | seed | discovered (legacy)
+  monitoringStatus      String    @default("active") // active | paused
+  lastCheckStatus       String? // success | error | unsupported
+  lastCheckError        String?
+  consecutiveFailures   Int       @default(0) // drives exponential backoff on nextCheckAt
+  lastETag              String? // conditional-request support for the generic careers-page scan
+  lastModified          String?
+  contentHash           String? // hash of the last-seen careers-page content — skip reprocessing when unchanged even without ETag/Last-Modified support
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  // Strict discovery boundary: the scheduler only actively checks a company
+  // when this is true. True for rows sourced from the current
+  // approved_engineering_employers.csv, manual entries, and Intern-List
+  // employers the user has explicitly approved via NEW_EMPLOYER_REVIEW.
+  // Sourced-but-no-longer-in-the-CSV rows flip to false on the next CSV sync
+  // rather than being deleted — never silently losing history.
+  allowlisted Boolean @default(true)
+
+  // Denormalized copy of the matching approved_engineering_employers.csv row,
+  // refreshed on every CSV sync. Null for non-CSV sources.
+  csvSector                 String?
+  csvCareerDomain           String?
+  csvEeCpeFit               String?
+  csvVerificationStatus     String?
+  csvVerificationBasis      String?
+  csvVerifiedDate           DateTime?
+  csvRecommendedSearchTerms String?
+  csvCanonicalApplyRule     String?
+
+  approvedAtsTenants ApprovedAtsTenant[]
+
+  @@index([atsType])
+  @@index([nextCheckAt])
+  @@index([priority])
+  @@index([allowlisted])
+}
+
+// Milestone (source-security): the specific, evidenced link between one
+// employer's OWN official careers page and one ATS tenant. A Greenhouse/
+// Lever/Ashby/etc. URL is never trusted just because it uses a known ATS —
+// this row only exists once verify.ts has actually confirmed the employer's
+// own career portal links to this exact tenant.
+model ApprovedAtsTenant {
+  id                       String   @id @default(cuid())
+  companyId                String
+  company                  Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  atsType                  String
+  atsIdentifier            String // tenant slug/board id
+  discoveredFromCareersUrl String
+  evidence                 String? // JSON: what confirmed the link
+  approvedAt               DateTime @default(now())
+
+  @@unique([companyId, atsType, atsIdentifier])
+}
+
+// An employer Intern List surfaced that isn't in the CSV allowlist. Held
+// here — never auto-ingested as a Job — until the user explicitly approves
+// its official domain once, per the strict discovery boundary.
+model NewEmployerReview {
+  id                String    @id @default(cuid())
+  employerName      String    @unique
+  discoveredFrom    String    @default("intern-list")
+  guessedCareersUrl String?
+  guessedDomain     String?
+  sourceJobTitle    String?
+  sourceJobUrl      String?
+  status            String    @default("pending") // pending | approved | rejected
+  createdAt         DateTime  @default(now())
+  reviewedAt        DateTime?
+}
+
+// Fraud-protection quarantine (never shown as a normal job, never receives
+// an autofilled/uploaded resume or personal data).
+model SecurityQuarantineEntry {
+  id         String   @id @default(cuid())
+  jobId      String?
+  reason     String // short machine label, e.g. "requests-payment"
+  detail     String // human-readable explanation
+  evidence   String? // JSON
+  detectedAt DateTime @default(now())
+
+  @@index([jobId])
+}
+
+// A question/answer pair the user has explicitly approved once, reused for
+// identical repeated application questions across employers instead of
+// stopping every single time — never applied to a DIFFERENT question, only
+// an exact normalized match.
+model ApprovedAnswer {
+  id           String   @id @default(cuid())
+  questionText String   @unique
+  answer       String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Job {
+  id             String    @id @default(cuid())
+  title          String
+  company        String
+  location       String?
+  postingDate    DateTime?
+  internshipTerm String? // e.g. Summer 2027, Fall 2026
+  duration       String? // e.g. "10 weeks", "3 months"
+  url            String? // the official application URL once known (manual entries: whatever the user typed)
+  description    String
+  jobDescriptionSourceUrl String?
+  jobDescriptionHash      String?
+  jobDescriptionCapturedAt DateTime?
+  jobResponsibilities     String? // JSON string array captured from the official posting
+  jobQualifications       String? // JSON string array captured from the official posting
+  status         String    @default("DISCOVERED") // tracker / applicationStatus, see TRACKER_STATUSES in src/lib/statuses.ts
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  // --- Phase 2: automatic discovery & verification ---
+  source             String? // "intern-list" | "greenhouse" | "lever" | "ashby" | "smartrecruiters" | "usajobs" | ... | null (manual)
+  sourceJobId         String? // id from the source adapter, for dedup
+  requisitionId       String? // employer-assigned requisition id, when the ATS exposes one
+  sourceUrl           String? // the aggregator listing URL (never auto-visited after ingest)
+  workplaceType       String? // Remote | Hybrid | On Site
+  firstSeenAt         DateTime?
+  lastSeenAt          DateTime?
+
+  // --- Canonical source posting date (freshness ordering) ---
+  // sourcePostedAt is THE field the default Jobs feed is ordered by: when the
+  // EMPLOYER/source says the job was posted, stored as an absolute UTC instant.
+  // It is written once at ingest and only replaced when a later sync supplies a
+  // strictly more reliable date — rediscovering a job never makes it look new.
+  // Legacy `postingDate` is kept untouched for filters and back-compatibility.
+  sourcePostedAt       DateTime?
+  // The source's own words ("38 minutes ago", "Posted Today"), preserved so an
+  // uncertain date can be shown honestly instead of rendered as a fake instant.
+  sourcePostedText     String?
+  // EXACT | RELATIVE_PARSED | DATE_ONLY | UNKNOWN — see src/lib/sync/sourceDate.ts.
+  sourceDateConfidence String?
+  // When the sync actually read the source. Relative dates are resolved against
+  // THIS instant, once, at ingest — never recomputed at page load.
+  sourceCapturedAt     DateTime?
+  // Which sync run last saw this row, and where it appeared in that run's list.
+  // Lower sourceRowIndex = higher in the source. Only used as a tiebreaker, and
+  // only for the newest run, so an older sync can never outrank a newer one.
+  sourceSyncRunId      String?
+  sourceRowIndex       Int?
+  lastVerifiedAt      DateTime? // = "verifiedAt": when verificationStatus was last (re)computed
+  compensation        String? // raw text, e.g. "$20-$23/hr"
+  // Unverified | Pending | VERIFIED_OFFICIAL_AT_LAST_CHECK | NeedsReview |
+  // CLOSED_OR_UNVERIFIED | Closed | SecurityQuarantine
+  // Only VERIFIED_OFFICIAL_AT_LAST_CHECK jobs appear on the main Jobs page
+  // (Milestone 3); Pending/NeedsReview live in Quarantine; Closed/
+  // CLOSED_OR_UNVERIFIED/SecurityQuarantine are excluded from both feeds.
+  verificationStatus     String    @default("Unverified")
+  // Single clean machine reason code for the CURRENT state (never a growing
+  // concatenation). One of the VerificationReasonCode values in
+  // src/lib/jobs/verificationModel.ts. verificationReason holds ONE clean
+  // human message. Append-only per-attempt history lives in VerificationAttempt.
+  reasonCode             String?
+  verificationReason     String?
+  verificationMethod     String? // e.g. "greenhouse-board-match" | "lever-board-match" | "manual-entry"
+  officialEmployerDomain String? // hostname of the officialApplyUrl (`url` field), once verified
+  evidence               String? // JSON: the specific checks that passed/failed during verification
+  matchScore          Int? // denormalized copy of the latest MatchResult.score
+  eligibilityStatus   String? // denormalized copy of the latest MatchResult.eligibility
+
+  // --- Strict source-security verification chain ---
+  discoverySource     String? // "csv" | "intern-list" — which of the two allowed boundary sources this job came from
+  atsType             String? // greenhouse | lever | ashby | workday | icims | smartrecruiters | successfactors | taleo | unknown
+  atsTenant           String? // the specific tenant/board id — only trusted once an ApprovedAtsTenant row confirms the employer's own page links here
+  redirectChain       String? // JSON array of {url, status}[] followed while reaching the official application URL
+  httpStatusAtVerification Int? // HTTP status of the final official page at last verification
+  officialJobUrl      String? // the official JOB DESCRIPTION page (may differ from the apply URL)
+  officialApplyUrl    String? // normalized HTTPS URL the application worker is allowed to navigate to
+
+  // --- Canonical official-destination resolution ---
+  // Legacy sourceUrl/officialApplyUrl/url remain for compatibility. New code
+  // reads and writes these explicit fields so discovery attribution can never
+  // be confused with the employer application destination.
+  sourceListingUrl       String?
+  officialApplicationUrl String?
+  originalJobPostUrl     String?
+  resolutionStatus       String    @default("OFFICIAL_URL_UNRESOLVED") // RESOLVED | OFFICIAL_URL_UNRESOLVED
+  resolutionMethod       String?
+  resolvedAt             DateTime?
+  resolutionError        String?
+
+  // --- Active-feed VISIBILITY (distinct from verificationStatus) ---
+  // True when the job belongs in the main "Active Jobs" feed. Computed
+  // centrally by computeActiveFeed() in src/lib/jobs/sourcePolicy.ts and set
+  // on every write path. Trusted-aggregator listings (Jobright/Simplify/
+  // Intern List) are active even while their official destination is still
+  // "verification pending" — making a job visible never changes its
+  // verificationStatus.
+  activeFeed          Boolean  @default(false)
+
+  // --- filter-support classification (heuristic, computed at ingest/verify time) ---
+  disciplineTags           String? // JSON array, e.g. ["electrical","embedded"]
+  sophomoreEligible        Boolean?
+  graduationYears          String? // JSON array of ints mentioned in the posting
+  sponsorship              String? // Yes | No | NotSure | Unknown
+  citizenshipOrClearance   Boolean? // true if posting text mentions a citizenship/clearance requirement
+  compMinHourly            Float?
+  compMaxHourly            Float?
+  season                   String? // Summer | Fall | Spring | Winter | Unknown
+  distanceMilesFromClifton Float? // null when the location couldn't be geocoded locally
+
+  matchResults       MatchResult[]
+  generatedDocuments GeneratedDocument[]
+  applicationRuns    ApplicationRun[]
+  verificationAttempts VerificationAttempt[]
+  initialAiMatchJobs InitialAiMatchJob[]
+
+  // --- Automatic AI scoring queue ---
+  scoringState       String    @default("NOT_SCORED") // NOT_SCORED | QUEUED | SCORING | RETRYABLE_FAILED | SCORED | FAILED | STALE
+  scoringPriority    Int       @default(1)
+  scoringError       String?
+  scoringQueuedAt    DateTime?
+  scoringStartedAt   DateTime?
+  scoringFinishedAt  DateTime?
+  scoringHeartbeatAt DateTime?
+
+  // --- Canonical internship classification (src/lib/sync/internshipClassifier.ts) ---
+  // QUALIFYING_INTERNSHIP | NOT_AN_INTERNSHIP | UNCERTAIN_CLASSIFICATION |
+  // CONFIRMED_CLOSED | PARSE_FAILED. Null on rows ingested before the
+  // classifier existed (legacy Intern List records) — never treated as a
+  // rejection, so nothing already visible disappears.
+  classification       String?
+  classificationReason String?
+
+  @@index([source, sourceJobId])
+  @@index([sourcePostedAt])
+  @@index([sourceSyncRunId, sourceRowIndex])
+  @@index([verificationStatus])
+  @@index([activeFeed])
+  @@index([scoringState])
+  @@index([classification])
+}
+
+// One row per ATS ingestion run. Gives every sync an auditable record of what
+// was discovered versus what was persisted, so a completeness gap is visible
+// as data rather than inferred from logs.
+model AtsSyncRun {
+  id         String    @id @default(cuid())
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  status     String    @default("running") // running | success | error
+  vendors    String // JSON array of ATS vendors included in this run
+
+  employersChecked  Int @default(0)
+  employersWithBoard Int @default(0)
+  employersFailed   Int @default(0)
+
+  rowsDiscovered   Int @default(0)
+  uniqueRows       Int @default(0)
+  qualifying       Int @default(0)
+  notInternship    Int @default(0)
+  uncertain        Int @default(0)
+  closed           Int @default(0)
+  parseFailures    Int @default(0)
+
+  inserted            Int @default(0)
+  updated             Int @default(0)
+  unchanged           Int @default(0)
+  duplicatesPrevented Int @default(0)
+  persistenceFailures Int @default(0)
+  officialUrlsConfirmed Int @default(0)
+
+  durationMs   Int     @default(0)
+  errorMessage String?
+  // JSON: failure reasons grouped by sanitized code. Never contains full
+  // descriptions, tokens, or cookies.
+  failureSummary String?
+
+  @@index([startedAt])
+}
+
+// Append-only history of every verification/re-verification attempt on a job.
+// The CURRENT reason lives on Job.reasonCode/verificationReason as a single
+// clean value; this table is where attempts accumulate — so re-verifying a
+// job many times grows THIS table, never the displayed reason string.
+model VerificationAttempt {
+  id            String   @id @default(cuid())
+  jobId         String
+  job           Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  reasonCode    String // one VerificationReasonCode value
+  status        String // the resulting verificationStatus
+  message       String // one clean human message for this attempt
+  httpStatus    Int?
+  attemptedAt   DateTime @default(now())
+
+  @@index([jobId])
+  @@index([attemptedAt])
+}
+
+model MatchResult {
+  id                       String   @id @default(cuid())
+  jobId                    String
+  job                      Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  eligibility              String // Pass | Fail | Unknown
+  eligibilityReason        String
+  score                    Int // 0-100
+  explanation              String
+  recommendation           String  @default("Consider") // Apply | Skip | Consider
+  skillsSupported          String // JSON string array
+  skillsNeedConfirmation   String // JSON string array
+  skillsToLearn            String // JSON string array
+  skillsNeverAdd           String // JSON string array
+  tailoringPreview         String? // JSON string array of grounded resume-bullet suggestions
+  factsUsed                String // JSON string array of ResumeFact ids referenced
+  origin                   String? // MANUAL | INITIAL_AUTO; null preserves legacy records unchanged
+  createdAt                DateTime @default(now())
+  initialAiMatchJob        InitialAiMatchJob?
+}
+
+// Durable, idempotent work record for the one automatic match allowed when a
+// genuinely new internship is persisted. Manual reruns never use this table.
+model InitialAiMatchJob {
+  id              String   @id @default(cuid())
+  jobId           String
+  job             Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  matchType       String   @default("INITIAL")
+  state           String   @default("PENDING") // PENDING | RUNNING | SUCCEEDED | RETRYABLE_FAILED | PERMANENT_FAILED
+  attemptCount    Int      @default(0)
+  nextAttemptAt   DateTime @default(now())
+  lockedAt        DateTime?
+  lastErrorCode   String?
+  matchResultId   String?  @unique
+  matchResult     MatchResult? @relation(fields: [matchResultId], references: [id], onDelete: SetNull)
+  completedAt     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([jobId, matchType])
+  @@index([state, nextAttemptAt])
+}
+
+// One row per sync run against a discovery source (e.g. Intern List).
+model SyncLog {
+  id               String    @id @default(cuid())
+  source           String
+  startedAt        DateTime  @default(now())
+  finishedAt       DateTime?
+  status           String // running | success | error
+  newJobsCount     Int       @default(0)
+  updatedJobsCount Int       @default(0)
+  errorMessage     String?
+}
+
+// Named, reusable filter presets for the Jobs page.
+model SavedFilter {
+  id         String   @id @default(cuid())
+  name       String   @unique
+  filterJson String
+  createdAt  DateTime @default(now())
+}
+
+// Generic key/value app settings (search center/radius, scheduler pause
+// state, application mode/threshold, etc.) — one flexible table instead of a
+// growing pile of one-off singleton models.
+model AppSetting {
+  key       String   @id
+  value     String // JSON-encoded
+  updatedAt DateTime @updatedAt
+}
+
+// Milestone 6: one row per attempt to fill/submit an application. This is
+// the durable record the worker pipeline reads/writes as it steps through
+// the 13-step process, and what a paused/crashed/restarted server resumes
+// from — never re-attempts a requisition that already has a "submitted" row.
+model ApplicationRun {
+  id                  String    @id @default(cuid())
+  // Non-null only while this run is queued, running, or paused. The unique
+  // constraint is the durable duplicate-click guard: one job can have only
+  // one active application run, even across web/worker process races.
+  activeKey           String?   @unique
+  jobId               String
+  job                 Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  mode                String // fill_only | auto_submit
+  atsType             String // greenhouse | lever | ashby | workday | smartrecruiters | icims | taleo | successfactors | unknown
+  status              String    @default("queued") // queued | running | needs_user_action | filled | submitted | failed | cancelled | superseded
+  currentStep         String? // human-readable label of the pipeline step in progress/last attempted
+  stageHistory        String? // JSON array of durable {stage, at, detail} transitions
+  needsUserActionReason String? // one of the documented stop reasons (captcha, mfa, ...)
+  stoppedFieldLabel   String? // the exact form field label that triggered the stop, if any — lets the user supply + save an answer for reuse
+  stoppedFieldType    String?
+  stoppedFieldOptions String? // JSON string array
+  stoppedFieldStep    Int?
+  stoppedFieldContext String? // JSON: aria-label, placeholder, nearby text, page URL
+  resumeDocumentId    String? // GeneratedDocument used for this attempt
+  coverLetterDocumentId String?
+  // Document strategy chosen at queue time (see src/lib/documents/strategy.ts):
+  // TAILORED | PARTIAL_TAILORING | MASTER_RESUME_FALLBACK |
+  // EXISTING_APPROVED_DOCUMENT | NO_APPROVED_DOCUMENT. Separates resume
+  // tailoring from autofill eligibility — an incomplete job description picks a
+  // fallback strategy instead of blocking the run.
+  documentStrategy       String?
+  documentStrategyReason String?
+  jobDescriptionCompleteness String? // complete | partial | none
+  matchScoreAtRun     Int? // denormalized MatchResult.score at the time this run started
+  answers             String? // JSON: every form question + answer actually submitted/filled, for the audit trail
+  confirmationNumber  String?
+  confirmationUrl     String?
+  attemptNumber       Int       @default(1)
+  attemptHistory      String?   // JSON array of past attempt records
+  errorCode           String?   // Machine error code (FORM_DESCRIPTION_INVALID, EXTENSION_DISCONNECTED, etc.)
+  validationPath      String?   // Path to invalid field if applicable (e.g. fields[3].options)
+  protocolVersion     Int?      // Protocol version exchanged
+  schemaVersion       Int?      // Form schema version exchanged
+  tabRemainsOpen      Boolean   @default(true)
+  screenshotPath      String? // saved on submit AND on needs_user_action, so the user can see exactly what happened
+  browserLogPath      String?
+  errorLog            String?
+  startedAt           DateTime?
+  finishedAt          DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([jobId])
+  @@index([status])
+}
+
+// Milestone 8 (built now so Milestone 6's worker has somewhere to write):
+// a permanent, append-only record of every AI decision and every automated
+// action taken on a job — never edited or deleted, so "why did the system
+// do X" always has a real, timestamped answer.
+model AuditLogEntry {
+  id        String   @id @default(cuid())
+  jobId     String?
+  actor     String // "ai-match" | "verification" | "document-generation" | "application-agent" | "gmail-tracking" | "user"
+  action    String // short machine-readable label, e.g. "eligibility-scored" | "verification-passed" | "application-submitted"
+  detail    String // human-readable explanation of what happened and why
+  metadata  String? // JSON: structured data relevant to the action (scores, ids, reasons)
+  createdAt DateTime @default(now())
+
+  @@index([jobId])
+  @@index([createdAt])
+}
+
+// Milestone 7: the connected Gmail account, read-only. Singleton row (id is
+// always "default"). Tokens are stored AES-256-GCM encrypted at rest (see
+// src/lib/gmail/crypto.ts) — never logged, never written in plaintext.
+// Scope is always gmail.readonly; this app never sends, deletes, archives,
+// or modifies anything in the mailbox.
+model GmailAccount {
+  id                  String   @id @default("default")
+  emailAddress        String
+  encryptedRefreshToken String
+  encryptedAccessToken  String?
+  accessTokenExpiresAt  DateTime?
+  lastSyncAt          DateTime?
+  lastSyncHistoryId   String? // Gmail history id, for incremental sync
+  connectedAt         DateTime @default(now())
+}
+
+// One row per Gmail message the tracker has looked at and classified.
+// Stores only what's needed to match/display — never the complete raw email
+// body unless it's an assessment (where instructions are genuinely useful),
+// per the "never log complete email bodies unless necessary" constraint.
+model TrackedEmail {
+  id            String   @id @default(cuid())
+  gmailMessageId String  @unique
+  threadId      String
+  subject       String
+  fromAddress   String
+  snippet       String
+  receivedAt    DateTime
+  classification String  // confirmation | assessment | interview | recruiter-message | info-request | rejection | offer | withdrawal | status-update | unknown
+  matchedJobId  String?
+  matchMethod   String? // company-name | job-title | requisition-id | ats-domain | thread-continuity | none
+  processedAt   DateTime @default(now())
+
+  @@index([classification])
+  @@index([matchedJobId])
+}
+
+// Milestone 7: extracted details for an assessment mentioned in a tracked
+// email. The system NEVER takes, solves, or submits the assessment itself —
+// this is purely a reminder/summary/checklist surface, per spec.
+model AssessmentInboxEntry {
+  id            String   @id @default(cuid())
+  jobId         String?
+  sourceEmailId String?
+  company       String
+  jobTitle      String?
+  provider      String? // e.g. HackerRank, Codility, CodeSignal — null if not stated
+  deadline      DateTime?
+  duration      String? // e.g. "90 minutes" — raw text, never inferred
+  link          String?
+  instructions  String?
+  legitimacyNotes String? // e.g. "Sender domain matches employer's official domain"
+  createdAt     DateTime @default(now())
+
+  @@index([jobId])
+}
+
+// Milestone 2: a business found via Google Places search near the user's
+// chosen center. NEVER shown as an internship itself — only a staging record
+// on the way to (maybe) becoming a full Company Watchlist entry once we've
+// independently confirmed its official site and found a real careers page.
+model NearbyFirm {
+  id            String    @id @default(cuid())
+  placeId       String    @unique
+  name          String
+  category      String
+  address       String?
+  latitude      Float?
+  longitude     Float?
+  distanceMiles Float?
+  website       String?
+  careersUrl    String?
+  atsType       String?
+  atsIdentifier String?
+  companyId     String? // set once promoted to the Company Watchlist
+  status        String    @default("discovered") // discovered | website_confirmed | careers_found | promoted | no_careers_found
+  discoveredAt  DateTime  @default(now())
+  lastCheckedAt DateTime?
+}

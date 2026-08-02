@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Mock Ashby Application — Apply</title></head>
+<body>
+  <h1>Apply for Controls Intern</h1>
+  <form id="ashby-application-form">
+    <label for="name">Full Name*</label>
+    <input id="name" name="name" type="text" required />
+    <label for="email">Email*</label>
+    <input id="email" name="email" type="email" required />
+    <label for="resume">Resume*</label>
+    <input id="resume" name="resume" type="file" required />
+    <label for="gender">Gender (voluntary self-identification)*</label>
+    <select id="gender" name="gender" required>
+      <option value="">Select...</option>
+      <option value="male">Male</option>
+      <option value="female">Female</option>
+      <option value="decline">Decline to self-identify</option>
+    </select>
+    <button type="submit">Submit Application</button>
+  </form>
+</body>
+</html>

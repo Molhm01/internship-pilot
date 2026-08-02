@@ -1,35 +1,116 @@
 import { NextResponse } from "next/server";
 import { MatchError, runMatchForJob } from "@/lib/matching";
-import { queueJobsForMatching } from "@/lib/matching/scoringQueue";
+
+type PublicMatch = {
+  eligibility: "PASS" | "BORDERLINE" | "FAIL";
+  score: number;
+  reasoning: string;
+  matchingQualifications: string[];
+  missingQualifications: string[];
+  skillsToLearn: string[];
+  neverClaim: string[];
+};
+
+function progress(jobId: string, stage: string, details: Record<string, unknown> = {}) {
+  console.info(JSON.stringify({ event: "ai-match", jobId, stage, ...details }));
+}
+
+function safeMessage(message: string): string {
+  return message
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 400);
+}
+
+function safeErrorCode(code: string): string {
+  return /^[A-Z][A-Z0-9_]{1,63}$/.test(code) ? code : "MATCH_FAILED";
+}
+
+function skillNames(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) throw new Error("not an array");
+    return parsed.map((item) => {
+      if (!item || typeof item !== "object" || typeof (item as { skill?: unknown }).skill !== "string") {
+        throw new Error("invalid qualification");
+      }
+      return (item as { skill: string }).skill;
+    });
+  } catch {
+    throw new MatchError(
+      "The saved AI Match result could not be read safely.",
+      500,
+      "MATCH_RESPONSE_INVALID",
+    );
+  }
+}
+
+function publicMatch(matchResult: {
+  eligibility: string;
+  eligibilityReason: string;
+  score: number;
+  explanation: string;
+  skillsSupported: string;
+  skillsNeedConfirmation: string;
+  skillsToLearn: string;
+  skillsNeverAdd: string;
+}): PublicMatch {
+  if (!Number.isInteger(matchResult.score) || matchResult.score < 0 || matchResult.score > 100) {
+    throw new MatchError("The saved AI Match score was invalid.", 500, "MATCH_RESPONSE_INVALID");
+  }
+  const eligibility = matchResult.eligibility === "Pass"
+    ? "PASS"
+    : matchResult.eligibility === "Fail"
+      ? "FAIL"
+      : "BORDERLINE";
+  return {
+    eligibility,
+    score: matchResult.score,
+    reasoning: `${matchResult.eligibilityReason} ${matchResult.explanation}`.trim(),
+    matchingQualifications: skillNames(matchResult.skillsSupported),
+    missingQualifications: skillNames(matchResult.skillsNeedConfirmation),
+    skillsToLearn: skillNames(matchResult.skillsToLearn),
+    neverClaim: skillNames(matchResult.skillsNeverAdd),
+  };
+}
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
-  const jobId = typeof body?.jobId === "string" ? body.jobId : undefined;
-  const allUnscored = Boolean(body?.allUnscored);
-  const rescoreStale = Boolean(body?.rescoreStale);
+  const jobId = typeof body?.jobId === "string" && body.jobId.trim()
+    ? body.jobId.trim()
+    : undefined;
 
-  if (!jobId && !allUnscored && !rescoreStale) {
-    return NextResponse.json({ error: "jobId, allUnscored, or rescoreStale is required" }, { status: 400 });
+  if (!jobId) {
+    return NextResponse.json({
+      ok: false,
+      error: "INVALID_REQUEST",
+      message: "A single job ID is required to run AI Match manually.",
+    }, { status: 400 });
   }
 
+  progress(jobId, "request_received");
   try {
-    // A person clicking "Run AI Match" needs the completed, persisted result
-    // in this response. The durable queue remains for bulk/background scoring,
-    // but returning only its acknowledgement made the detail page reload before
-    // any MatchResult existed.
-    if (jobId) {
-      const matchResult = await runMatchForJob(jobId);
-      return NextResponse.json({ matchResult });
-    }
-
-    const result = await queueJobsForMatching({ allUnscored, rescoreStale });
-    return NextResponse.json(result);
+    const matchResult = await runMatchForJob(jobId, { origin: "MANUAL" });
+    const match = publicMatch(matchResult);
+    progress(jobId, "response_returned", { ok: true });
+    return NextResponse.json({ ok: true, match });
   } catch (error) {
     if (error instanceof MatchError) {
-      return NextResponse.json({ error: error.message }, { status: error.status });
+      progress(jobId, "response_returned", { ok: false, error: safeErrorCode(error.code) });
+      return NextResponse.json({
+        ok: false,
+        error: safeErrorCode(error.code),
+        message: safeMessage(error.message),
+      }, { status: error.status });
     }
+    progress(jobId, "response_returned", { ok: false, error: "MATCH_FAILED" });
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Could not run AI Match." },
+      {
+        ok: false,
+        error: "MATCH_FAILED",
+        message: "AI Match failed unexpectedly. The previous result is still available.",
+      },
       { status: 500 },
     );
   }

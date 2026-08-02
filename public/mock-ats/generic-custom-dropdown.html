@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Safe Generic Custom Dropdown</title>
+  <style>
+    [hidden] { display: none; }
+    [role="option"] { cursor: pointer; padding: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Generic engineering internship application</h1>
+  <form id="application">
+    <label for="name">Full Name*</label>
+    <input id="name" name="name" required>
+    <label for="email">Email*</label>
+    <input id="email" name="email" type="email" required>
+    <label for="school">School*</label>
+    <input id="school" name="school" role="combobox" aria-controls="school-options" aria-expanded="false" required>
+    <ul id="school-options" role="listbox" hidden>
+      <li role="option">Fixture Polytechnic</li>
+      <li role="option">Rutgers University</li>
+      <li role="option">New Jersey Institute of Technology</li>
+    </ul>
+    <label for="resume">Resume/CV*</label>
+    <input id="resume" name="resume" type="file" required>
+    <button type="submit">Submit application</button>
+  </form>
+  <script>
+    const school = document.getElementById("school");
+    const options = document.getElementById("school-options");
+    school.addEventListener("input", () => {
+      options.hidden = false;
+      school.setAttribute("aria-expanded", "true");
+    });
+    options.addEventListener("click", (event) => {
+      if (event.target.getAttribute("role") !== "option") return;
+      school.value = event.target.textContent.trim();
+      school.dispatchEvent(new Event("change", { bubbles: true }));
+      options.hidden = true;
+      school.setAttribute("aria-expanded", "false");
+    });
+    document.getElementById("application").addEventListener("submit", (event) => {
+      event.preventDefault();
+      document.body.dataset.submitClicked = "true";
+    });
+  </script>
+</body>
+</html>

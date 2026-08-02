@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const generateDocumentsForJob = vi.fn();
 
 vi.mock("@/lib/documents/generate", () => ({
-  DocumentGenerationError: class DocumentGenerationError extends Error {},
+  DocumentGenerationError: class DocumentGenerationError extends Error {
+    stage = "validation";
+  },
   generateDocumentsForJob: (...args: unknown[]) => generateDocumentsForJob(...args),
 }));
 
@@ -26,7 +28,11 @@ describe("POST /api/jobs/[id]/generate-documents", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual(generated);
+    expect(await response.json()).toEqual({
+      ok: true,
+      resumeDocumentId: "resume-v2",
+      coverLetterDocumentId: "cover-v2",
+    });
     expect(generateDocumentsForJob).toHaveBeenCalledWith("job-1", {
       includeCoverLetter: true,
     });
@@ -45,7 +51,23 @@ describe("POST /api/jobs/[id]/generate-documents", () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({
+      ok: false,
       error: "No approved profile facts are available.",
+    });
+  });
+
+  it("does not report success when document persistence fails", async () => {
+    generateDocumentsForJob.mockRejectedValue(new Error("database unavailable"));
+    const { POST } = await import("./route");
+    const response = await POST(
+      new Request("http://localhost/api/jobs/job-1/generate-documents", { method: "POST" }),
+      { params: Promise.resolve({ id: "job-1" }) },
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      ok: false,
+      error: "Document generation failed unexpectedly. Existing versions were kept.",
     });
   });
 });

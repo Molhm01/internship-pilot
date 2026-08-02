@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Mock Lever Application — Apply</title></head>
+<body>
+  <h1>Apply for Hardware Engineering Intern</h1>
+  <form id="lever-application-form">
+    <label for="name">Full Name*</label>
+    <input id="name" name="name" type="text" required />
+
+    <label for="email">Email*</label>
+    <input id="email" name="email" type="email" required />
+
+    <label for="phone">Phone</label>
+    <input id="phone" name="phone" type="tel" />
+
+    <label for="resume">Resume*</label>
+    <input id="resume" name="resume" type="file" required />
+
+    <label for="cover-letter-text">Cover Letter</label>
+    <textarea id="cover-letter-text" name="comments"></textarea>
+
+    <label for="work-auth">Will you now or in the future require visa sponsorship?*</label>
+    <select id="work-auth" name="work_authorization" required>
+      <option value="">Select...</option>
+      <option value="yes">Yes</option>
+      <option value="no">No</option>
+    </select>
+
+    <button type="submit" id="submit-app">Submit Application</button>
+  </form>
+  <div id="confirmation" style="display:none">
+    Thank you for applying! We have received your application. Confirmation: LEV-83921
+  </div>
+  <script>
+    document.getElementById("lever-application-form").addEventListener("submit", function (e) {
+      e.preventDefault();
+      document.getElementById("lever-application-form").style.display = "none";
+      document.getElementById("confirmation").style.display = "block";
+    });
+  </script>
+</body>
+</html>

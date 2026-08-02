@@ -18,6 +18,25 @@ function storedDocument(
   };
 }
 
+/** What /api/application-bundle returns. The handoff always carries a profile. */
+const PROFILE_PART = {
+  profile: {
+    id: "primary",
+    personal: { legalFirstName: "Jordan", address: {} },
+    education: [],
+    experience: [],
+    projects: [],
+    skills: { technical: [], programmingLanguages: [] },
+    eligibility: {},
+    preferences: { targetRoles: [], industries: [], preferredLocations: [], resumeSelectionRules: [] },
+    sensitivePolicies: [],
+    updatedAt: "2026-08-02T09:00:00.000Z",
+  },
+  approvedAnswers: [],
+  accountPreferences: { wantsAccountCreationHelp: false },
+  missingFields: [],
+};
+
 const RESUME = storedDocument({ id: "doc-resume", type: "resume", version: 3 });
 const COVER_LETTER = storedDocument({ id: "doc-cover", type: "coverLetter", version: 2 });
 
@@ -45,6 +64,7 @@ function dependencies(overrides: Parameters<typeof applyWithApplicationAgent>[1]
     openWindow,
     all: {
       fetchPdf: vi.fn(async (id: string) => new Blob([`pdf-bytes-${id}`], { type: "application/pdf" })),
+      fetchProfile: vi.fn().mockResolvedValue(PROFILE_PART),
       probeBridge: vi.fn().mockResolvedValue(true),
       sendBundle,
       openWindow,
@@ -160,6 +180,7 @@ describe("applying with the Application Agent", () => {
     await applyWithApplicationAgent(bundleInput(), {
       fetchPdf: vi.fn(async () => new Blob(["pdf"], { type: "application/pdf" })),
       probeBridge: vi.fn().mockResolvedValue(true),
+      fetchProfile: vi.fn().mockResolvedValue(PROFILE_PART),
       sendBundle,
       openWindow,
     });
@@ -177,6 +198,7 @@ describe("applying with the Application Agent", () => {
       applyWithApplicationAgent(bundleInput(), {
         fetchPdf: vi.fn(async () => new Blob(["pdf"], { type: "application/pdf" })),
         probeBridge: vi.fn().mockResolvedValue(true),
+      fetchProfile: vi.fn().mockResolvedValue(PROFILE_PART),
         sendBundle: vi.fn().mockRejectedValue(new Error("storage full")),
         openWindow,
       }),
@@ -191,12 +213,29 @@ describe("applying with the Application Agent", () => {
       applyWithApplicationAgent(bundleInput(), {
         fetchPdf: vi.fn(),
         probeBridge: vi.fn().mockResolvedValue(false),
+      fetchProfile: vi.fn().mockResolvedValue(PROFILE_PART),
         sendBundle,
         openWindow,
       }),
     ).rejects.toThrow(/extension is not responding/);
     expect(sendBundle).not.toHaveBeenCalled();
     expect(openWindow).not.toHaveBeenCalled();
+  });
+
+  it("transfers the canonical profile and approved answers alongside the documents", async () => {
+    const { sendBundle, all } = dependencies();
+    const result = await applyWithApplicationAgent(bundleInput(), all);
+    const sent = sendBundle.mock.calls[0]![0] as { profile?: { personal?: { legalFirstName?: string } }; approvedAnswers?: unknown[] };
+    expect(sent.profile?.personal?.legalFirstName).toBe("Jordan");
+    expect(sent.approvedAnswers).toEqual([]);
+    expect(result.missingProfileFields).toEqual([]);
+  });
+
+  it("never sends a credential in the bundle", async () => {
+    const { sendBundle, all } = dependencies();
+    await applyWithApplicationAgent(bundleInput(), all);
+    const serialized = JSON.stringify(sendBundle.mock.calls[0]![0], (key, value) => (key === "bytes" ? "<pdf>" : value));
+    expect(serialized).not.toMatch(/password|passwd|secret|credential/i);
   });
 
   it("puts no document content in the opened URL", async () => {

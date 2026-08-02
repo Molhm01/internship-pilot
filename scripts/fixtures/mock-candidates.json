@@ -1,0 +1,20 @@
+{
+  "applicationAgent": {
+    "fullName": "Jordan Test",
+    "email": "jordan.test@example.com",
+    "phone": "555-0100",
+    "school": "Test University"
+  },
+  "browserUploadSafe": {
+    "fullName": "Casey Fixture",
+    "email": "casey.fixture@localhost.test",
+    "phone": "201-555-0198",
+    "school": "Fixture Polytechnic"
+  },
+  "documentGeneration": {
+    "fullName": "Test Candidate",
+    "email": "test.candidate@example.com",
+    "phone": "555-000-1111",
+    "school": "Test University"
+  }
+}

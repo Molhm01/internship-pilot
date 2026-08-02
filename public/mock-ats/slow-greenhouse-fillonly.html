@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Slow Mock Greenhouse Application</title>
+  <script>
+    // Deliberately blocks this disposable local fixture long enough for the
+    // regression suite to simulate Chromium crashing during navigation.
+    const stopAt = Date.now() + 5000;
+    while (Date.now() < stopAt) {}
+  </script>
+</head>
+<body>
+  <h1>Apply for Browser Recovery Intern</h1>
+  <form id="application_form">
+    <label for="first_name">First Name*</label>
+    <input id="first_name" name="first_name" required>
+    <label for="last_name">Last Name*</label>
+    <input id="last_name" name="last_name" required>
+    <label for="email">Email*</label>
+    <input id="email" name="email" type="email" required>
+    <label for="resume">Resume/CV*</label>
+    <input id="resume" name="resume" type="file" required>
+    <button type="submit">Submit Application</button>
+  </form>
+</body>
+</html>

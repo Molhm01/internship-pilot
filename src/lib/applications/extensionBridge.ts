@@ -38,6 +38,10 @@ export type ApplicationBundleInput = {
   jobDescription: string;
   officialApplicationUrl: string;
   documents: BundleDocumentInput[];
+  /** Canonical profile snapshot from Internship Pilot, the source of truth. */
+  profile?: unknown;
+  approvedAnswers?: unknown[];
+  accountPreferences?: unknown;
   createdAt?: string;
 };
 
@@ -143,6 +147,9 @@ export async function sendApplicationBundle(
     jobDescription: input.jobDescription,
     officialApplicationUrl: input.officialApplicationUrl,
     createdAt: input.createdAt ?? new Date().toISOString(),
+    ...(input.profile ? { profile: input.profile } : {}),
+    approvedAnswers: input.approvedAnswers ?? [],
+    ...(input.accountPreferences ? { accountPreferences: input.accountPreferences } : {}),
     documents: input.documents.map((document) => ({
       kind: document.kind,
       filename: document.filename,

@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Safe Mock Lever Final Review</title></head>
+<body>
+  <h1>Manufacturing Engineering Intern</h1>
+  <form id="application">
+    <section id="step-one">
+      <label>Full name* <input name="name" required></label>
+      <label>Email* <input name="email" type="email" required></label>
+      <label>Phone* <input name="phone" type="tel" required></label>
+      <label>Current location* <input name="location" required></label>
+      <label>Resume/CV* <input name="resume" type="file" required></label>
+      <label>Cover Letter <input name="cover_letter" type="file"></label>
+      <button type="button" id="continue">Continue</button>
+    </section>
+    <section id="step-two" hidden>
+      <label>LinkedIn URL <input name="linkedin"></label>
+      <button type="submit" id="submit">Submit application</button>
+    </section>
+  </form>
+  <script>
+    document.getElementById("continue").addEventListener("click", () => {
+      document.getElementById("step-one").hidden = true;
+      document.getElementById("step-two").hidden = false;
+    });
+    document.getElementById("application").addEventListener("submit", (event) => {
+      event.preventDefault();
+      document.body.dataset.submitClicked = "true";
+    });
+  </script>
+</body>
+</html>

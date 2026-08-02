@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Internship Pilot: Open Website",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "npm.cmd run local:status && start \"\" http://localhost:3000",
+      "cwd": "${workspaceFolder}",
+      "presentation": { "hidden": false, "group": "Internship Pilot", "order": 1 }
+    }
+  ],
+  "compounds": []
+}

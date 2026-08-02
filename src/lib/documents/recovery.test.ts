@@ -105,7 +105,9 @@ describe("grounded tailored documents", () => {
       "utf8",
     );
     expect(source).toContain("fetchJobDocuments(id)");
-    expect(source).toContain("generateTailoredDocuments(id)");
+    expect(source).toContain("runTailoredDocumentGeneration({");
+    expect(source).toContain("activeDocumentRequests.current.has(id)");
+    expect(source).toContain("generatingDocumentJobs[id] === true");
     expect(source).toContain("fetchDocumentPdf(document.id)");
     expect(source).toContain("Generate tailored documents");
     expect(source).toContain("Regenerate documents");

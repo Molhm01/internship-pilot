@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Mock Workday Application — Step 2</title></head>
+<body>
+  <h1>My Experience</h1>
+  <form id="step2-form">
+    <label for="sponsorship">Will you now or in the future require visa sponsorship?*</label>
+    <select id="sponsorship" name="sponsorship" required>
+      <option value="">Select...</option>
+      <option value="yes">Yes</option>
+      <option value="no">No</option>
+    </select>
+    <button type="submit" id="submit-btn">Submit Application</button>
+  </form>
+  <div id="confirmation" style="display:none">
+    Thank you! Your application has been received. Confirmation Number: WD-77410
+  </div>
+  <script>
+    document.getElementById("step2-form").addEventListener("submit", function (e) {
+      e.preventDefault();
+      document.getElementById("step2-form").style.display = "none";
+      document.getElementById("confirmation").style.display = "block";
+    });
+  </script>
+</body>
+</html>

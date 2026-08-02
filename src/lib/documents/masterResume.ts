@@ -69,6 +69,7 @@ export type TailoringAudit = {
   skillsReordered?: Array<{ group: string; before: string[]; after: string[] }>;
   supportedKeywords: Array<{ keyword: string; evidence: Array<{ factId: string; content: string }> }>;
   unsupportedRequirementsNotAdded: string[];
+  unsupportedWordingRemoved?: Array<{ phrase: string; sourceSection: string; reason: string }>;
   formattingPreservation?: { status: "pass" | "fail"; method: string; issues: string[] };
 };
 
@@ -365,7 +366,9 @@ export function tailoredMasterContent(
   const supportedMasterSkills = base.skills.flatMap((group) => group.items)
     .filter((skill) => {
       const value = normalized(skill);
-      return value.length > 1 && normalized(jobText).includes(value);
+      const explicitlyUnsupported = (options.unsupportedQualifications ?? [])
+        .some((requirement) => normalized(requirement) === value);
+      return value.length > 1 && normalized(jobText).includes(value) && !explicitlyUnsupported;
     })
     .map((skill) => ({
       keyword: skill,

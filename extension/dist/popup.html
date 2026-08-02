@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Internship Pilot</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <span class="logo">IP</span>
+        <div>
+          <h1>Internship Pilot</h1>
+          <p>Safe local application autofill</p>
+        </div>
+      </header>
+      <section class="status-card">
+        <span id="status-dot" class="status-dot"></span>
+        <div>
+          <strong id="status-title">Checking local service…</strong>
+          <p id="status-detail">FILL_TO_SUBMIT · Submit is always manual</p>
+        </div>
+      </section>
+      <p id="versions" class="versions"></p>
+      <form id="connection-form">
+        <label for="backend">Local app address</label>
+        <input id="backend" name="backend" type="url" value="http://localhost:3000" required>
+        <label for="token">Local extension API token</label>
+        <input id="token" name="token" type="password" autocomplete="off" minlength="32" required>
+        <button type="submit">Connect securely</button>
+      </form>
+      <p id="form-message" role="status"></p>
+      <div class="instruction">
+        <strong>How to use it</strong>
+        <p>Open an application from Internship Pilot, then use the in-page “Autofill with Internship Pilot” button. The toolbar never starts or submits an application.</p>
+      </div>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

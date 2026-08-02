@@ -87,6 +87,7 @@ const facts = [
   { id: "course", type: "coursework", content: "Digital Design", detail: null, status: "approved" },
   { id: "python", type: "skill", content: "Python", detail: null, status: "approved" },
   { id: "project", type: "project", content: "Software-Defined Radio ADS-B Receiver Python, RTL-SDR", detail: "Captured raw IQ at 1090 MHz. Validated frames with CRC-24 error detection. Parsed ICAO addresses.", status: "approved" },
+  { id: "sensor", type: "project", content: "Air Quality Monitor", detail: "Sampled and filtered MQ-135 sensor data.", status: "approved" },
   { id: "experience", type: "experience", content: "PC Builder and Repair Technician, Freelance", detail: "Built 30+ custom PCs. Diagnosed desktop and laptop issues. Tested each system for stability.", status: "approved" },
   { id: "activity", type: "activity", content: "IEEE - Member", detail: null, status: "approved" },
   { id: "unsafe", type: "skill", content: "Docker", detail: "Unconfirmed", status: "approved" },
@@ -164,6 +165,75 @@ describe("generateDocumentsForJob", () => {
       "coverLetter:2",
     ]);
     expect(persisted).toHaveLength(4);
+  });
+
+  it("corrects unsupported master-skill wording and persists the corrected documents as V2", async () => {
+    const existingResume = { id: "resume-v1", type: "resume", version: 1, qaStatus: "pass", storagePath: "resume-v1.pdf" };
+    const existingCover = { id: "cover-v1", type: "coverLetter", version: 1, qaStatus: "pass", storagePath: "cover-v1.pdf" };
+    persisted.push(existingResume, existingCover);
+    findJob.mockResolvedValue({
+      ...job,
+      description: `${job.description} The role requests real-time data acquisition and reliability testing.`,
+      matchResults: [{
+        ...job.matchResults[0],
+        skillsNeverAdd: JSON.stringify([
+          { skill: "real-time data acquisition" },
+          { skill: "reliability testing" },
+        ]),
+      }],
+    });
+
+    const result = await generateDocumentsForJob(job.id, { includeCoverLetter: true });
+
+    expect(result.resume).toMatchObject({ id: "resume-v2", version: 2, qaStatus: "pass" });
+    expect(result.coverLetter).toMatchObject({ id: "coverLetter-v2", version: 2, qaStatus: "pass" });
+    expect(persisted[0]).toEqual(existingResume);
+    expect(persisted[1]).toEqual(existingCover);
+    expect(persisted).toHaveLength(4);
+    const generatedSources = writeFile.mock.calls.map((call) => String(call[1])).join("\n");
+    expect(generatedSources).not.toMatch(/real-time data acquisition/i);
+    expect(generatedSources).not.toMatch(/reliability testing/i);
+    expect(generatedSources).toContain("sensor data sampling");
+    expect(generatedSources).toContain("system stability testing");
+    expect(compileTypst).toHaveBeenCalledTimes(2);
+    expect(evaluateStrictDocumentQa).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(persisted[2].tailoringAudit))).toMatchObject({
+      unsupportedWordingRemoved: [
+        expect.objectContaining({ phrase: "real-time data acquisition", sourceSection: "Skills: Embedded Systems" }),
+        expect.objectContaining({ phrase: "reliability testing", sourceSection: "Skills: Additional" }),
+      ],
+    });
+  });
+
+  it("reports the resume persistence stage without altering an existing V1", async () => {
+    persisted.push({ id: "resume-v1", type: "resume", version: 1, qaStatus: "pass" });
+    createDocument.mockRejectedValueOnce(new Error("database unavailable"));
+
+    await expect(generateDocumentsForJob(job.id, { includeCoverLetter: true })).rejects.toMatchObject({
+      message: "Resume persistence failed. Existing document versions were kept.",
+      stage: "resume_persistence",
+    });
+    expect(persisted).toEqual([{ id: "resume-v1", type: "resume", version: 1, qaStatus: "pass" }]);
+  });
+
+  it("blocks an irremovable fabricated credential before files or records are created", async () => {
+    findJob.mockResolvedValue({
+      ...job,
+      matchResults: [{
+        ...job.matchResults[0],
+        skillsNeverAdd: JSON.stringify([{ skill: "Dean's List" }]),
+      }],
+    });
+
+    await expect(generateDocumentsForJob(job.id, { includeCoverLetter: true })).rejects.toMatchObject({
+      stage: "validation",
+      unsupportedClaims: [expect.objectContaining({
+        phrase: "Dean's List",
+        sourceSection: "Education 2 degree",
+      })],
+    });
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(createDocument).not.toHaveBeenCalled();
   });
 
   it("reclassifies grounded transferable competencies without admitting unsupported tools", async () => {

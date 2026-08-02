@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Internship Pilot Autofill",
+  "version": "1.2.0",
+  "description": "Safely fills job applications from your verified local Internship Pilot profile. Submission always remains manual.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "page-reader.js",
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false,
+      "world": "ISOLATED"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Internship Pilot Autofill"
+  },
+  "content_security_policy": {
+    "extension_pages": "default-src 'self'; connect-src http://localhost:* http://127.0.0.1:*; img-src 'self'; style-src 'self'"
+  }
+}

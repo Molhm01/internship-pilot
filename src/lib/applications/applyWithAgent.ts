@@ -78,8 +78,30 @@ export type ApplyWithAgentInput = {
   coverLetterRequired: boolean;
 };
 
+export type ProfileBundlePart = {
+  profile?: unknown;
+  approvedAnswers?: unknown[];
+  accountPreferences?: unknown;
+  missingFields?: string[];
+};
+
+/**
+ * Reads the canonical profile the moment before the handoff, so the extension
+ * receives what the user has saved now rather than a copy that drifted.
+ */
+export async function fetchProfileBundlePart(fetcher: typeof fetch = fetch): Promise<ProfileBundlePart> {
+  const response = await fetcher("/api/application-bundle");
+  if (!response.ok) {
+    throw new ExtensionBridgeError(
+      "Your application profile could not be read. Open the Profile page, fill it in, and try again.",
+    );
+  }
+  return (await response.json()) as ProfileBundlePart;
+}
+
 export type ApplyWithAgentDependencies = {
   fetchPdf?: typeof fetchDocumentPdf;
+  fetchProfile?: typeof fetchProfileBundlePart;
   probeBridge?: typeof isExtensionBridgeAvailable;
   sendBundle?: typeof sendApplicationBundle;
   openWindow?: (url: string, target: string, features: string) => unknown;
@@ -113,13 +135,18 @@ async function toBundleDocument(
   };
 }
 
-export type ApplyWithAgentResult = BundleTransferResult & { openedUrl: string };
+export type ApplyWithAgentResult = BundleTransferResult & {
+  openedUrl: string;
+  /** Profile gaps the user should know about; the handoff still succeeded. */
+  missingProfileFields: string[];
+};
 
 export async function applyWithApplicationAgent(
   input: ApplyWithAgentInput,
   dependencies: ApplyWithAgentDependencies = {},
 ): Promise<ApplyWithAgentResult> {
   const fetchPdf = dependencies.fetchPdf ?? fetchDocumentPdf;
+  const fetchProfile = dependencies.fetchProfile ?? fetchProfileBundlePart;
   const probeBridge = dependencies.probeBridge ?? isExtensionBridgeAvailable;
   const sendBundle = dependencies.sendBundle ?? sendApplicationBundle;
   const openWindow = dependencies.openWindow ?? ((url, target, features) => window.open(url, target, features));
@@ -141,6 +168,10 @@ export async function applyWithApplicationAgent(
     ...(coverLetter ? [await toBundleDocument("cover_letter", coverLetter, input, fetchPdf)] : []),
   ];
 
+  // The profile travels with the documents: one handoff, one consistent view
+  // of who is applying and with what.
+  const profilePart = await fetchProfile();
+
   const bundle: ApplicationBundleInput = {
     websiteJobId: input.websiteJobId,
     company: input.company,
@@ -148,6 +179,9 @@ export async function applyWithApplicationAgent(
     jobDescription: input.jobDescription,
     officialApplicationUrl: input.officialApplicationUrl,
     documents,
+    ...(profilePart.profile ? { profile: profilePart.profile } : {}),
+    approvedAnswers: profilePart.approvedAnswers ?? [],
+    ...(profilePart.accountPreferences ? { accountPreferences: profilePart.accountPreferences } : {}),
   };
 
   // Navigation happens only after this resolves. If the extension never
@@ -155,5 +189,9 @@ export async function applyWithApplicationAgent(
   const transferred = await sendBundle(bundle);
 
   openWindow(input.officialApplicationUrl, "_blank", "noopener,noreferrer");
-  return { ...transferred, openedUrl: input.officialApplicationUrl };
+  return {
+    ...transferred,
+    openedUrl: input.officialApplicationUrl,
+    missingProfileFields: profilePart.missingFields ?? [],
+  };
 }

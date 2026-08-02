@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Mock Greenhouse Country Review</title></head>
+<body>
+  <h1>Apply for Reliability Design Intern</h1>
+  <form id="application_form">
+    <label for="full_name">Full Name*</label><input id="full_name" type="text" required>
+    <label for="email">Email*</label><input id="email" type="email" required>
+    <label for="country">Country*</label>
+    <select id="country" required><option value="">Select a country</option><option>United States</option><option>Canada</option><option>Mexico</option></select>
+    <label for="resume">Resume/CV*</label><input id="resume" type="file" required>
+    <button type="submit" id="submit-app">Submit Application</button>
+  </form>
+  <div id="submitted" hidden>Application submitted</div>
+  <script>document.getElementById("application_form").addEventListener("submit", function (event) { event.preventDefault(); document.getElementById("submitted").hidden = false; });</script>
+</body></html>

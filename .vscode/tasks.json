@@ -1,0 +1,63 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Internship Pilot: Start",
+      "type": "shell",
+      "command": "npm.cmd",
+      "args": ["run", "local"],
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "internship-pilot",
+        "pattern": {
+          "regexp": "^\\[local\\] (✗|Error)(.*)$",
+          "severity": 1,
+          "message": 2
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^\\[local\\] Starting web server",
+          "endsPattern": "Internship Pilot is healthy|already running"
+        }
+      },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "detail": "Start the full local stack (website + scheduler + scoring + application worker)."
+    },
+    {
+      "label": "Internship Pilot: Status",
+      "type": "shell",
+      "command": "npm.cmd",
+      "args": ["run", "local:status"],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": [],
+      "detail": "Report the status and PIDs of every local service."
+    },
+    {
+      "label": "Internship Pilot: Stop",
+      "type": "shell",
+      "command": "npm.cmd",
+      "args": ["run", "local:stop"],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": [],
+      "detail": "Stop only the services this repository started."
+    },
+    {
+      "label": "Internship Pilot: Test",
+      "type": "shell",
+      "command": "npm.cmd",
+      "args": ["run", "test:document-strategy"],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": [],
+      "detail": "Run the document-strategy / application-agent tests."
+    },
+    {
+      "label": "Internship Pilot: Build Extension",
+      "type": "shell",
+      "command": "npm.cmd",
+      "args": ["run", "extension:build"],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": [],
+      "detail": "Validate and build extension/dist (checks the server/extension protocol version)."
+    }
+  ]
+}

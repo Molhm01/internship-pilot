@@ -8,6 +8,13 @@ import { evaluatePdfLayoutQa, evaluateResumeFormatPreservation } from "@/lib/doc
 import { logAudit } from "@/lib/applications/audit";
 import { validateDocumentIdentity } from "@/lib/documents/identityGuard";
 import { selectContentForJob } from "@/lib/documents/select";
+import {
+  correctAndValidateResumeContent,
+  factsExcludingUnsupportedMeanings,
+  resumeClaimSources,
+  validateUnsupportedClaims,
+  type UnsupportedClaimDetail,
+} from "@/lib/documents/claimValidation";
 import { hasUsableJobDescription, matchJobDescriptionText } from "@/lib/matchWorkflow";
 import {
   MASTER_ACTIVITIES, MASTER_EDUCATION, MASTER_EXPERIENCE, MASTER_PROJECTS, MASTER_SKILLS,
@@ -33,7 +40,7 @@ function skillsTypst(items: MasterSkillGroup[]) {
 }
 
 type HeaderProfile = { fullName: string; email: string; phone: string; linkedin?: string | null; workAuthorization?: string | null; addressCity?: string | null; addressState?: string | null };
-type ResumeContent = { education: MasterEducation[]; experience: MasterEntry[]; projects: MasterEntry[]; skills: MasterSkillGroup[]; activities: string[] };
+export type ResumeContent = { education: MasterEducation[]; experience: MasterEntry[]; projects: MasterEntry[]; skills: MasterSkillGroup[]; activities: string[] };
 export function buildMasterResumeSource(profile: HeaderProfile, content: ResumeContent = { education: MASTER_EDUCATION, experience: MASTER_EXPERIENCE, projects: MASTER_PROJECTS, skills: MASTER_SKILLS, activities: MASTER_ACTIVITIES }) {
   const contact = ["NYC Metro Area", profile.email, profile.phone, profile.linkedin, profile.workAuthorization]
     .filter((value): value is string => Boolean(value?.trim()));
@@ -150,9 +157,7 @@ export function approvedFactsExcludingUnsupportedClaims(
   facts: EvidenceFact[],
   unsupportedQualifications: string[],
 ): EvidenceFact[] {
-  return facts.filter((fact) =>
-    findUnsupportedClaims(factNarrative(fact), unsupportedQualifications).length === 0,
-  );
+  return factsExcludingUnsupportedMeanings(facts, unsupportedQualifications);
 }
 
 function unsupportedClaimPatterns(unsupportedQualifications: string[]): RegExp[] {
@@ -167,12 +172,64 @@ function unsupportedClaimPatterns(unsupportedQualifications: string[]): RegExp[]
   });
 }
 
-export class DocumentGenerationError extends Error {}
+export type DocumentGenerationStage =
+  | "validation"
+  | "job_load"
+  | "profile_load"
+  | "content_selection"
+  | "resume_generation"
+  | "resume_persistence"
+  | "cover_letter_generation"
+  | "cover_letter_persistence";
+
+export class DocumentGenerationError extends Error {
+  constructor(
+    message: string,
+    public readonly stage: DocumentGenerationStage = "validation",
+    public readonly unsupportedClaims: UnsupportedClaimDetail[] = [],
+  ) {
+    super(message);
+    this.name = "DocumentGenerationError";
+  }
+}
 export type GeneratedDocSummary = { id: string; type: string; version: number; storagePath: string; qaStatus: string; qaIssues: string[] };
 
+function progress(jobId: string, stage: string) {
+  console.info(JSON.stringify({ event: "tailored-document-generation", jobId, stage }));
+}
+
+function stageFailure(stage: DocumentGenerationStage): string {
+  const labels: Record<DocumentGenerationStage, string> = {
+    validation: "Document validation",
+    job_load: "Job loading",
+    profile_load: "Candidate profile loading",
+    content_selection: "Tailoring content selection",
+    resume_generation: "Resume generation",
+    resume_persistence: "Resume persistence",
+    cover_letter_generation: "Cover letter generation",
+    cover_letter_persistence: "Cover letter persistence",
+  };
+  return `${labels[stage]} failed. Existing document versions were kept.`;
+}
+
+function unsupportedClaimFailure(
+  documentKind: "resume" | "cover letter",
+  claims: UnsupportedClaimDetail[],
+): DocumentGenerationError {
+  const phrases = Array.from(new Set(claims.map((claim) => claim.phrase)));
+  return new DocumentGenerationError(
+    `Generation stopped because unsupported qualifications could not be safely removed from the ${documentKind}: ${phrases.join(", ")}.`,
+    "validation",
+    claims,
+  );
+}
+
 export async function generateDocumentsForJob(jobId: string, options: { includeCoverLetter?: boolean } = {}) {
+  let currentStage: DocumentGenerationStage = "job_load";
+  try {
   const job = await prisma.job.findUnique({ where: { id: jobId }, include: { matchResults: { orderBy: { createdAt: "desc" }, take: 1 } } });
   if (!job) throw new DocumentGenerationError("Job not found.");
+  progress(jobId, "job_loaded");
   if (!hasUsableJobDescription(job)) {
     throw new DocumentGenerationError("A usable job description is required before tailored documents can be generated.");
   }
@@ -181,10 +238,13 @@ export async function generateDocumentsForJob(jobId: string, options: { includeC
   const latestMatch = job.matchResults[0];
   if (!latestMatch) throw new DocumentGenerationError("Run AI Match before generating tailored documents.");
   if (latestMatch.eligibility === "Fail") throw new DocumentGenerationError("Eligibility is Fail for this job — documents are not generated.");
+  currentStage = "profile_load";
   const profile = await prisma.applicationProfile.findUnique({ where: { id: "default" } });
   if (!profile?.fullName?.trim()) throw new DocumentGenerationError("Add your full name on the Documents page before generating documents.");
   if (!profile.email?.trim() || !profile.phone?.trim()) throw new DocumentGenerationError("Add both email and telephone to the Candidate Profile before generating documents.");
+  progress(jobId, "profile_loaded");
 
+  currentStage = "content_selection";
   const jobDirRel = `${GENERATED_DIR_REL}/${jobId}`;
   await mkdir(absolute(jobDirRel), { recursive: true });
   const facts = await prisma.resumeFact.findMany({ where: { status: { in: ["approved", "edited"] } } });
@@ -206,7 +266,13 @@ export async function generateDocumentsForJob(jobId: string, options: { includeC
         ...selection.projectBulletIds,
         ...selection.activityBulletIds,
       ];
-    } catch {
+    } catch (error) {
+      console.warn(JSON.stringify({
+        event: "tailored-document-generation",
+        jobId,
+        stage: "content_selection_fallback",
+        reason: error instanceof Error ? error.name : "unknown",
+      }));
       // Keep generation available if the selector model is unavailable. The
       // deterministic fallback still uses the current description and only
       // existing fact-linked bullet IDs.
@@ -264,6 +330,22 @@ export async function generateDocumentsForJob(jobId: string, options: { includeC
     unsupportedQualifications,
     supportedRequirements: supportedKeywords,
   });
+  const correction = correctAndValidateResumeContent(
+    tailoring.content,
+    unsupportedQualifications,
+    documentFacts,
+  );
+  if (correction.unsupportedClaims.length) {
+    throw unsupportedClaimFailure("resume", correction.unsupportedClaims);
+  }
+  tailoring.content = correction.content;
+  if (correction.correctedClaims.length) {
+    tailoring.audit.unsupportedWordingRemoved = correction.correctedClaims.map((claim) => ({
+      phrase: claim.phrase,
+      sourceSection: claim.sourceSection,
+      reason: claim.reason,
+    }));
+  }
   const supportedKeywordCandidates = Array.from(new Set([
     ...supportedKeywords,
     ...tailoring.audit.supportedKeywords.map((item) => item.keyword),
@@ -278,13 +360,18 @@ export async function generateDocumentsForJob(jobId: string, options: { includeC
     unsupported: neverClaim,
   });
   const header = { fullName: profile.fullName, email: profile.email, phone: profile.phone, linkedin: profile.linkedin, workAuthorization: profile.workAuthorization, addressCity: profile.addressCity, addressState: profile.addressState };
+  currentStage = "resume_generation";
   const resumeVersion = await prisma.generatedDocument.count({ where: { jobId, type: "resume" } }) + 1;
   const resumeSourceRel = `${jobDirRel}/resume-v${resumeVersion}.typ`;
   const resumePdfRel = `${jobDirRel}/resume-v${resumeVersion}.pdf`;
   const resumeSource = buildMasterResumeSource(header, tailoring.content);
-  const unsupportedResumeClaims = findUnsupportedClaims(resumeSource, unsupportedQualifications);
+  const unsupportedResumeClaims = validateUnsupportedClaims(
+    resumeClaimSources(tailoring.content),
+    unsupportedQualifications,
+    documentFacts,
+  );
   if (unsupportedResumeClaims.length) {
-    throw new DocumentGenerationError(`Generation stopped because unsupported qualifications appeared in the resume: ${unsupportedResumeClaims.join(", ")}.`);
+    throw unsupportedClaimFailure("resume", unsupportedResumeClaims);
   }
   const resumeKeywordClassification = keywordClassificationFor(resumeSource);
   await writeFile(absolute(resumeSourceRel), resumeSource, "utf-8");
@@ -320,6 +407,8 @@ export async function generateDocumentsForJob(jobId: string, options: { includeC
   if (resumeQa.issues.length && !resumeIdentityIssues.length) resumeQa.status = "fail";
   const resumeQaStatus = resumeIdentityIssues.length ? "INVALID_TEST_DATA" : resumeQa.status;
   const storedTailoringStatus = tailoring.audit.status;
+  progress(jobId, "resume_generated");
+  currentStage = "resume_persistence";
   const resumeDoc = await prisma.generatedDocument.create({ data: { jobId, type: "resume", version: resumeVersion, storagePath: resumePdfRel, typstSourcePath: resumeSourceRel, qaStatus: resumeQaStatus, qaIssues: JSON.stringify(resumeQa.issues), keywordClassification: JSON.stringify(resumeKeywordClassification), tailoringStatus: storedTailoringStatus, tailoringAudit: JSON.stringify(tailoring.audit), identityVerified: resumeIdentityIssues.length === 0, bulletIdsUsed: JSON.stringify(selectedBulletIds), matchResultId: latestMatch?.id ?? null } });
   const result: { resume: GeneratedDocSummary; coverLetter?: GeneratedDocSummary } = { resume: { id: resumeDoc.id, type: "resume", version: resumeVersion, storagePath: resumePdfRel, qaStatus: resumeQaStatus, qaIssues: resumeQa.issues } };
   if (resumeQaStatus !== "pass") {
@@ -327,6 +416,7 @@ export async function generateDocumentsForJob(jobId: string, options: { includeC
   }
 
   if (options.includeCoverLetter !== false) {
+    currentStage = "cover_letter_generation";
     const paragraphs = buildGroundedCoverLetterParagraphs(generationJob, documentFacts, selectedFactIds);
     const coverVersion = await prisma.generatedDocument.count({ where: { jobId, type: "coverLetter" } }) + 1;
     const coverSourceRel = `${jobDirRel}/cover-letter-v${coverVersion}.typ`;
@@ -337,9 +427,17 @@ export async function generateDocumentsForJob(jobId: string, options: { includeC
     const contact = [savedLocation, profile.phone, profile.email, profile.linkedin].filter((value): value is string => !!value?.trim());
     const date = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "America/New_York" }).format(new Date());
     const coverSource = `#import "${TEMPLATE_IMPORT}/cover-letter-template.typ": coverLetter\n#coverLetter(name: ${s(profile.fullName)}, location: "", contact: ${typstStringArray(contact)}, date: ${s(date)}, company: ${s(job.company)}, jobTitle: ${s(job.title)}, paragraphs: ${typstStringArray(paragraphs)})\n`;
-    const unsupportedCoverClaims = findUnsupportedClaims(coverSource, unsupportedQualifications);
+    const unsupportedCoverClaims = validateUnsupportedClaims(
+      paragraphs.map((text, index) => ({
+        sourceSection: `Cover letter paragraph ${index + 1}`,
+        text,
+        context: index === 1 || index === 2 ? "candidate" : "ordinary",
+      })),
+      unsupportedQualifications,
+      documentFacts,
+    );
     if (unsupportedCoverClaims.length) {
-      throw new DocumentGenerationError(`Generation stopped because unsupported qualifications appeared in the cover letter: ${unsupportedCoverClaims.join(", ")}.`);
+      throw unsupportedClaimFailure("cover letter", unsupportedCoverClaims);
     }
     const coverKeywordClassification = keywordClassificationFor(coverSource);
     await writeFile(absolute(coverSourceRel), coverSource, "utf-8");
@@ -348,7 +446,7 @@ export async function generateDocumentsForJob(jobId: string, options: { includeC
     const coverBytes = new Uint8Array(await readFile(absolute(coverPdfRel)));
     const coverLayoutBytes = coverBytes.slice();
     const coverExtraction = await extractPdfText(coverBytes);
-    const coverQa = evaluateStrictDocumentQa(coverExtraction.text, [], [job.company, profile.fullName, ...paragraphs], { kind: "coverLetter", candidateName: profile.fullName, contactValues: [profile.email ?? "", profile.phone ?? ""], pageCount: coverExtraction.pageCount, wordCount: paragraphs.join(" ").split(/\s+/).filter(Boolean).length, forbiddenText: [/\b(?:TBD|TODO|PLACEHOLDER)\b/i, /I am eager to contribute/i, /I am particularly drawn to/i, /I am passionate about/i, /skills align perfectly/i, ...unsupportedClaimPatterns(unsupportedQualifications)] });
+    const coverQa = evaluateStrictDocumentQa(coverExtraction.text, [], [job.company, profile.fullName, ...paragraphs], { kind: "coverLetter", candidateName: profile.fullName, contactValues: [profile.email ?? "", profile.phone ?? ""], pageCount: coverExtraction.pageCount, wordCount: paragraphs.join(" ").split(/\s+/).filter(Boolean).length, forbiddenText: [/\b(?:TBD|TODO|PLACEHOLDER)\b/i, /I am eager to contribute/i, /I am particularly drawn to/i, /I am passionate about/i, /skills align perfectly/i] });
     const coverIdentityIssues = validateDocumentIdentity(coverExtraction.text, profile);
     coverQa.issues.push(...coverIdentityIssues);
     const titleOccurrences = coverExtraction.text.split(job.title).length - 1;
@@ -357,16 +455,23 @@ export async function generateDocumentsForJob(jobId: string, options: { includeC
     coverQa.issues.push(...coverLayoutQa.issues);
     if (coverQa.issues.length && !coverIdentityIssues.length) coverQa.status = "fail";
     const coverQaStatus = coverIdentityIssues.length ? "INVALID_TEST_DATA" : coverQa.status;
+    progress(jobId, "cover_letter_generated");
+    currentStage = "cover_letter_persistence";
     const coverDoc = await prisma.generatedDocument.create({ data: { jobId, type: "coverLetter", version: coverVersion, storagePath: coverPdfRel, typstSourcePath: coverSourceRel, qaStatus: coverQaStatus, qaIssues: JSON.stringify(coverQa.issues), keywordClassification: JSON.stringify(coverKeywordClassification), tailoringStatus: storedTailoringStatus, tailoringAudit: JSON.stringify(tailoring.audit), identityVerified: coverIdentityIssues.length === 0, bulletIdsUsed: JSON.stringify(selectedBulletIds), matchResultId: latestMatch?.id ?? null } });
     result.coverLetter = { id: coverDoc.id, type: "coverLetter", version: coverVersion, storagePath: coverPdfRel, qaStatus: coverQaStatus, qaIssues: coverQa.issues };
     if (coverQaStatus !== "pass") {
       throw new DocumentGenerationError(`Cover letter generation failed QA: ${coverQa.issues.join(" ")}`);
     }
   }
+  progress(jobId, "pdfs_persisted");
   try {
     await logAudit({ jobId, actor: "document-generation", action: "documents-generated", detail: `Generated a master-preserving resume (QA: ${result.resume.qaStatus})${result.coverLetter ? ` and grounded cover letter (QA: ${result.coverLetter.qaStatus})` : ""}.`, metadata: { resumeVersion } });
   } catch (error) {
     console.error("Document generation completed, but the audit log write failed.", { jobId, error });
   }
   return result;
+  } catch (error) {
+    if (error instanceof DocumentGenerationError) throw error;
+    throw new DocumentGenerationError(stageFailure(currentStage), currentStage);
+  }
 }
