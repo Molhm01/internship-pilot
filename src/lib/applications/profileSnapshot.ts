@@ -290,6 +290,16 @@ export function buildProfileSnapshot(row: ProfileRow, facts: readonly FactRow[] 
     sensitivePolicy("race", row.eeoRaceEthnicity),
     sensitivePolicy("veteran_status", row.eeoVeteranStatus),
     sensitivePolicy("disability", row.eeoDisabilityStatus),
+    // Sponsorship is a protected question, so it becomes a policy only from an
+    // explicit boolean. The extension still shows it for confirmation before
+    // disclosing it; what this removes is the guessing, not the review.
+    typeof row.requiresSponsorship === 'boolean'
+      ? {
+          category: 'sponsorship',
+          policy: 'approved_auto_fill',
+          value: row.requiresSponsorship ? 'Yes' : 'No',
+        }
+      : null,
     // Clearance is a yes/no the user set deliberately; false is as explicit as true.
     typeof row.clearanceEligible === "boolean"
       ? {
