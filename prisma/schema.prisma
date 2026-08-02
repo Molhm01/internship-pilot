@@ -256,10 +256,18 @@ model SecurityQuarantineEntry {
 // an exact normalized match.
 model ApprovedAnswer {
   id           String   @id @default(cuid())
-  questionText String   @unique
+  /// Null on rows that predate accounts; those stay readable and editable.
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  questionText String
   answer       String
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+
+  // Per user, so two accounts can each save their own "Why this company?".
+  // Legacy rows carry a null userId and remain unique among themselves.
+  @@unique([userId, questionText])
+  @@index([userId])
 }
 
 model Job {
@@ -681,4 +689,170 @@ model NearbyFirm {
   status        String    @default("discovered") // discovered | website_confirmed | careers_found | promoted | no_careers_found
   discoveredAt  DateTime  @default(now())
   lastCheckedAt DateTime?
+}
+
+// ---------------------------------------------------------------------------
+// Internship Pilot accounts.
+//
+// This password protects the Internship Pilot account and nothing else. It is
+// never an employer-site password: those live in the browser's password
+// manager or in the extension's encrypted vault, and never in this database.
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  /// scrypt hash. The plaintext password is never stored, logged, or returned.
+  passwordHash String
+  displayName  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sessions     UserSession[]
+  profile      UserProfile?
+  educations   Education[]
+  experiences  Experience[]
+  projects     Project[]
+  applicationPreferences  ApplicationPreferences?
+  sensitivePreferences    SensitiveAnswerPreferences?
+  savedAnswers ApprovedAnswer[]
+}
+
+model UserSession {
+  id        String   @id @default(cuid())
+  /// SHA-256 of the cookie value. A stolen database row cannot be replayed.
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model UserProfile {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  legalFirstName   String?
+  middleName       String?
+  legalLastName    String?
+  preferredName    String?
+  applicationEmail String?
+  alternateEmail   String?
+  phone            String?
+  phoneCountryCode String?
+  addressLine1     String?
+  addressLine2     String?
+  city             String?
+  state            String?
+  postalCode       String?
+  country          String?
+  linkedinUrl      String?
+  githubUrl        String?
+  portfolioUrl     String?
+
+  updatedAt DateTime @updatedAt
+}
+
+model Education {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  school             String
+  degree             String?
+  major              String?
+  minor              String?
+  startMonth         String?
+  startYear          String?
+  graduationMonth    String?
+  graduationYear     String?
+  gpa                String?
+  educationLevel     String?
+  relevantCoursework String?
+  sortOrder          Int      @default(0)
+  updatedAt          DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model Experience {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  employer         String
+  title            String?
+  location         String?
+  startDate        String?
+  endDate          String?
+  currentlyEmployed Boolean @default(false)
+  /// JSON array of user-approved responsibility lines.
+  responsibilities String?
+  /// JSON array of user-approved resume bullets.
+  approvedBullets  String?
+  sortOrder        Int      @default(0)
+  updatedAt        DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model Project {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name         String
+  startDate    String?
+  endDate      String?
+  /// JSON array of technologies.
+  technologies String?
+  description  String?
+  /// JSON array of user-approved skills evidenced by this project.
+  approvedSkills String?
+  sortOrder    Int      @default(0)
+  updatedAt    DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model ApplicationPreferences {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Every field is nullable on purpose. Null means "the user has not told us",
+  // which the agent must treat as unanswerable rather than as a default.
+  legallyAuthorizedToWork  Boolean?
+  requiresSponsorshipNow   Boolean?
+  mayRequireSponsorshipLater Boolean?
+  willingToRelocate        Boolean?
+  remotePreference         String?
+  earliestStartDate        String?
+  salaryPreference         String?
+  hasDriversLicense        Boolean?
+  securityClearanceStatus  String?
+  usualJobSource           String?
+
+  updatedAt DateTime @updatedAt
+}
+
+model SensitiveAnswerPreferences {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Stored only when the user explicitly chose. Null means no choice was made,
+  // and the agent must leave the question for them rather than answering it.
+  gender          String?
+  raceEthnicity   String?
+  veteranStatus   String?
+  disabilityStatus String?
+  pronouns        String?
+  /// True when the user asked for demographic questions to be declined.
+  declineDemographics Boolean @default(true)
+
+  updatedAt DateTime @updatedAt
 }

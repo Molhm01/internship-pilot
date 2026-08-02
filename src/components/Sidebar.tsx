@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -18,6 +19,16 @@ const NAV_ITEMS = [
 
 export default function Sidebar() {
   const pathname = usePathname();
+  // Who is signed in, so the account links say the right thing. `undefined`
+  // means "not asked yet", which is different from "signed out".
+  const [account, setAccount] = useState<{ email: string } | null | undefined>(undefined);
+
+  useEffect(() => {
+    void fetch("/api/auth/me")
+      .then((response) => (response.ok ? response.json() : { user: null }))
+      .then((data: { user: { email: string } | null }) => setAccount(data.user))
+      .catch(() => setAccount(null));
+  }, [pathname]);
 
   return (
     <aside className="w-60 shrink-0 h-screen sticky top-0 flex flex-col bg-[#12211f] text-slate-100">
@@ -53,6 +64,37 @@ export default function Sidebar() {
           );
         })}
       </nav>
+
+      <div className="px-3 py-3 border-t border-white/10 space-y-1">
+        {account === undefined ? null : account ? (
+          <>
+            <p className="px-3 pb-1 text-xs text-slate-400 truncate" title={account.email}>
+              {account.email}
+            </p>
+            <Link
+              href="/logout"
+              className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-300 hover:bg-white/5 hover:text-white"
+            >
+              Log out
+            </Link>
+          </>
+        ) : (
+          <>
+            <Link
+              href="/login"
+              className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-300 hover:bg-white/5 hover:text-white"
+            >
+              Log in
+            </Link>
+            <Link
+              href="/signup"
+              className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-300 hover:bg-white/5 hover:text-white"
+            >
+              Create account
+            </Link>
+          </>
+        )}
+      </div>
 
       <div className="px-4 py-4 border-t border-white/10 text-xs text-slate-400">
         <p>Everything runs on your computer.</p>

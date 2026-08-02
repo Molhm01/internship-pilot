@@ -54,3 +54,6 @@ next-env.d.ts
 # local supervisor lockfile (npm run local)
 /.internship-pilot/
 
+
+# Graphify knowledge graph — rebuildable, not source
+graphify-out/
