@@ -103,6 +103,17 @@ export type ProfileSnapshot = {
   id: string;
   personal: SnapshotPersonal;
   education: SnapshotEducation[];
+  /**
+   * The highest credential actually awarded, and the one being studied for.
+   *
+   * Two fields because "Highest Level of Education" and "what are you
+   * studying" are two questions with two different answers for anyone
+   * mid-degree. The extension was answering the first with the second, which
+   * overstates the applicant's qualifications — so both travel, and the
+   * extension never derives one from the other.
+   */
+  highestCompletedDegree?: string;
+  currentDegreeInProgress?: string;
   experience: SnapshotExperience[];
   projects: SnapshotProject[];
   skills: { technical: string[]; programmingLanguages: string[] };
@@ -591,6 +602,10 @@ export function buildProfileSnapshot(
         : {}),
     },
     education,
+    ...(text(row.highestDegreeAwarded)
+      ? { highestCompletedDegree: text(row.highestDegreeAwarded) }
+      : {}),
+    ...(text(row.degreeType) ? { currentDegreeInProgress: text(row.degreeType) } : {}),
     experience,
     projects,
     skills: { technical: skills, programmingLanguages: [] },
