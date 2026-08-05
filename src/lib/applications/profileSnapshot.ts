@@ -24,7 +24,17 @@
  * rather than silently treating a missing field as an unanswered question —
  * which would look identical to a blank profile and produce a half-filled form.
  */
-export const PROFILE_SNAPSHOT_VERSION = 2;
+export const PROFILE_SNAPSHOT_VERSION = 3;
+
+/**
+ * The bundle contract version, which is not the same number as the profile's.
+ *
+ * They were the same variable, and the route sent the profile version as the
+ * bundle version — so bumping the profile contract silently made every bundle
+ * look like it came from a newer website than the extension could read, and the
+ * extension refused it. Two facts, two constants; they happen to agree today.
+ */
+export const BUNDLE_CONTRACT_VERSION = 3;
 
 export type SnapshotAddress = {
   line1?: string;
@@ -51,6 +61,8 @@ export type SnapshotPersonal = {
   alternateEmail?: string;
   phone?: string;
   phoneCountryCode?: string;
+  /** mobile | home | work | other. Absent means the user has not said. */
+  phoneType?: "mobile" | "home" | "work" | "other";
   address: SnapshotAddress;
   linkedin?: string;
   github?: string;
@@ -67,12 +79,20 @@ export type SnapshotEducation = {
   id: string;
   institution: string;
   degree?: string;
+  /** The level — "Bachelor's" — as distinct from the degree's full name. */
+  degreeLevel?: string;
   major?: string;
   minor?: string;
   startDate?: string;
   graduationDate?: string;
   gpa?: number;
   gpaScale?: number;
+  /**
+   * Whether the credential has been awarded. Absent means the user has not
+   * said, which stays different from "not completed": only an entry that
+   * positively states completion may answer "highest degree awarded".
+   */
+  status?: "completed" | "in_progress";
   coursework: string[];
   honors: string[];
   activities: string[];
@@ -96,6 +116,14 @@ export type SnapshotProject = {
   description?: string;
   technologies: string[];
   accomplishments: string[];
+  /**
+   * Dates and a link. Present in the `Project` table and in the canonical
+   * contract, and previously dropped here — so a form asking when a project ran
+   * had nothing to fill it with even though the answer was stored.
+   */
+  startDate?: string;
+  endDate?: string;
+  url?: string;
 };
 
 export type ProfileSnapshot = {
@@ -116,6 +144,13 @@ export type ProfileSnapshot = {
   currentDegreeInProgress?: string;
   experience: SnapshotExperience[];
   projects: SnapshotProject[];
+  /**
+   * Clubs and societies, and what the applicant did outside a job or a course.
+   * Both were dropped entirely: the résumé facts existed, and nothing carried
+   * them, so "Activities" was unanswerable on every form that asked.
+   */
+  organizations: string[];
+  activities: string[];
   skills: { technical: string[]; programmingLanguages: string[] };
   eligibility: {
     workAuthorization?: string;
@@ -140,6 +175,12 @@ export type ProfileSnapshot = {
     salaryMinimum?: string;
     /** Opt-in only. Absent means the user has not consented. */
     marketingTextConsent?: boolean;
+    /**
+     * The standing portal preference. It already travelled inside
+     * `accountPreferences`, which only exists when a bundle does — so a run the
+     * user started themselves had no answer at all.
+     */
+    employerPortalStrategy?: "prefer_guest" | "create_when_required" | "always_ask";
     resumeSelectionRules: never[];
   };
   sensitivePolicies: Array<{ category: string; policy: string; value?: string }>;
@@ -269,12 +310,15 @@ export type ProjectRow = {
   description: string | null;
   technologies: string | null;
   approvedSkills: string | null;
+  startDate: string | null;
+  endDate: string | null;
 };
 
 export type EducationRow = {
   id: string;
   school: string;
   degree: string | null;
+  educationLevel: string | null;
   major: string | null;
   minor: string | null;
   startMonth: string | null;
@@ -438,6 +482,7 @@ export function buildProfileSnapshot(
           id: "education-primary",
           institution,
           ...(text(row.degreeType) ? { degree: text(row.degreeType) } : {}),
+          ...(text(row.educationLevel) ? { degreeLevel: text(row.educationLevel) } : {}),
           ...(text(row.major) ? { major: text(row.major) } : {}),
           ...(text(row.minor) ? { minor: text(row.minor) } : {}),
           ...(partialDate(row.educationStartDate) ? { startDate: partialDate(row.educationStartDate) } : {}),
@@ -451,12 +496,40 @@ export function buildProfileSnapshot(
       ]
     : [];
 
+  // Résumé-derived education, used only for schools the structured rows and the
+  // profile's own `school` column do not already name. Without this, a profile
+  // populated entirely from a résumé — which is how this one was populated —
+  // reached the extension with one education entry instead of three.
+  const namedInstitutions = new Set(
+    [institution, ...educations.map((entry) => entry.school)]
+      .filter((value): value is string => Boolean(value))
+      .map((value) => value.toLowerCase().replace(/\s+/g, " ").trim()),
+  );
+  const factEducation: SnapshotEducation[] = approvedFacts(facts, "education")
+    .filter(
+      (fact) =>
+        !namedInstitutions.has(fact.content.toLowerCase().replace(/\s+/g, " ").trim()),
+    )
+    .map((fact) => ({
+      id: fact.id,
+      institution: fact.content,
+      // The detail line is prose. It is carried as the degree only when the
+      // user's own structured columns say nothing, and it is never split into
+      // a major and a graduation date by guessing at its punctuation.
+      ...(text(fact.detail) ? { degree: text(fact.detail) } : {}),
+      coursework: [],
+      honors: [],
+      activities: [],
+    }));
+
   const education: SnapshotEducation[] = [
     ...primaryEducation,
+    ...factEducation,
     ...educations.map((entry) => ({
       id: entry.id,
       institution: entry.school,
       ...(text(entry.degree) ? { degree: text(entry.degree) } : {}),
+      ...(text(entry.educationLevel) ? { degreeLevel: text(entry.educationLevel) } : {}),
       ...(text(entry.major) ? { major: text(entry.major) } : {}),
       ...(text(entry.minor) ? { minor: text(entry.minor) } : {}),
       ...(monthYear(entry.startMonth, entry.startYear)
@@ -499,6 +572,8 @@ export function buildProfileSnapshot(
         ...(text(entry.description) ? { description: text(entry.description) } : {}),
         technologies: jsonArray(entry.technologies),
         accomplishments: jsonArray(entry.approvedSkills),
+        ...(partialDate(entry.startDate) ? { startDate: partialDate(entry.startDate) } : {}),
+        ...(partialDate(entry.endDate) ? { endDate: partialDate(entry.endDate) } : {}),
       }))
     : approvedFacts(facts, "project").map((fact) => ({
         id: fact.id,
@@ -519,6 +594,12 @@ export function buildProfileSnapshot(
       ]),
     ]),
   ];
+
+  // Clubs, societies, and the things the applicant did outside a job or a
+  // course. Approved résumé facts are the only source; nothing here classifies
+  // an activity as an organization or vice versa by reading its wording.
+  const activities = approvedFacts(facts, "activity").map((fact) => fact.content);
+  const organizations = approvedFacts(facts, "organization").map((fact) => fact.content);
 
   const sensitivePolicies = [
     sensitivePolicy("gender", row.eeoGender),
@@ -608,6 +689,8 @@ export function buildProfileSnapshot(
     ...(text(row.degreeType) ? { currentDegreeInProgress: text(row.degreeType) } : {}),
     experience,
     projects,
+    organizations,
+    activities,
     skills: { technical: skills, programmingLanguages: [] },
     eligibility: {
       ...(text(row.workAuthorization) ? { workAuthorization: text(row.workAuthorization) } : {}),
@@ -640,6 +723,9 @@ export function buildProfileSnapshot(
       // Emitted only when the user opted in. Absence is not consent, and a
       // `false` would read as an explicit refusal the user never gave.
       ...(row.marketingTextConsent === true ? { marketingTextConsent: true } : {}),
+      ...(portalStrategy(row.employerPortalStrategy)
+        ? { employerPortalStrategy: portalStrategy(row.employerPortalStrategy) }
+        : {}),
       resumeSelectionRules: [],
     },
     sensitivePolicies,

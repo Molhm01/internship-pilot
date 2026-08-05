@@ -6,7 +6,7 @@ import {
   buildProfileSnapshot,
   companyKey,
   missingProfileFields,
-  PROFILE_SNAPSHOT_VERSION,
+  BUNDLE_CONTRACT_VERSION,
   type CompanyRelationshipRow,
   type ProfileRow,
 } from "@/lib/applications/profileSnapshot";
@@ -56,7 +56,10 @@ export async function GET(request: Request) {
 
   return NextResponse.json(
     {
-      bundleVersion: PROFILE_SNAPSHOT_VERSION,
+      // The bundle's own contract version. The profile carries its own inside
+      // `profile.version`; conflating the two made a profile-contract change
+      // look to the extension like a bundle from a newer website.
+      bundleVersion: BUNDLE_CONTRACT_VERSION,
       profile: buildProfileSnapshot(profileRow, { facts, experiences, projects, educations }),
       accountPreferences: buildAccountPreferences(profileRow),
       ...(companyRelationship ? { companyRelationship } : {}),

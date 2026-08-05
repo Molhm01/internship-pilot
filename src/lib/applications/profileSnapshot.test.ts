@@ -417,6 +417,95 @@ describe("structured entries beat résumé prose", () => {
   });
 });
 
+/**
+ * The sections that reached the extension empty on a profile populated entirely
+ * from a résumé — which is how the profile on this machine was populated. The
+ * facts existed; the snapshot builder had a fallback for experience, projects
+ * and skills, and none for education, activities or organizations.
+ */
+describe("a résumé-populated profile loses nothing", () => {
+  const facts: FactRow[] = [
+    { id: "f1", type: "education", content: "Rutgers University", detail: "BS Mechanical Engineering", status: "approved" },
+    { id: "f2", type: "education", content: "County College", detail: null, status: "approved" },
+    { id: "f3", type: "activity", content: "Robotics Club", detail: null, status: "approved" },
+    { id: "f4", type: "organization", content: "IEEE Student Branch", detail: null, status: "approved" },
+    { id: "f5", type: "skill", content: "SolidWorks", detail: null, status: "approved" },
+  ];
+
+  it("carries education facts when no structured education row exists", () => {
+    const snapshot = buildProfileSnapshot(row(), { facts });
+    expect(snapshot.education.map((entry) => entry.institution)).toEqual([
+      "Rutgers University",
+      "County College",
+    ]);
+    expect(snapshot.education[0]?.degree).toBe("BS Mechanical Engineering");
+  });
+
+  it("does not repeat a school the profile already names", () => {
+    const snapshot = buildProfileSnapshot(row({ school: "Rutgers  University" }), { facts });
+    const institutions = snapshot.education.map((entry) => entry.institution);
+    expect(institutions.filter((name) => /rutgers/i.test(name))).toHaveLength(1);
+    expect(institutions).toContain("County College");
+  });
+
+  it("prefers a structured education row over the fact naming the same school", () => {
+    const snapshot = buildProfileSnapshot(row(), {
+      facts,
+      educations: [
+        {
+          id: "e1",
+          school: "Rutgers University",
+          degree: "Bachelor of Science",
+          educationLevel: "Bachelor's",
+          major: "Mechanical Engineering",
+          minor: null,
+          startMonth: "9",
+          startYear: "2024",
+          graduationMonth: "5",
+          graduationYear: "2028",
+          gpa: "3.6",
+          relevantCoursework: null,
+        },
+      ],
+    });
+    const rutgers = snapshot.education.filter((entry) => /rutgers/i.test(entry.institution));
+    expect(rutgers).toHaveLength(1);
+    expect(rutgers[0]).toMatchObject({
+      degree: "Bachelor of Science",
+      degreeLevel: "Bachelor's",
+      graduationDate: "2028-05",
+    });
+  });
+
+  it("carries activities and organizations, which were dropped entirely", () => {
+    const snapshot = buildProfileSnapshot(row(), { facts });
+    expect(snapshot.activities).toEqual(["Robotics Club"]);
+    expect(snapshot.organizations).toEqual(["IEEE Student Branch"]);
+  });
+
+  it("carries project dates and the standing portal preference", () => {
+    const snapshot = buildProfileSnapshot(row({ employerPortalStrategy: "prefer_guest" }), {
+      projects: [
+        {
+          id: "p1",
+          name: "Line Follower",
+          description: "An autonomous rover",
+          technologies: JSON.stringify(["C++"]),
+          approvedSkills: null,
+          startDate: "2025-01",
+          endDate: "2025-05",
+        },
+      ],
+    });
+    expect(snapshot.projects[0]).toMatchObject({
+      name: "Line Follower",
+      startDate: "2025-01",
+      endDate: "2025-05",
+    });
+    expect(snapshot.preferences.employerPortalStrategy).toBe("prefer_guest");
+  });
+});
+
 describe("company relationship facts", () => {
   const base = {
     companyKey: "acme corp",
