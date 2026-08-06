@@ -17,6 +17,11 @@ import {
 } from "@/lib/documents/claimValidation";
 import { hasUsableJobDescription, matchJobDescriptionText } from "@/lib/matchWorkflow";
 import {
+  deliverDocumentToAgent,
+  tailoredFilename,
+  type AgentDeliveryOutcome,
+} from "@/lib/documents/agentDelivery";
+import {
   MASTER_ACTIVITIES, MASTER_EDUCATION, MASTER_EXPERIENCE, MASTER_PROJECTS, MASTER_SKILLS,
   isSupportedTransferableRequirement, tailoredMasterContent,
   type EvidenceFact, type MasterEducation, type MasterEntry, type MasterSkillGroup,
@@ -193,6 +198,17 @@ export class DocumentGenerationError extends Error {
   }
 }
 export type GeneratedDocSummary = { id: string; type: string; version: number; storagePath: string; qaStatus: string; qaIssues: string[] };
+
+/**
+ * Whether each generated file reached the local Internship Agent, which is what
+ * the extension attaches from. Reported rather than thrown: a delivery failure
+ * means "the agent is not running", not "your résumé is bad", and discarding a
+ * QA-passing document over it would be worse than saying so plainly.
+ */
+export type AgentDeliverySummary = {
+  resume: AgentDeliveryOutcome;
+  coverLetter?: AgentDeliveryOutcome;
+};
 
 function progress(jobId: string, stage: string) {
   console.info(JSON.stringify({ event: "tailored-document-generation", jobId, stage }));
@@ -410,10 +426,25 @@ export async function generateDocumentsForJob(jobId: string, options: { includeC
   progress(jobId, "resume_generated");
   currentStage = "resume_persistence";
   const resumeDoc = await prisma.generatedDocument.create({ data: { jobId, type: "resume", version: resumeVersion, storagePath: resumePdfRel, typstSourcePath: resumeSourceRel, qaStatus: resumeQaStatus, qaIssues: JSON.stringify(resumeQa.issues), keywordClassification: JSON.stringify(resumeKeywordClassification), tailoringStatus: storedTailoringStatus, tailoringAudit: JSON.stringify(tailoring.audit), identityVerified: resumeIdentityIssues.length === 0, bulletIdsUsed: JSON.stringify(selectedBulletIds), matchResultId: latestMatch?.id ?? null } });
-  const result: { resume: GeneratedDocSummary; coverLetter?: GeneratedDocSummary } = { resume: { id: resumeDoc.id, type: "resume", version: resumeVersion, storagePath: resumePdfRel, qaStatus: resumeQaStatus, qaIssues: resumeQa.issues } };
+  const result: { resume: GeneratedDocSummary; coverLetter?: GeneratedDocSummary; agentDelivery?: AgentDeliverySummary } = { resume: { id: resumeDoc.id, type: "resume", version: resumeVersion, storagePath: resumePdfRel, qaStatus: resumeQaStatus, qaIssues: resumeQa.issues } };
   if (resumeQaStatus !== "pass") {
     throw new DocumentGenerationError(`Resume generation failed QA: ${resumeQa.issues.join(" ")}`);
   }
+
+  // Handed to the agent only after it has passed QA, and awaited: the caller
+  // must not be told the résumé is ready for autofill until the agent has
+  // acknowledged holding those exact bytes.
+  const resumeDelivery = await deliverDocumentToAgent({
+    documentType: "resume",
+    filename: tailoredFilename("resume", job.company, job.title),
+    bytes: resumeBytes,
+    source: "tailored",
+    company: job.company,
+    jobTitle: job.title,
+    jobId,
+    createdAt: resumeDoc.createdAt.toISOString(),
+  });
+  result.agentDelivery = { resume: resumeDelivery };
 
   if (options.includeCoverLetter !== false) {
     currentStage = "cover_letter_generation";
@@ -462,6 +493,17 @@ export async function generateDocumentsForJob(jobId: string, options: { includeC
     if (coverQaStatus !== "pass") {
       throw new DocumentGenerationError(`Cover letter generation failed QA: ${coverQa.issues.join(" ")}`);
     }
+    const coverDelivery = await deliverDocumentToAgent({
+      documentType: "cover_letter",
+      filename: tailoredFilename("cover_letter", job.company, job.title),
+      bytes: coverBytes,
+      source: "tailored",
+      company: job.company,
+      jobTitle: job.title,
+      jobId,
+      createdAt: coverDoc.createdAt.toISOString(),
+    });
+    result.agentDelivery = { resume: resumeDelivery, coverLetter: coverDelivery };
   }
   progress(jobId, "pdfs_persisted");
   try {
