@@ -25,16 +25,22 @@ describe("tailored-document client workflow", () => {
   });
 
   it("posts one resume-and-cover-letter generation request", async () => {
+    const delivery = {
+      resume: { delivered: true, documentId: "agent-r", documentType: "resume", filename: "Resume.pdf" },
+      coverLetter: { delivered: false, documentType: "cover_letter", reason: "The agent did not answer." },
+    };
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ok: true,
       resumeDocumentId: "resume-v1",
       coverLetterDocumentId: "cover-v1",
+      agentDelivery: delivery,
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
 
     await expect(generateTailoredDocuments("job-1", fetcher)).resolves.toEqual({
       ok: true,
       resumeDocumentId: "resume-v1",
       coverLetterDocumentId: "cover-v1",
+      agentDelivery: delivery,
     });
     expect(fetcher).toHaveBeenCalledWith("/api/jobs/job-1/generate-documents", expect.objectContaining({
       method: "POST",

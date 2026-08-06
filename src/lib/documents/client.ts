@@ -20,11 +20,56 @@ export class DocumentRequestError extends Error {
 
 export const DOCUMENT_GENERATION_TIMEOUT_MS = 90_000;
 
+/** One document's transport result, as the agent reported it. */
+export type DeliveryOutcome =
+  | { delivered: true; documentId: string; documentType: string; filename: string }
+  | { delivered: false; documentType: string; reason: string };
+
+export type DeliveryReport = {
+  resume: DeliveryOutcome | null;
+  coverLetter: DeliveryOutcome | null;
+};
+
 export type DocumentGenerationResponse = {
   ok: true;
   resumeDocumentId: string;
   coverLetterDocumentId?: string;
+  agentDelivery: DeliveryReport;
 };
+
+/**
+ * Reads a delivery report defensively. The generation flow's own success does
+ * not depend on this field, so an older or partial response degrades to "not
+ * reported" rather than failing a generation that produced real documents.
+ */
+function parseDeliveryReport(value: unknown): DeliveryReport {
+  const empty: DeliveryReport = { resume: null, coverLetter: null };
+  if (!value || typeof value !== "object") return empty;
+  const source = value as { resume?: unknown; coverLetter?: unknown };
+  return { resume: parseOutcome(source.resume), coverLetter: parseOutcome(source.coverLetter) };
+}
+
+function parseOutcome(value: unknown): DeliveryOutcome | null {
+  if (!value || typeof value !== "object") return null;
+  const outcome = value as Record<string, unknown>;
+  const documentType = typeof outcome.documentType === "string" ? outcome.documentType : "";
+  if (outcome.delivered === true && typeof outcome.documentId === "string") {
+    return {
+      delivered: true,
+      documentId: outcome.documentId,
+      documentType,
+      filename: typeof outcome.filename === "string" ? outcome.filename : "",
+    };
+  }
+  if (outcome.delivered === false) {
+    return {
+      delivered: false,
+      documentType,
+      reason: sanitizeDocumentError(outcome.reason, "The agent did not accept the document."),
+    };
+  }
+  return null;
+}
 
 type GenerateRequestOptions = {
   signal?: AbortSignal;
@@ -104,7 +149,7 @@ export async function generateTailoredDocuments(
     if (!response.ok) {
       throw await responseError(response, "Could not generate tailored documents.");
     }
-    let payload: { ok?: unknown; error?: unknown; resumeDocumentId?: unknown; coverLetterDocumentId?: unknown };
+    let payload: { ok?: unknown; error?: unknown; resumeDocumentId?: unknown; coverLetterDocumentId?: unknown; agentDelivery?: unknown };
     try {
       payload = await response.json() as typeof payload;
     } catch {
@@ -122,6 +167,7 @@ export async function generateTailoredDocuments(
       ...(typeof payload.coverLetterDocumentId === "string"
         ? { coverLetterDocumentId: payload.coverLetterDocumentId }
         : {}),
+      agentDelivery: parseDeliveryReport(payload.agentDelivery),
     };
   } catch (error) {
     if (timedOut) {
@@ -159,6 +205,32 @@ export async function runTailoredDocumentGeneration(options: {
   } finally {
     options.onLoadingChange(options.jobId, false);
   }
+}
+
+/**
+ * Re-sends the résumé and cover letter already stored for this job.
+ *
+ * Nothing is regenerated, so this is safe to press repeatedly after starting the
+ * agent — the same bytes are simply offered again.
+ */
+export async function sendLatestDocumentsToExtension(
+  jobId: string,
+  fetcher: typeof fetch = fetch,
+): Promise<DeliveryReport> {
+  const response = await fetcher(`/api/jobs/${jobId}/deliver-documents`, { method: "POST" });
+  if (!response.ok) {
+    throw await responseError(response, "The documents could not be sent to the extension.");
+  }
+  let payload: { ok?: unknown; agentDelivery?: unknown };
+  try {
+    payload = await response.json() as typeof payload;
+  } catch {
+    throw new DocumentRequestError("The send completed without a readable response.");
+  }
+  if (payload.ok !== true) {
+    throw new DocumentRequestError("The documents could not be sent to the extension.");
+  }
+  return parseDeliveryReport(payload.agentDelivery);
 }
 
 export async function fetchDocumentPdf(

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 /**
  * Delivering a freshly generated document to the local Internship Agent.
@@ -54,10 +55,37 @@ export function agentBaseUrl(): string {
   return url.toString().replace(/\/+$/, "");
 }
 
-function agentToken(): string {
-  const token = process.env.INTERNSHIP_AGENT_TOKEN?.trim();
-  if (!token) throw new Error("INTERNSHIP_AGENT_TOKEN is not configured.");
-  return token;
+/**
+ * Resolves the shared secret, preferring the agent's own token file.
+ *
+ * The agent generates its token on first run and writes it to
+ * `local-data/agent-token.txt`. A copy pasted into this repository's `.env` is a
+ * snapshot, and a snapshot goes stale the moment the agent's data directory is
+ * recreated — which is exactly what had happened here: every delivery was
+ * answered with 401 and recorded as a failure nobody was shown. The file is the
+ * one place both processes can read the same value, so it wins, and the `.env`
+ * entry remains as the fallback for setups that pin the token by environment on
+ * both sides.
+ */
+export function resolveAgentToken(): { token: string } | { error: string } {
+  const tokenPath = process.env.INTERNSHIP_AGENT_TOKEN_FILE?.trim();
+  if (tokenPath) {
+    try {
+      const fromFile = readFileSync(tokenPath, "utf8").trim();
+      if (fromFile) return { token: fromFile };
+    } catch {
+      // Falls through to the environment copy: an agent that has never been
+      // started has no token file yet, which is not a configuration error.
+    }
+  }
+
+  const fromEnv = process.env.INTERNSHIP_AGENT_TOKEN?.trim();
+  if (fromEnv) return { token: fromEnv };
+
+  return {
+    error:
+      "No agent token is configured. Set INTERNSHIP_AGENT_TOKEN_FILE to the agent's local-data/agent-token.txt, or INTERNSHIP_AGENT_TOKEN to the same value.",
+  };
 }
 
 /** Lowercase hex SHA-256, the digest the agent contract speaks. */
@@ -84,13 +112,15 @@ export async function deliverDocumentToAgent(
   if (delivery.bytes.byteLength === 0) return failure("The generated file was empty.");
 
   let baseUrl: string;
-  let token: string;
   try {
     baseUrl = agentBaseUrl();
-    token = agentToken();
   } catch (error) {
     return failure(error instanceof Error ? error.message : "Agent configuration is invalid.");
   }
+
+  const resolved = resolveAgentToken();
+  if ("error" in resolved) return failure(resolved.error);
+  const token = resolved.token;
 
   const body = JSON.stringify({
     documentType: delivery.documentType,
@@ -116,6 +146,15 @@ export async function deliverDocumentToAgent(
   } catch {
     return failure(
       "The local Internship Agent did not answer. Start it, then generate the document again to send it.",
+    );
+  }
+
+  // Named on its own so the fix is the message rather than a generic refusal.
+  // A 401 here means the two processes hold different secrets, which no amount
+  // of regenerating the document will change.
+  if (response.status === 401 || response.status === 403) {
+    return failure(
+      "The agent rejected Internship Pilot's token. Internship Pilot and the agent server are configured with different secrets — point INTERNSHIP_AGENT_TOKEN_FILE at the agent's local-data/agent-token.txt and restart Internship Pilot.",
     );
   }
 

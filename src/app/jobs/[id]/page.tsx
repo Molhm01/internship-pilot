@@ -22,6 +22,9 @@ import {
   fetchDocumentPdf,
   fetchJobDocuments,
   runTailoredDocumentGeneration,
+  sendLatestDocumentsToExtension,
+  type DeliveryOutcome,
+  type DeliveryReport,
   type StoredGeneratedDocument,
 } from "@/lib/documents/client";
 import {
@@ -222,6 +225,40 @@ function displayRunState(run: ApplicationRun): string {
   return run.status.replace(/_/g, " ").toUpperCase();
 }
 
+/**
+ * One document's delivery state, kept deliberately separate from whether it was
+ * generated. The extension can only attach what the agent is holding, so
+ * "Generated" and "Sent to extension" are different claims and the second one is
+ * only made when the agent acknowledged the bytes.
+ */
+function DeliveryRow({ label, outcome }: { label: string; outcome: DeliveryOutcome | null }) {
+  if (!outcome) {
+    return (
+      <li className="flex gap-2">
+        <span className="font-medium text-slate-700">{label}:</span>
+        <span className="text-slate-500">Generated — delivery not reported</span>
+      </li>
+    );
+  }
+  if (outcome.delivered) {
+    return (
+      <li className="flex gap-2">
+        <span className="font-medium text-slate-700">{label}:</span>
+        <span className="text-emerald-700">Generated · Sent to extension</span>
+      </li>
+    );
+  }
+  return (
+    <li className="flex flex-col">
+      <span>
+        <span className="font-medium text-slate-700">{label}:</span>{" "}
+        <span className="text-rose-700">Generated · Delivery failed</span>
+      </span>
+      <span className="text-xs text-rose-600">{outcome.reason}</span>
+    </li>
+  );
+}
+
 function GeneratedDocumentCard({ document, onOpen }: { document: GeneratedDoc; onOpen: (document: GeneratedDoc) => void }) {
   const issues = parseStrings(document.qaIssues);
   const keywords = parseKeywordClassification(document.keywordClassification);
@@ -332,6 +369,9 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
   const [generatingDocumentJobs, setGeneratingDocumentJobs] = useState<Record<string, boolean>>({});
   const activeDocumentRequests = useRef(new Map<string, AbortController>());
   const [docError, setDocError] = useState<string | null>(null);
+  const [delivery, setDelivery] = useState<DeliveryReport | null>(null);
+  const [sendingDocs, setSendingDocs] = useState(false);
+  const [deliveryError, setDeliveryError] = useState<string | null>(null);
   const [runs, setRuns] = useState<ApplicationRun[]>([]);
   const [answerDrafts, setAnswerDrafts] = useState<Record<string, string>>({});
   const [answerReuse, setAnswerReuse] = useState<Record<string, boolean>>({});
@@ -545,8 +585,10 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
     const controller = new AbortController();
     activeDocumentRequests.current.set(id, controller);
     setDocError(null);
+    setDeliveryError(null);
+    setDelivery(null);
     try {
-      await runTailoredDocumentGeneration({
+      const result = await runTailoredDocumentGeneration({
         jobId: id,
         signal: controller.signal,
         onLoadingChange: (jobId, active) => {
@@ -561,6 +603,7 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
           await Promise.all([loadDocuments(), loadAuditLog()]);
         },
       });
+      setDelivery(result.agentDelivery);
     } catch (error) {
       setDocError(error instanceof Error ? error.message : "Could not generate documents.");
       await loadDocuments(false);
@@ -568,6 +611,21 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
       if (activeDocumentRequests.current.get(id) === controller) {
         activeDocumentRequests.current.delete(id);
       }
+    }
+  }
+
+  async function sendDocumentsToExtension() {
+    setSendingDocs(true);
+    setDeliveryError(null);
+    try {
+      setDelivery(await sendLatestDocumentsToExtension(id));
+    } catch (error) {
+      setDelivery(null);
+      setDeliveryError(
+        error instanceof Error ? error.message : "The documents could not be sent to the extension.",
+      );
+    } finally {
+      setSendingDocs(false);
     }
   }
 
@@ -879,14 +937,37 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
         <section className="space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="font-medium text-slate-900">Tailored documents</h2>
-            <button
-              onClick={generateDocuments}
-              disabled={generatingDocs}
-              className="rounded-lg bg-brand text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-brand-dark transition-colors"
-            >
-              {generatingDocs ? "Generating… (can take a minute)" : documents.length > 0 ? "Regenerate documents" : "Generate tailored documents"}
-            </button>
+            <div className="flex items-center gap-2">
+              {documents.length > 0 && (
+                <button
+                  onClick={sendDocumentsToExtension}
+                  disabled={sendingDocs || generatingDocs}
+                  className="rounded-lg border border-slate-300 bg-white text-slate-700 text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-slate-50 transition-colors"
+                >
+                  {sendingDocs ? "Sending…" : "Send latest documents to extension"}
+                </button>
+              )}
+              <button
+                onClick={generateDocuments}
+                disabled={generatingDocs || sendingDocs}
+                className="rounded-lg bg-brand text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-brand-dark transition-colors"
+              >
+                {generatingDocs ? "Generating… (can take a minute)" : documents.length > 0 ? "Regenerate documents" : "Generate tailored documents"}
+              </button>
+            </div>
           </div>
+          {deliveryError && (
+            <div className="rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-sm px-4 py-3">{deliveryError}</div>
+          )}
+          {delivery && (delivery.resume || delivery.coverLetter) && (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Extension delivery</p>
+              <ul className="mt-2 space-y-1 text-sm">
+                <DeliveryRow label="Resume" outcome={delivery.resume} />
+                <DeliveryRow label="Cover letter" outcome={delivery.coverLetter} />
+              </ul>
+            </div>
+          )}
           <p className="text-xs text-slate-500">
             Only pre-approved bullets and facts are used — nothing is written fresh per job.
             Compiled with Typst, then re-checked for merged words, reading order, and that dates/GPA

@@ -16,6 +16,10 @@ describe("POST /api/jobs/[id]/generate-documents", () => {
     const generated = {
       resume: { id: "resume-v2", type: "resume", version: 2, qaStatus: "pass" },
       coverLetter: { id: "cover-v2", type: "coverLetter", version: 2, qaStatus: "pass" },
+      agentDelivery: {
+        resume: { delivered: true, documentId: "agent-r", documentType: "resume", filename: "Resume.pdf" },
+        coverLetter: { delivered: false, documentType: "cover_letter", reason: "The agent did not answer." },
+      },
     };
     generateDocumentsForJob.mockResolvedValue(generated);
     const { POST } = await import("./route");
@@ -28,10 +32,13 @@ describe("POST /api/jobs/[id]/generate-documents", () => {
     );
 
     expect(response.status).toBe(200);
+    // The delivery result travels with the ids: the page has to be able to say
+    // the résumé reached the extension and the cover letter did not.
     expect(await response.json()).toEqual({
       ok: true,
       resumeDocumentId: "resume-v2",
       coverLetterDocumentId: "cover-v2",
+      agentDelivery: generated.agentDelivery,
     });
     expect(generateDocumentsForJob).toHaveBeenCalledWith("job-1", {
       includeCoverLetter: true,

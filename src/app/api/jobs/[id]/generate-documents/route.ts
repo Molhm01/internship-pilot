@@ -1,11 +1,21 @@
 import { NextResponse } from "next/server";
 import { DocumentGenerationError, generateDocumentsForJob } from "@/lib/documents/generate";
+import type { AgentDeliveryOutcome } from "@/lib/documents/agentDelivery";
 
 type GenerationResponse = {
   ok: boolean;
   error?: string;
   resumeDocumentId?: string;
   coverLetterDocumentId?: string;
+  /**
+   * Whether the agent acknowledged holding each file. Generated and delivered
+   * are different states, and the page has to be able to show them separately —
+   * a résumé the extension cannot attach is not "sent".
+   */
+  agentDelivery?: {
+    resume: AgentDeliveryOutcome | null;
+    coverLetter: AgentDeliveryOutcome | null;
+  };
 };
 
 function safeError(message: string): string {
@@ -32,8 +42,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       ok: true,
       resumeDocumentId: result.resume.id,
       ...(result.coverLetter ? { coverLetterDocumentId: result.coverLetter.id } : {}),
+      agentDelivery: {
+        resume: result.agentDelivery?.resume ?? null,
+        coverLetter: result.agentDelivery?.coverLetter ?? null,
+      },
     };
-    progress(id, "response_returned", { ok: true });
+    progress(id, "response_returned", {
+      ok: true,
+      resumeDelivered: result.agentDelivery?.resume.delivered ?? null,
+      coverLetterDelivered: result.agentDelivery?.coverLetter?.delivered ?? null,
+    });
     return NextResponse.json(payload);
   } catch (err) {
     if (err instanceof DocumentGenerationError) {
