@@ -105,7 +105,7 @@ describe("POST /api/match", () => {
 
   it("keeps bulk scoring separate from the manual single-job route", () => {
     const routeSource = readFileSync(resolve(process.cwd(), "src/app/api/match/route.ts"), "utf8");
-    const jobsPageSource = readFileSync(resolve(process.cwd(), "src/app/jobs/page.tsx"), "utf8");
+    const jobsPageSource = readFileSync(resolve(process.cwd(), "src/app/(app)/jobs/page.tsx"), "utf8");
     const schedulerSource = readFileSync(resolve(process.cwd(), "src/lib/sync/scheduler.ts"), "utf8");
 
     expect(routeSource).not.toContain("queueJobsForMatching");

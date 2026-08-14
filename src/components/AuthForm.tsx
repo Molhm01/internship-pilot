@@ -54,14 +54,14 @@ export default function AuthForm({ mode }: { mode: "signup" | "login" }) {
       <h1 className="text-2xl font-semibold">
         {signingUp ? "Create your Internship Pilot account" : "Log in to Internship Pilot"}
       </h1>
-      <p className="mt-2 text-sm text-slate-600">
+      <p className="mt-2 text-sm text-secondary">
         This password is for Internship Pilot only. It is never used on an employer&rsquo;s website.
       </p>
 
       <form onSubmit={submit} className="mt-8 space-y-4">
         {signingUp && (
           <label className="block">
-            <span className="text-sm font-medium text-slate-700">Your name (optional)</span>
+            <span className="text-sm font-medium text-secondary">Your name (optional)</span>
             <input
               value={displayName}
               onChange={(event) => setDisplayName(event.target.value)}
@@ -72,7 +72,7 @@ export default function AuthForm({ mode }: { mode: "signup" | "login" }) {
         )}
 
         <label className="block">
-          <span className="text-sm font-medium text-slate-700">Email address</span>
+          <span className="text-sm font-medium text-secondary">Email address</span>
           <input
             type="email"
             required
@@ -84,7 +84,7 @@ export default function AuthForm({ mode }: { mode: "signup" | "login" }) {
         </label>
 
         <label className="block">
-          <span className="text-sm font-medium text-slate-700">Password</span>
+          <span className="text-sm font-medium text-secondary">Password</span>
           <input
             type="password"
             required
@@ -97,7 +97,7 @@ export default function AuthForm({ mode }: { mode: "signup" | "login" }) {
 
         {signingUp && (
           <label className="block">
-            <span className="text-sm font-medium text-slate-700">Confirm password</span>
+            <span className="text-sm font-medium text-secondary">Confirm password</span>
             <input
               type="password"
               required
@@ -110,7 +110,7 @@ export default function AuthForm({ mode }: { mode: "signup" | "login" }) {
         )}
 
         {error && (
-          <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+          <p role="alert" className="rounded-lg border border-critical-line bg-critical-quiet px-3 py-2 text-sm text-critical">
             {error}
           </p>
         )}
@@ -118,20 +118,20 @@ export default function AuthForm({ mode }: { mode: "signup" | "login" }) {
         <button
           type="submit"
           disabled={busy}
-          className="w-full rounded-lg bg-brand px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-dark disabled:opacity-40"
+          className="w-full rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white hover:bg-accent-dark disabled:opacity-40"
         >
           {busy ? "Working…" : signingUp ? "Create account" : "Log in"}
         </button>
       </form>
 
-      <p className="mt-6 text-sm text-slate-600">
+      <p className="mt-6 text-sm text-secondary">
         {signingUp ? (
           <>
-            Already have an account? <Link href="/login" className="text-brand hover:underline">Log in</Link>
+            Already have an account? <Link href="/login" className="text-accent-text hover:underline">Log in</Link>
           </>
         ) : (
           <>
-            No account yet? <Link href="/signup" className="text-brand hover:underline">Create one</Link>
+            No account yet? <Link href="/signup" className="text-accent-text hover:underline">Create one</Link>
           </>
         )}
       </p>

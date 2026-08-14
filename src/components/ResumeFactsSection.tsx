@@ -139,7 +139,7 @@ export default function ResumeFactsSection() {
     <div className="space-y-10">
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold">Profile</h1>
-        <p className="text-slate-600 text-sm">
+        <p className="text-secondary text-sm">
           Upload your resume as a PDF, let the local AI model pull out facts, then review each one
           before it&apos;s saved. Nothing is trusted until you approve it.
         </p>
@@ -148,26 +148,26 @@ export default function ResumeFactsSection() {
 
       <ResumeUploader onAnalyze={handleAnalyze} analyzing={analyzing} />
       {analyzeError && (
-        <div className="rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-sm px-4 py-3">
+        <div className="rounded-lg bg-critical-quiet border border-critical-line text-critical text-sm px-4 py-3">
           {analyzeError}
         </div>
       )}
 
       {candidates.length > 0 && (
-        <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
+        <section className="bg-surface rounded-lg border border-hairline p-6 space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="font-medium text-slate-900">
+            <h2 className="font-medium text-primary">
               2. Review extracted facts ({includedCount} selected)
             </h2>
             <button
               onClick={handleSaveApproved}
               disabled={saving || includedCount === 0}
-              className="rounded-lg bg-brand text-white text-sm font-medium px-4 py-2 disabled:opacity-40 hover:bg-brand-dark transition-colors"
+              className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2 disabled:opacity-40 hover:bg-accent-dark transition-colors"
             >
               {saving ? "Saving…" : `Save ${includedCount} approved fact${includedCount === 1 ? "" : "s"}`}
             </button>
           </div>
-          <p className="text-xs text-slate-500">
+          <p className="text-xs text-tertiary">
             Uncheck anything wrong, edit the text inline, or discard it entirely. Only checked
             facts are saved.
           </p>
@@ -176,7 +176,7 @@ export default function ResumeFactsSection() {
               <div
                 key={c.key}
                 className={`flex items-start gap-3 rounded-lg border p-3 ${
-                  c.included ? "border-slate-200 bg-slate-50" : "border-slate-100 bg-white opacity-50"
+                  c.included ? "border-hairline bg-sunken" : "border-hairline bg-surface opacity-50"
                 }`}
               >
                 <input
@@ -186,24 +186,24 @@ export default function ResumeFactsSection() {
                   className="mt-1.5 accent-[var(--brand)]"
                 />
                 <div className="flex-1 space-y-1.5">
-                  <span className="inline-block text-[10px] uppercase tracking-wide font-semibold text-brand bg-brand/10 rounded px-1.5 py-0.5">
+                  <span className="inline-block text-[10px] uppercase tracking-wide font-semibold text-accent-text bg-accent/10 rounded px-1.5 py-0.5">
                     {FACT_TYPE_LABELS[c.type] ?? c.type}
                   </span>
                   <input
                     value={c.content}
                     onChange={(e) => updateCandidate(c.key, { content: e.target.value })}
-                    className="w-full text-sm font-medium bg-transparent border-b border-transparent hover:border-slate-300 focus:border-brand focus:outline-none py-0.5"
+                    className="w-full text-sm font-medium bg-transparent border-b border-transparent hover:border-line focus:border-accent-line focus:outline-none py-0.5"
                   />
                   <input
                     value={c.detail}
                     onChange={(e) => updateCandidate(c.key, { detail: e.target.value })}
                     placeholder="Optional supporting detail"
-                    className="w-full text-xs text-slate-500 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-brand focus:outline-none py-0.5"
+                    className="w-full text-xs text-tertiary bg-transparent border-b border-transparent hover:border-line focus:border-accent-line focus:outline-none py-0.5"
                   />
                 </div>
                 <button
                   onClick={() => discardCandidate(c.key)}
-                  className="text-xs text-slate-400 hover:text-rose-600 px-2 py-1"
+                  className="text-xs text-faint hover:text-rose-600 px-2 py-1"
                   title="Discard this fact"
                 >
                   Discard
@@ -215,18 +215,18 @@ export default function ResumeFactsSection() {
       )}
 
       <section className="space-y-4">
-        <h2 className="font-medium text-slate-900">Approved facts</h2>
+        <h2 className="font-medium text-primary">Approved facts</h2>
         {loadingApproved ? (
-          <p className="text-sm text-slate-500">Loading…</p>
+          <p className="text-sm text-tertiary">Loading…</p>
         ) : approved.length === 0 ? (
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-tertiary">
             No approved facts yet. Analyze your resume above to get started.
           </p>
         ) : (
           <div className="space-y-6">
             {Object.entries(approvedByType).map(([type, facts]) => (
               <div key={type}>
-                <h3 className="text-xs uppercase tracking-wide font-semibold text-slate-500 mb-2">
+                <h3 className="text-xs uppercase tracking-wide font-semibold text-tertiary mb-2">
                   {FACT_TYPE_LABELS[type as FactType] ?? type} ({facts.length})
                 </h3>
                 <div className="space-y-2">
@@ -268,27 +268,27 @@ function ApprovedFactRow({
 
   if (editing) {
     return (
-      <div className="flex items-start gap-3 rounded-lg border border-brand/40 bg-brand/5 p-3">
+      <div className="flex items-start gap-3 rounded-lg border border-accent-line/40 bg-accent/5 p-3">
         <div className="flex-1 space-y-1.5">
           <input
             value={content}
             onChange={(e) => setContent(e.target.value)}
-            className="w-full text-sm font-medium bg-white border border-slate-300 rounded px-2 py-1 focus:outline-none focus:border-brand"
+            className="w-full text-sm font-medium bg-surface border border-line rounded px-2 py-1 focus:outline-none focus:border-accent-line"
           />
           <input
             value={detail}
             onChange={(e) => setDetail(e.target.value)}
             placeholder="Optional supporting detail"
-            className="w-full text-xs bg-white border border-slate-300 rounded px-2 py-1 focus:outline-none focus:border-brand"
+            className="w-full text-xs bg-surface border border-line rounded px-2 py-1 focus:outline-none focus:border-accent-line"
           />
         </div>
         <div className="flex flex-col gap-1">
-          <button onClick={save} className="text-xs font-medium text-brand hover:underline">
+          <button onClick={save} className="text-xs font-medium text-accent-text hover:underline">
             Save
           </button>
           <button
             onClick={() => setEditing(false)}
-            className="text-xs text-slate-400 hover:text-slate-600"
+            className="text-xs text-faint hover:text-secondary"
           >
             Cancel
           </button>
@@ -298,19 +298,19 @@ function ApprovedFactRow({
   }
 
   return (
-    <div className="flex items-start gap-3 rounded-lg border border-slate-200 p-3 group">
+    <div className="flex items-start gap-3 rounded-lg border border-hairline p-3 group">
       <div className="flex-1">
-        <p className="text-sm font-medium text-slate-800">{fact.content}</p>
-        {fact.detail && <p className="text-xs text-slate-500">{fact.detail}</p>}
+        <p className="text-sm font-medium text-primary">{fact.content}</p>
+        {fact.detail && <p className="text-xs text-tertiary">{fact.detail}</p>}
       </div>
       <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
           onClick={() => setEditing(true)}
-          className="text-xs text-slate-400 hover:text-brand"
+          className="text-xs text-faint hover:text-accent-text"
         >
           Edit
         </button>
-        <button onClick={onDelete} className="text-xs text-slate-400 hover:text-rose-600">
+        <button onClick={onDelete} className="text-xs text-faint hover:text-rose-600">
           Delete
         </button>
       </div>

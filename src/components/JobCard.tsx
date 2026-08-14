@@ -87,12 +87,12 @@ export default function JobCard({ job }: { job: JobCardData }) {
   return (
     <Link
       href={`/jobs/${job.id}`}
-      className="block bg-white rounded-xl border border-slate-200 p-4 hover:border-brand/50 hover:shadow-sm transition-all"
+      className="block bg-surface rounded-lg border border-hairline p-4 hover:border-accent-line/50 hover:shadow-sm transition-all"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="font-semibold text-slate-900 truncate">{job.title}</p>
-          <p className="text-sm text-slate-600 truncate">{job.company}</p>
+          <p className="font-semibold text-primary truncate">{job.title}</p>
+          <p className="text-sm text-secondary truncate">{job.company}</p>
         </div>
         {latestMatch && (
           <MatchScoreBadge score={latestMatch.score} eligibility={latestMatch.eligibility} />
@@ -100,24 +100,24 @@ export default function JobCard({ job }: { job: JobCardData }) {
         {automaticMatchStatus && (
           <span className={`rounded-full border px-2 py-1 text-xs font-medium ${
             automaticMatchStatus === "Scoring"
-              ? "border-sky-200 bg-sky-50 text-sky-700"
+              ? "border-info-line bg-info-quiet text-info"
               : automaticMatchStatus === "Scoring delayed"
-                ? "border-amber-200 bg-amber-50 text-amber-700"
-                : "border-slate-200 bg-slate-50 text-slate-600"
+                ? "border-caution-line bg-caution-quiet text-caution"
+                : "border-hairline bg-sunken text-secondary"
           }`}>
             {automaticMatchStatus}
           </span>
         )}
       </div>
 
-      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-tertiary">
         {job.location && <span>📍 {job.location}</span>}
         {job.workplaceType && <span>{job.workplaceType}</span>}
         {job.internshipTerm && <span>🗓 {job.internshipTerm}</span>}
         {job.duration && <span>⏱ {job.duration}</span>}
         <span
           title={posted.title}
-          className={posted.unknown ? "text-slate-400 italic" : undefined}
+          className={posted.unknown ? "text-faint italic" : undefined}
           data-testid="job-posted-age"
         >
           {posted.text}
@@ -135,7 +135,7 @@ export default function JobCard({ job }: { job: JobCardData }) {
             onClick={handleRunMatch}
             disabled={matching || !canRunMatch}
             title={canRunMatch ? undefined : "A usable job description is required"}
-            className="text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-n-150 text-secondary hover:bg-n-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {matching ? "Matching…" : "★ Run AI Match Now"}
           </button>
@@ -143,7 +143,7 @@ export default function JobCard({ job }: { job: JobCardData }) {
             <button
               type="button"
               onClick={handleApply}
-              className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-colors"
+              className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-hover transition-colors"
             >
               Apply ↗
             </button>
@@ -152,19 +152,19 @@ export default function JobCard({ job }: { job: JobCardData }) {
             <button
               type="button"
               onClick={handleOpenSource}
-              className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50"
+              className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-line text-secondary hover:bg-sunken"
             >
               Open source listing ↗
             </button>
           )}
         </div>
         {!applicationUrl && sourceListingUrl && (
-          <p className="mt-2 text-xs text-amber-700">
+          <p className="mt-2 text-xs text-caution">
             The official employer application page has not been resolved yet.
           </p>
         )}
         {matchError && (
-          <p className="mt-2 text-xs text-rose-700" role="alert">
+          <p className="mt-2 text-xs text-critical" role="alert">
             {matchError}
           </p>
         )}

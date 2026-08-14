@@ -113,12 +113,12 @@ function EntryEditor({
   const required = text(draft, REQUIRED[kind]).trim();
 
   return (
-    <form onSubmit={submit} className="rounded-lg border border-slate-200 p-4 space-y-3">
+    <form onSubmit={submit} className="rounded-lg border border-hairline p-4 space-y-3">
       <div className="grid grid-cols-2 gap-3">
         {FIELDS[kind].map((field) =>
           field.list ? (
             <label key={field.name} className="col-span-2 block text-sm">
-              <span className="text-slate-700">{field.label}</span>
+              <span className="text-secondary">{field.label}</span>
               <textarea
                 rows={3}
                 value={list(draft, field.name)}
@@ -135,11 +135,11 @@ function EntryEditor({
                 }
                 className="input mt-1 w-full"
               />
-              <span className="mt-1 block text-xs text-slate-500">One per line.</span>
+              <span className="mt-1 block text-xs text-tertiary">One per line.</span>
             </label>
           ) : (
             <label key={field.name} className="block text-sm">
-              <span className="text-slate-700">{field.label}</span>
+              <span className="text-secondary">{field.label}</span>
               <input
                 value={text(draft, field.name)}
                 onChange={(event) => setDraft({ ...draft, [field.name]: event.target.value })}
@@ -149,7 +149,7 @@ function EntryEditor({
           ),
         )}
         {kind === "experience" ? (
-          <label className="flex items-center gap-2 text-sm text-slate-700">
+          <label className="flex items-center gap-2 text-sm text-secondary">
             <input
               type="checkbox"
               checked={draft.currentlyEmployed === true}
@@ -163,7 +163,7 @@ function EntryEditor({
         <button
           type="submit"
           disabled={busy || !required}
-          className="rounded-lg bg-brand px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          className="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
         >
           {id ? "Save" : "Add"}
         </button>
@@ -172,17 +172,17 @@ function EntryEditor({
             type="button"
             onClick={remove}
             disabled={busy}
-            className="text-sm text-red-700 hover:underline"
+            className="text-sm text-critical hover:underline"
           >
             Remove
           </button>
         ) : null}
         {!required ? (
-          <span className="text-xs text-slate-500">
+          <span className="text-xs text-tertiary">
             {kind === "experience" ? "An employer" : "A project name"} is required.
           </span>
         ) : null}
-        {error ? <span className="text-sm text-red-700">{error}</span> : null}
+        {error ? <span className="text-sm text-critical">{error}</span> : null}
       </div>
     </form>
   );
@@ -217,12 +217,12 @@ export default function ProfileEntriesSection() {
     void load();
   };
 
-  if (!loaded) return <p className="text-sm text-slate-500">Loading…</p>;
+  if (!loaded) return <p className="text-sm text-tertiary">Loading…</p>;
 
   return (
     <div className="space-y-8">
-      <section className="rounded-xl border border-slate-200 bg-white p-6 space-y-4">
-        <h2 className="font-medium text-slate-900">Experience</h2>
+      <section className="rounded-lg border border-hairline bg-surface p-6 space-y-4">
+        <h2 className="font-medium text-primary">Experience</h2>
         {experiences.map((entry) => (
           <EntryEditor
             key={String(entry.id)}
@@ -234,8 +234,8 @@ export default function ProfileEntriesSection() {
         <EntryEditor key={`new-experience-${generation}`} kind="experience" entry={{}} onSaved={refresh} />
       </section>
 
-      <section className="rounded-xl border border-slate-200 bg-white p-6 space-y-4">
-        <h2 className="font-medium text-slate-900">Projects</h2>
+      <section className="rounded-lg border border-hairline bg-surface p-6 space-y-4">
+        <h2 className="font-medium text-primary">Projects</h2>
         {projects.map((entry) => (
           <EntryEditor key={String(entry.id)} kind="project" entry={entry} onSaved={refresh} />
         ))}

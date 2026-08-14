@@ -101,7 +101,7 @@ describe("grounded tailored documents", () => {
 
   it("keeps the job page connected to canonical records, QA, history, audit, PDFs, and inline errors", () => {
     const source = readFileSync(
-      path.resolve(process.cwd(), "src/app/jobs/[id]/page.tsx"),
+      path.resolve(process.cwd(), "src/app/(app)/jobs/[id]/page.tsx"),
       "utf8",
     );
     expect(source).toContain("fetchJobDocuments(id)");

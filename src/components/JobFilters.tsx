@@ -148,27 +148,27 @@ export default function JobFilters({
   }
 
   return (
-    <section className="bg-white rounded-xl border border-slate-200 p-4 space-y-4">
+    <section className="bg-surface rounded-lg border border-hairline p-4 space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         {presets.map((p) => (
           <button
             key={p.id}
             onClick={() => applyPreset(p)}
-            className="rounded-full border border-brand/40 bg-brand/5 text-brand text-xs font-medium px-3 py-1.5 hover:bg-brand/10"
+            className="rounded-full border border-accent-line/40 bg-accent/5 text-accent-text text-xs font-medium px-3 py-1.5 hover:bg-accent/10"
           >
             ⭐ {p.name}
           </button>
         ))}
         <button
           onClick={() => onChange(EMPTY_FILTERS)}
-          className="text-xs text-slate-500 hover:text-brand underline"
+          className="text-xs text-tertiary hover:text-accent-text underline"
         >
           Clear all filters
         </button>
       </div>
 
       <details open className="group">
-        <summary className="cursor-pointer text-sm font-medium text-slate-700">Location & distance</summary>
+        <summary className="cursor-pointer text-sm font-medium text-secondary">Location & distance</summary>
         <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
           <TextField label="Location" value={filters.location} onChange={(v) => set("location", v)} />
           <SelectField
@@ -177,7 +177,7 @@ export default function JobFilters({
             onChange={(v) => set("workplaceType", v)}
             options={["", "Remote", "Hybrid", "On Site"]}
           />
-          <label className="flex items-center gap-2 text-xs text-slate-600 mt-5">
+          <label className="flex items-center gap-2 text-xs text-secondary mt-5">
             <input
               type="checkbox"
               checked={filters.relocationWillingness}
@@ -194,7 +194,7 @@ export default function JobFilters({
                 onChange={(v) => set("maxDistanceMiles", v)}
                 type="number"
               />
-              <label className="flex items-center gap-2 text-xs text-slate-600 mt-5">
+              <label className="flex items-center gap-2 text-xs text-secondary mt-5">
                 <input
                   type="checkbox"
                   checked={filters.includeRemoteRegardlessOfDistance}
@@ -209,7 +209,7 @@ export default function JobFilters({
       </details>
 
       <details className="group">
-        <summary className="cursor-pointer text-sm font-medium text-slate-700">Timing</summary>
+        <summary className="cursor-pointer text-sm font-medium text-secondary">Timing</summary>
         <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
           <SelectField
             label="Season"
@@ -227,15 +227,15 @@ export default function JobFilters({
       </details>
 
       <details className="group">
-        <summary className="cursor-pointer text-sm font-medium text-slate-700">Engineering discipline</summary>
+        <summary className="cursor-pointer text-sm font-medium text-secondary">Engineering discipline</summary>
         <div className="mt-3 flex flex-wrap gap-2">
           {DISCIPLINE_TAGS.map((tag) => (
             <label
               key={tag}
               className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs cursor-pointer ${
                 filters.disciplines.includes(tag)
-                  ? "border-brand bg-brand/10 text-brand"
-                  : "border-slate-300 text-slate-600"
+                  ? "border-accent-line bg-accent/10 text-accent-text"
+                  : "border-line text-secondary"
               }`}
             >
               <input
@@ -251,7 +251,7 @@ export default function JobFilters({
       </details>
 
       <details className="group">
-        <summary className="cursor-pointer text-sm font-medium text-slate-700">Eligibility</summary>
+        <summary className="cursor-pointer text-sm font-medium text-secondary">Eligibility</summary>
         <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
           <SelectField
             label="Sophomore eligible"
@@ -278,7 +278,7 @@ export default function JobFilters({
       </details>
 
       <details className="group">
-        <summary className="cursor-pointer text-sm font-medium text-slate-700">Compensation, score & status</summary>
+        <summary className="cursor-pointer text-sm font-medium text-secondary">Compensation, score & status</summary>
         <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
           <TextField label="Min compensation ($/hr)" value={filters.compMin} onChange={(v) => set("compMin", v)} type="number" />
           <TextField label="Min match score" value={filters.matchScoreMin} onChange={(v) => set("matchScoreMin", v)} type="number" />
@@ -304,7 +304,7 @@ export default function JobFilters({
             }}
           />
         </div>
-        <p className="mt-3 text-xs text-slate-400">
+        <p className="mt-3 text-xs text-faint">
           The Active feed shows every legitimate discovered job — officially verified, source listed,
           and verification pending — newest first. Closed/mismatch/security-blocked records are hidden
           from the default feed but reachable via the Availability filter above.
@@ -327,7 +327,7 @@ function TextField({
 }) {
   return (
     <label className="block space-y-1">
-      <span className="text-xs font-medium text-slate-600">{label}</span>
+      <span className="text-xs font-medium text-secondary">{label}</span>
       <input type={type} value={value} onChange={(e) => onChange(e.target.value)} className="input-sm w-full" />
     </label>
   );
@@ -348,7 +348,7 @@ function SelectField({
 }) {
   return (
     <label className="block space-y-1">
-      <span className="text-xs font-medium text-slate-600">{label}</span>
+      <span className="text-xs font-medium text-secondary">{label}</span>
       <select value={value} onChange={(e) => onChange(e.target.value)} className="input-sm w-full">
         {options.map((o) => (
           <option key={o} value={o}>

@@ -43,8 +43,8 @@ export default function SchedulerHealthPanel() {
   if (!health) return null;
 
   return (
-    <details className="bg-white rounded-xl border border-slate-200 p-4">
-      <summary className="cursor-pointer flex items-center justify-between text-sm font-medium text-slate-700">
+    <details className="bg-surface rounded-lg border border-hairline p-4">
+      <summary className="cursor-pointer flex items-center justify-between text-sm font-medium text-secondary">
         <span>
           Scheduler health{" "}
           <span className={health.paused ? "text-amber-600" : "text-emerald-600"}>
@@ -57,25 +57,25 @@ export default function SchedulerHealthPanel() {
             togglePause();
           }}
           disabled={busy}
-          className="rounded-lg border border-slate-300 text-xs font-medium px-3 py-1.5 hover:bg-slate-50 disabled:opacity-40"
+          className="rounded-lg border border-line text-xs font-medium px-3 py-1.5 hover:bg-sunken disabled:opacity-40"
         >
           {busy ? "…" : health.paused ? "Resume Monitoring" : "Pause Monitoring"}
         </button>
       </summary>
       <div className="mt-3 grid grid-cols-2 gap-3">
         {Object.entries(health.ticks).map(([key, tick]) => (
-          <div key={key} className="rounded-lg border border-slate-100 p-3 text-xs">
-            <p className="font-medium text-slate-700">{tick.label}</p>
-            <p className="text-slate-500">
+          <div key={key} className="rounded-lg border border-hairline p-3 text-xs">
+            <p className="font-medium text-secondary">{tick.label}</p>
+            <p className="text-tertiary">
               Last run: {tick.lastRunAt ? new Date(tick.lastRunAt).toLocaleString() : "never"}
             </p>
-            <p className="text-slate-500">
+            <p className="text-tertiary">
               Next run: {tick.nextRunAt ? new Date(tick.nextRunAt).toLocaleString() : "—"}
             </p>
             {tick.lastSummary && (
-              <p className={tick.lastStatus === "error" ? "text-rose-600" : "text-slate-500"}>{tick.lastSummary}</p>
+              <p className={tick.lastStatus === "error" ? "text-rose-600" : "text-tertiary"}>{tick.lastSummary}</p>
             )}
-            <p className="text-slate-400">
+            <p className="text-faint">
               New jobs total: {tick.newJobsTotal} · Errors total: {tick.errorsTotal}
             </p>
           </div>

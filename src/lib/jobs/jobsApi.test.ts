@@ -73,7 +73,7 @@ describe("canonical Jobs API client", () => {
   });
 
   it("keeps the Jobs page wired to the canonical client instead of a legacy URL", () => {
-    const source = readFileSync(resolve(process.cwd(), "src/app/jobs/page.tsx"), "utf8");
+    const source = readFileSync(resolve(process.cwd(), "src/app/(app)/jobs/page.tsx"), "utf8");
 
     expect(source).toContain("fetchJobsPage<JobCardData>(queryFor(");
     expect(source).toContain("fetchJobCounts<JobCounts>()");

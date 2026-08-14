@@ -405,7 +405,7 @@ describe("durable INITIAL AI Match queue", () => {
   });
 
   it("has no page-load, ApplicationSession, or legacy application-queue trigger", () => {
-    const detailPage = readFileSync(resolve(process.cwd(), "src/app/jobs/[id]/page.tsx"), "utf8");
+    const detailPage = readFileSync(resolve(process.cwd(), "src/app/(app)/jobs/[id]/page.tsx"), "utf8");
     const jobsRoute = readFileSync(resolve(process.cwd(), "src/app/api/jobs/route.ts"), "utf8");
     const worker = readFileSync(resolve(process.cwd(), "src/lib/matching/initialAiMatchQueue.ts"), "utf8");
     const scheduler = readFileSync(resolve(process.cwd(), "src/lib/sync/scheduler.ts"), "utf8");

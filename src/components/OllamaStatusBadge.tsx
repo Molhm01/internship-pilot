@@ -19,8 +19,8 @@ export default function OllamaStatusBadge() {
 
   if (!health) {
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
-        <span className="w-2 h-2 rounded-full bg-slate-300 animate-pulse" />
+      <span className="inline-flex items-center gap-1.5 text-xs text-tertiary">
+        <span className="w-2 h-2 rounded-full bg-n-300 animate-pulse" />
         Checking Ollama…
       </span>
     );

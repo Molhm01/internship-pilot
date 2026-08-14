@@ -39,7 +39,7 @@ describe("GET /api/jobs/[id] saved match refresh", () => {
   });
 
   it("keeps the job page wired to the saved newest result after reload", () => {
-    const source = readFileSync(resolve(process.cwd(), "src/app/jobs/[id]/page.tsx"), "utf8");
+    const source = readFileSync(resolve(process.cwd(), "src/app/(app)/jobs/[id]/page.tsx"), "utf8");
     const initialLoadStart = source.indexOf("if (initialLoadJobId.current === id) return;");
     const initialLoadEnd = source.indexOf("useEffect(() => () =>", initialLoadStart);
     const initialLoadEffect = source.slice(initialLoadStart, initialLoadEnd);

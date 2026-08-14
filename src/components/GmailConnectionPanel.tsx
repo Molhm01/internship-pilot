@@ -36,16 +36,16 @@ export default function GmailConnectionPanel() {
   if (!status) return null;
 
   return (
-    <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-3">
-      <h2 className="font-medium text-slate-900">Gmail Application Tracking</h2>
-      <p className="text-xs text-slate-500">
+    <section className="bg-surface rounded-lg border border-hairline p-6 space-y-3">
+      <h2 className="font-medium text-primary">Gmail Application Tracking</h2>
+      <p className="text-xs text-tertiary">
         Read-only access only — this app never sends, deletes, archives, or modifies anything in
         your mailbox, and never stores your password. Checks every 5 minutes for confirmations,
         assessments, interview requests, and rejections, and updates the Tracker automatically.
       </p>
 
       {!status.configured && (
-        <div className="text-sm bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-3">
+        <div className="text-sm bg-caution-quiet border border-caution-line text-caution rounded-lg px-4 py-3">
           Not set up yet — this requires your own free Google Cloud OAuth client. See SETUP.md for
           step-by-step instructions, then set GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET in .env and
           restart the app.
@@ -55,7 +55,7 @@ export default function GmailConnectionPanel() {
       {status.configured && !status.connected && (
         <a
           href="/api/gmail/auth/start"
-          className="inline-block rounded-lg bg-brand text-white text-sm font-medium px-4 py-2.5 hover:bg-brand-dark transition-colors"
+          className="inline-block rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 hover:bg-accent-dark transition-colors"
         >
           Connect Gmail
         </a>
@@ -63,17 +63,17 @@ export default function GmailConnectionPanel() {
 
       {status.connected && (
         <div className="space-y-2">
-          <p className="text-sm text-slate-700">
+          <p className="text-sm text-secondary">
             Connected as <span className="font-medium">{status.emailAddress}</span>
           </p>
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-faint">
             {status.lastSyncAt ? `Last checked ${new Date(status.lastSyncAt).toLocaleString()}` : "Not synced yet"}
           </p>
           <div className="flex gap-3">
             <button
               onClick={syncNow}
               disabled={syncing}
-              className="rounded-lg bg-brand text-white text-sm font-medium px-4 py-2 disabled:opacity-40 hover:bg-brand-dark transition-colors"
+              className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2 disabled:opacity-40 hover:bg-accent-dark transition-colors"
             >
               {syncing ? "Checking…" : "Check now"}
             </button>

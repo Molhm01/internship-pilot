@@ -60,7 +60,7 @@ describe("bulk score client", () => {
       queued: 18,
       failedToQueue: 0,
     });
-    const source = readFileSync(resolve(process.cwd(), "src/app/jobs/page.tsx"), "utf8");
+    const source = readFileSync(resolve(process.cwd(), "src/app/(app)/jobs/page.tsx"), "utf8");
     expect(source).toContain("Queued ${result.queued} jobs for scoring.");
   });
 
@@ -131,7 +131,7 @@ describe("bulk score client", () => {
   });
 
   it("does not trigger bulk scoring on Jobs page load", () => {
-    const source = readFileSync(resolve(process.cwd(), "src/app/jobs/page.tsx"), "utf8");
+    const source = readFileSync(resolve(process.cwd(), "src/app/(app)/jobs/page.tsx"), "utf8");
     expect(source).toContain("Score all unscored jobs");
     expect(source).toContain("handleScoreAllUnscored");
     expect(source).not.toContain("useEffect(() => {\n    void handleScoreAllUnscored");

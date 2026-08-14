@@ -8,17 +8,17 @@ export default function MatchScoreBadge({
   const normalizedEligibility = eligibility.toLowerCase();
   const color =
     score >= 75
-      ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+      ? "bg-verified-quiet text-verified border-verified-line"
       : score >= 50
-        ? "bg-amber-100 text-amber-800 border-amber-300"
-        : "bg-rose-100 text-rose-800 border-rose-300";
+        ? "bg-caution-quiet text-caution border-caution-line"
+        : "bg-critical-quiet text-critical border-critical-line";
 
   const eligibilityColor =
     normalizedEligibility === "pass"
-      ? "text-emerald-700"
+      ? "text-verified"
       : normalizedEligibility === "fail"
-        ? "text-rose-700"
-        : "text-slate-500";
+        ? "text-critical"
+        : "text-tertiary";
 
   return (
     <div className="flex items-center gap-2">

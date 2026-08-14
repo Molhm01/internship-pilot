@@ -1,24 +1,423 @@
 @import "tailwindcss";
 
+/* ============================================================================
+   Internship Pilot — design tokens
+   ----------------------------------------------------------------------------
+   Dark-first. Light is a complete, first-class alternate rather than an
+   afterthought, selected with `data-theme="light"` on <html>.
+
+   The visual language is instrument-like: layered surfaces separated by
+   hairlines rather than stacked cards, radii small enough to read as machined,
+   no gradient wash, and glow reserved exclusively for live Agent activity —
+   where it carries meaning rather than decoration.
+
+   The `--brand` / `--background` / `--foreground` group is the ORIGINAL palette,
+   still referenced by pages that have not been migrated yet. It is kept
+   deliberately and retired page by page.
+   ========================================================================== */
+
 :root {
-  --background: #f4f5f7;
-  --foreground: #1c2128;
-  --brand: #0d6d63;
-  --brand-dark: #0a534c;
+  color-scheme: dark;
+
+  /* --- Neutral ramp (dark) ------------------------------------------------
+     Very slightly blue. The low end is near-black but never pure #000, which
+     kills the sense of depth that layered surfaces depend on. */
+  --n-0: #08090b;
+  --n-25: #0a0c0f;
+  --n-50: #0e1014;
+  --n-100: #131519;
+  --n-150: #171a1f;
+  --n-200: #1d2026;
+  --n-300: #262a32;
+  --n-400: #333843;
+  --n-500: #4a505d;
+  --n-600: #6b7280;
+  --n-700: #8f97a3;
+  --n-800: #b7bec8;
+  --n-900: #e2e6eb;
+  --n-950: #f5f7f9;
+
+  /* --- Surfaces -----------------------------------------------------------
+     Four levels. Anything needing a fifth is over-nested and should be
+     restructured rather than given another surface. */
+  --canvas: #0a0c0f;
+  --surface: #0e1014;
+  --surface-raised: #131519;
+  --surface-overlay: #171a1f;
+  --surface-sunken: #08090b;
+
+  /* --- Lines --------------------------------------------------------------
+     Alpha rather than solid, so lines sit correctly on any surface level. */
+  --hairline: rgb(255 255 255 / 0.06);
+  --line: rgb(255 255 255 / 0.10);
+  --line-strong: rgb(255 255 255 / 0.16);
+
+  /* --- Text ---------------------------------------------------------------- */
+  --text-primary: #e8ecf1;
+  --text-secondary: #9aa3b0;
+  --text-tertiary: #6e7684;
+  --text-faint: #545b68;
+  --text-inverse: #08090b;
+
+  /* --- Accent -------------------------------------------------------------
+     One accent, continuous with the product's original teal but lifted to sit
+     on dark surfaces. Deliberately not purple, and never used as a gradient. */
+  --accent: #17bfa9;
+  --accent-hover: #29d6c0;
+  --accent-active: #12a08e;
+  --accent-quiet: rgb(23 191 169 / 0.10);
+  --accent-line: rgb(23 191 169 / 0.30);
+  --accent-text: #4fded0;
+
+  /* --- Status -------------------------------------------------------------- */
+  --positive: #35c48a;
+  --positive-quiet: rgb(53 196 138 / 0.10);
+  --positive-line: rgb(53 196 138 / 0.28);
+
+  --caution: #e0a92e;
+  --caution-quiet: rgb(224 169 46 / 0.10);
+  --caution-line: rgb(224 169 46 / 0.28);
+
+  --critical: #ef6a6a;
+  --critical-quiet: rgb(239 106 106 / 0.10);
+  --critical-line: rgb(239 106 106 / 0.28);
+
+  --info: #5b9df9;
+  --info-quiet: rgb(91 157 249 / 0.10);
+  --info-line: rgb(91 157 249 / 0.28);
+
+  /* --- Product-specific semantic tokens -----------------------------------
+     These encode meanings this product must express constantly and must never
+     be conflated. Section 4 of the brief turns on the distinction between an
+     action ATTEMPTED and an action VERIFIED, and between a trusted fact and a
+     generated suggestion. */
+
+  /* Agent is mid-flight: observing, reading options, acting. */
+  --pending: #7c8794;
+  --pending-quiet: rgb(124 135 148 / 0.10);
+  --pending-line: rgb(124 135 148 / 0.28);
+
+  /* Employer confirmed the action actually took. The product's core claim. */
+  --verified: #35c48a;
+  --verified-quiet: rgb(53 196 138 / 0.12);
+  --verified-line: rgb(53 196 138 / 0.32);
+
+  /* Machine-generated and not yet reviewed by the user. Blue, not purple. */
+  --ai: #6e9bff;
+  --ai-quiet: rgb(110 155 255 / 0.10);
+  --ai-line: rgb(110 155 255 / 0.30);
+
+  /* Demographic / protected information. Never inferred, always user-set. */
+  --sensitive: #a98fd6;
+  --sensitive-quiet: rgb(169 143 214 / 0.10);
+  --sensitive-line: rgb(169 143 214 / 0.28);
+
+  /* Agent stopped and needs a human. Not an error — an intentional handoff. */
+  --needs-input: #e0a92e;
+  --needs-input-quiet: rgb(224 169 46 / 0.12);
+  --needs-input-line: rgb(224 169 46 / 0.32);
+
+  /* --- Radii --------------------------------------------------------------
+     Ceiling is 10px and almost nothing reaches it. Pills are reserved for
+     status dots and nothing else. */
+  --r-xs: 2px;
+  --r-sm: 3px;
+  --r-md: 5px;
+  --r-lg: 7px;
+  --r-xl: 10px;
+
+  /* --- Elevation ----------------------------------------------------------
+     Shadows on dark do very little; depth comes from surface level and
+     hairlines. Overlay shadow exists for things that genuinely float. */
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.30);
+  --shadow-overlay:
+    0 16px 48px -12px rgb(0 0 0 / 0.64),
+    0 4px 12px -4px rgb(0 0 0 / 0.40);
+
+  /* --- Agent activity glow ------------------------------------------------
+     The ONLY glow in the system. It means "the Agent is doing something right
+     now". Using it decoratively destroys its signal value. */
+  --glow-agent: 0 0 0 1px rgb(23 191 169 / 0.30), 0 0 16px -2px rgb(23 191 169 / 0.35);
+  --glow-attention: 0 0 0 1px rgb(224 169 46 / 0.32), 0 0 16px -2px rgb(224 169 46 / 0.30);
+
+  /* --- Motion -------------------------------------------------------------- */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 280ms;
+
+  /* --- Control heights ----------------------------------------------------- */
+  --control-sm: 24px;
+  --control-md: 28px;
+  --control-lg: 34px;
+
+  /* --- Legacy. Do not add usages; deleted once no page reads them. --------- */
+  --background: var(--canvas);
+  --foreground: var(--text-primary);
+  --brand: var(--accent);
+  --brand-dark: var(--accent-active);
 }
 
+/* ============================================================================
+   Light theme
+   ----------------------------------------------------------------------------
+   Not a tint of the dark theme — the ramp inverts and the accent darkens so it
+   still passes contrast on white. Status hues are desaturated relative to their
+   dark counterparts, because saturated status colour on white reads as a toy.
+   ========================================================================== */
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --n-0: #ffffff;
+  --n-25: #fbfbfc;
+  --n-50: #f6f7f9;
+  --n-100: #eef0f3;
+  --n-150: #e5e8ec;
+  --n-200: #dbdfe5;
+  --n-300: #c4cad3;
+  --n-400: #9aa2ae;
+  --n-500: #757d8a;
+  --n-600: #5a616d;
+  --n-700: #414751;
+  --n-800: #2a2f37;
+  --n-900: #16181d;
+  --n-950: #0b0d10;
+
+  --canvas: #fbfbfc;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-overlay: #ffffff;
+  --surface-sunken: #f6f7f9;
+
+  --hairline: rgb(16 20 26 / 0.07);
+  --line: rgb(16 20 26 / 0.12);
+  --line-strong: rgb(16 20 26 / 0.20);
+
+  --text-primary: #16181d;
+  --text-secondary: #5a616d;
+  --text-tertiary: #757d8a;
+  --text-faint: #9aa2ae;
+  --text-inverse: #ffffff;
+
+  --accent: #0d6d63;
+  --accent-hover: #0a5b52;
+  --accent-active: #084a43;
+  --accent-quiet: rgb(13 109 99 / 0.08);
+  --accent-line: rgb(13 109 99 / 0.28);
+  --accent-text: #0a5b52;
+
+  --positive: #1a7f5a;
+  --positive-quiet: rgb(26 127 90 / 0.08);
+  --positive-line: rgb(26 127 90 / 0.26);
+
+  --caution: #8a6212;
+  --caution-quiet: rgb(138 98 18 / 0.09);
+  --caution-line: rgb(138 98 18 / 0.26);
+
+  --critical: #a93636;
+  --critical-quiet: rgb(169 54 54 / 0.08);
+  --critical-line: rgb(169 54 54 / 0.26);
+
+  --info: #2a5f9e;
+  --info-quiet: rgb(42 95 158 / 0.08);
+  --info-line: rgb(42 95 158 / 0.26);
+
+  --pending: #6b7280;
+  --pending-quiet: rgb(107 114 128 / 0.09);
+  --pending-line: rgb(107 114 128 / 0.26);
+
+  --verified: #1a7f5a;
+  --verified-quiet: rgb(26 127 90 / 0.10);
+  --verified-line: rgb(26 127 90 / 0.30);
+
+  --ai: #3b64c4;
+  --ai-quiet: rgb(59 100 196 / 0.08);
+  --ai-line: rgb(59 100 196 / 0.28);
+
+  --sensitive: #6d55a3;
+  --sensitive-quiet: rgb(109 85 163 / 0.08);
+  --sensitive-line: rgb(109 85 163 / 0.26);
+
+  --needs-input: #8a6212;
+  --needs-input-quiet: rgb(138 98 18 / 0.11);
+  --needs-input-line: rgb(138 98 18 / 0.30);
+
+  --shadow-raised: 0 1px 2px rgb(11 13 16 / 0.05);
+  --shadow-overlay:
+    0 16px 40px -12px rgb(11 13 16 / 0.18),
+    0 4px 10px -4px rgb(11 13 16 / 0.08);
+
+  --glow-agent: 0 0 0 1px rgb(13 109 99 / 0.28), 0 0 14px -3px rgb(13 109 99 / 0.28);
+  --glow-attention: 0 0 0 1px rgb(138 98 18 / 0.30), 0 0 14px -3px rgb(138 98 18 / 0.26);
+}
+
+/* ============================================================================
+   Tailwind theme mapping
+   ========================================================================== */
+
 @theme inline {
+  --color-n-0: var(--n-0);
+  --color-n-25: var(--n-25);
+  --color-n-50: var(--n-50);
+  --color-n-100: var(--n-100);
+  --color-n-150: var(--n-150);
+  --color-n-200: var(--n-200);
+  --color-n-300: var(--n-300);
+  --color-n-400: var(--n-400);
+  --color-n-500: var(--n-500);
+  --color-n-600: var(--n-600);
+  --color-n-700: var(--n-700);
+  --color-n-800: var(--n-800);
+  --color-n-900: var(--n-900);
+  --color-n-950: var(--n-950);
+
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-raised: var(--surface-raised);
+  --color-overlay: var(--surface-overlay);
+  --color-sunken: var(--surface-sunken);
+
+  --color-hairline: var(--hairline);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+
+  --color-primary: var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-tertiary: var(--text-tertiary);
+  --color-faint: var(--text-faint);
+  --color-inverse: var(--text-inverse);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-active: var(--accent-active);
+  --color-accent-quiet: var(--accent-quiet);
+  --color-accent-line: var(--accent-line);
+  --color-accent-text: var(--accent-text);
+
+  --color-positive: var(--positive);
+  --color-positive-quiet: var(--positive-quiet);
+  --color-positive-line: var(--positive-line);
+  --color-caution: var(--caution);
+  --color-caution-quiet: var(--caution-quiet);
+  --color-caution-line: var(--caution-line);
+  --color-critical: var(--critical);
+  --color-critical-quiet: var(--critical-quiet);
+  --color-critical-line: var(--critical-line);
+  --color-info: var(--info);
+  --color-info-quiet: var(--info-quiet);
+  --color-info-line: var(--info-line);
+
+  --color-pending: var(--pending);
+  --color-pending-quiet: var(--pending-quiet);
+  --color-pending-line: var(--pending-line);
+  --color-verified: var(--verified);
+  --color-verified-quiet: var(--verified-quiet);
+  --color-verified-line: var(--verified-line);
+  --color-ai: var(--ai);
+  --color-ai-quiet: var(--ai-quiet);
+  --color-ai-line: var(--ai-line);
+  --color-sensitive: var(--sensitive);
+  --color-sensitive-quiet: var(--sensitive-quiet);
+  --color-sensitive-line: var(--sensitive-line);
+  --color-needs-input: var(--needs-input);
+  --color-needs-input-quiet: var(--needs-input-quiet);
+  --color-needs-input-line: var(--needs-input-line);
+
+  /* Legacy */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-brand: var(--brand);
   --color-brand-dark: var(--brand-dark);
-  --font-sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+
+  --radius-xs: var(--r-xs);
+  --radius-sm: var(--r-sm);
+  --radius-md: var(--r-md);
+  --radius-lg: var(--r-lg);
+  --radius-xl: var(--r-xl);
+
+  --shadow-raised: var(--shadow-raised);
+  --shadow-overlay: var(--shadow-overlay);
+  --shadow-agent: var(--glow-agent);
+  --shadow-attention: var(--glow-attention);
+
+  --ease-standard: var(--ease-standard);
+  --ease-exit: var(--ease-exit);
+  --ease-spring: var(--ease-spring);
+
+  /* Type families. Geist is self-hosted via the `geist` package — no build-time
+     or runtime network fetch, which matters for an offline-first local app. */
+  --font-sans: var(--font-geist-sans), "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+
+  /* Type scale */
+  --text-hero: 4rem;
+  --text-hero--line-height: 1.0;
+  --text-hero--letter-spacing: -0.038em;
+  --text-hero--font-weight: 500;
+
+  --text-display: 3rem;
+  --text-display--line-height: 1.04;
+  --text-display--letter-spacing: -0.032em;
+  --text-display--font-weight: 500;
+
+  --text-title: 2rem;
+  --text-title--line-height: 1.12;
+  --text-title--letter-spacing: -0.026em;
+  --text-title--font-weight: 500;
+
+  --text-heading: 1.3125rem;
+  --text-heading--line-height: 1.24;
+  --text-heading--letter-spacing: -0.019em;
+  --text-heading--font-weight: 500;
+
+  --text-subhead: 1.0625rem;
+  --text-subhead--line-height: 1.4;
+  --text-subhead--letter-spacing: -0.012em;
+  --text-subhead--font-weight: 500;
+
+  --text-body: 0.875rem;
+  --text-body--line-height: 1.55;
+
+  --text-small: 0.8125rem;
+  --text-small--line-height: 1.5;
+
+  --text-micro: 0.6875rem;
+  --text-micro--line-height: 1.4;
+  --text-micro--letter-spacing: 0.075em;
+}
+
+/* ============================================================================
+   Base
+   ========================================================================== */
+
+html {
+  /* Prevents the canvas flashing white during route transitions on dark. */
+  background: var(--canvas);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--canvas);
+  color: var(--text-primary);
   font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: 1.55;
+  font-feature-settings: "cv11", "ss01";
+  text-rendering: optimizeLegibility;
+}
+
+/* Numbers that sit in columns must not dance as they update. Every metric,
+   count, score and timestamp in this product is live-updating. */
+.tabular,
+table {
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--text-inverse);
 }
 
 ::-webkit-scrollbar {
@@ -26,36 +425,133 @@ body {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #c7ccd3;
+  background: var(--n-300);
   border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--n-400);
+  background-clip: content-box;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 
+/* Keyboard-only. A ring that also fires on mouse clicks is what makes dense
+   interfaces feel noisy. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: var(--r-xs);
+}
+
+/* ============================================================================
+   Engineering visual language
+   ----------------------------------------------------------------------------
+   Used sparingly and only on marketing/hero surfaces. Section 60 of the brief:
+   technical motifs, not a hacker-movie terminal.
+   ========================================================================== */
+
+/* Faint technical grid. Sized on an 8px multiple so it aligns to the layout. */
+.bg-grid {
+  background-image:
+    linear-gradient(to right, var(--hairline) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--hairline) 1px, transparent 1px);
+  background-size: 64px 64px;
+}
+
+.bg-grid-fine {
+  background-image:
+    linear-gradient(to right, var(--hairline) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--hairline) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+
+/* Fades a decorative layer out toward the edges so it never competes with
+   content or ends in a hard line. */
+.mask-fade-edges {
+  mask-image: radial-gradient(ellipse 75% 65% at 50% 40%, #000 40%, transparent 100%);
+}
+.mask-fade-b {
+  mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+}
+
+/* ============================================================================
+   Motion
+   ========================================================================== */
+
+/* The Agent-is-working pulse. Opacity only — no scale, which would reflow, and
+   no colour cycling, which would read as decorative. */
+@keyframes agent-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.animate-agent-pulse {
+  animation: agent-pulse 1.6s var(--ease-standard) infinite;
+}
+
+/* Verification check draw-on. */
+@keyframes draw-check {
+  from { stroke-dashoffset: 24; }
+  to { stroke-dashoffset: 0; }
+}
+.animate-draw-check {
+  stroke-dasharray: 24;
+  animation: draw-check 380ms var(--ease-standard) forwards;
+}
+
+@keyframes shimmer {
+  from { background-position: -200% 0; }
+  to { background-position: 200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ============================================================================
+   Legacy input classes
+   ----------------------------------------------------------------------------
+   Still used by pages awaiting migration. Retuned to the new tokens so those
+   pages track the redesign instead of drifting further from it.
+   New code uses the Input/Select primitives instead.
+   ========================================================================== */
+
 .input {
   width: 100%;
-  border: 1px solid #cbd2d9;
-  border-radius: 0.5rem;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.875rem;
-  background: white;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 0.4rem 0.6rem;
+  font-size: var(--text-body);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  transition: border-color var(--dur-fast) var(--ease-standard);
 }
 .input:focus {
   outline: none;
-  border-color: var(--brand);
-  box-shadow: 0 0 0 3px rgba(13, 109, 99, 0.15);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-quiet);
 }
 
 .input-sm {
-  border: 1px solid #cbd2d9;
-  border-radius: 0.5rem;
-  padding: 0.35rem 0.6rem;
-  font-size: 0.8rem;
-  background: white;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 0.25rem 0.5rem;
+  font-size: var(--text-small);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  transition: border-color var(--dur-fast) var(--ease-standard);
 }
 .input-sm:focus {
   outline: none;
-  border-color: var(--brand);
-  box-shadow: 0 0 0 3px rgba(13, 109, 99, 0.15);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-quiet);
 }

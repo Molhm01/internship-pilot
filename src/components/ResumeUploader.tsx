@@ -85,8 +85,8 @@ export default function ResumeUploader({
   }
 
   return (
-    <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
-      <h2 className="font-medium text-slate-900">1. Upload your resume (PDF)</h2>
+    <section className="bg-surface rounded-lg border border-hairline p-6 space-y-4">
+      <h2 className="font-medium text-primary">1. Upload your resume (PDF)</h2>
 
       {!doc && (
         <div
@@ -97,17 +97,17 @@ export default function ResumeUploader({
           }}
           onDragLeave={() => setDragActive(false)}
           onDrop={onDrop}
-          className={`rounded-xl border-2 border-dashed p-10 text-center transition-colors ${
-            dragActive ? "border-brand bg-brand/5" : "border-slate-300"
+          className={`rounded-lg border-2 border-dashed p-10 text-center transition-colors ${
+            dragActive ? "border-accent-line bg-accent/5" : "border-line"
           }`}
         >
-          <p className="text-slate-600 font-medium mb-3">Drag your resume PDF here</p>
-          <p className="text-slate-400 text-sm mb-4">or</p>
+          <p className="text-secondary font-medium mb-3">Drag your resume PDF here</p>
+          <p className="text-faint text-sm mb-4">or</p>
           <button
             type="button"
             onClick={() => inputRef.current?.click()}
             disabled={uploading}
-            className="rounded-lg bg-brand text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-brand-dark transition-colors"
+            className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-dark transition-colors"
           >
             {uploading ? "Uploading…" : "Choose PDF"}
           </button>
@@ -122,7 +122,7 @@ export default function ResumeUploader({
               if (file) handleFile(file);
             }}
           />
-          <p className="text-xs text-slate-400 mt-4">
+          <p className="text-xs text-faint mt-4">
             PDF only, up to 10 MB. Extracted entirely on your computer — nothing is uploaded
             anywhere else.
           </p>
@@ -130,21 +130,21 @@ export default function ResumeUploader({
       )}
 
       {error && (
-        <div className="rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-sm px-4 py-3">
+        <div className="rounded-lg bg-critical-quiet border border-critical-line text-critical text-sm px-4 py-3">
           {error}
         </div>
       )}
 
       {doc && doc.status === "scanned" && (
         <div className="space-y-3">
-          <div className="rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-3">
+          <div className="rounded-lg bg-caution-quiet border border-caution-line text-caution text-sm px-4 py-3">
             This PDF appears to be scanned. Text could not be extracted.
           </div>
-          <div className="text-xs text-slate-500">
+          <div className="text-xs text-tertiary">
             {doc.filename} · {formatBytes(doc.sizeBytes)} · {doc.pageCount} page
             {doc.pageCount === 1 ? "" : "s"}
           </div>
-          <button onClick={handleRemove} className="text-sm text-brand hover:underline">
+          <button onClick={handleRemove} className="text-sm text-accent-text hover:underline">
             Remove and upload a different PDF
           </button>
         </div>
@@ -152,12 +152,12 @@ export default function ResumeUploader({
 
       {doc && doc.status === "ok" && (
         <div className="space-y-3">
-          <div className="flex items-center justify-between gap-4 text-xs text-slate-500">
+          <div className="flex items-center justify-between gap-4 text-xs text-tertiary">
             <span className="truncate">
               📄 {doc.filename} · {formatBytes(doc.sizeBytes)} · {doc.pageCount} page
               {doc.pageCount === 1 ? "" : "s"}
             </span>
-            <button onClick={handleRemove} className="shrink-0 text-brand hover:underline">
+            <button onClick={handleRemove} className="shrink-0 text-accent-text hover:underline">
               Remove / upload a different PDF
             </button>
           </div>
@@ -165,12 +165,12 @@ export default function ResumeUploader({
             value={text}
             onChange={(e) => setText(e.target.value)}
             rows={14}
-            className="w-full rounded-lg border border-slate-300 p-4 text-sm leading-relaxed font-mono focus:outline-none focus:ring-2 focus:ring-brand/40 focus:border-brand"
+            className="w-full rounded-lg border border-line p-4 text-sm leading-relaxed font-mono focus:outline-none focus:ring-2 focus:ring-brand/40 focus:border-accent-line"
           />
           <button
             onClick={() => onAnalyze(text)}
             disabled={analyzing || text.trim().length < 30}
-            className="rounded-lg bg-brand text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-brand-dark transition-colors"
+            className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-accent-dark transition-colors"
           >
             {analyzing ? "Analyzing… (can take a minute)" : "Analyze Resume"}
           </button>

@@ -32,15 +32,15 @@ export default function ApplicationAgentSettings() {
   if (!settings) return null;
 
   return (
-    <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
-      <h2 className="font-medium text-slate-900">Application Agent</h2>
-      <p className="text-xs text-slate-500">
+    <section className="bg-surface rounded-lg border border-hairline p-6 space-y-4">
+      <h2 className="font-medium text-primary">Application Agent</h2>
+      <p className="text-xs text-tertiary">
         Controls whether the agent may fill application forms on official employer pages. It never
         clicks Submit, bypasses CAPTCHAs, or guesses citizenship, sponsorship, clearance, or
         demographic answers.
       </p>
       <label className="block space-y-1">
-        <span className="text-xs font-medium text-slate-600">Mode</span>
+        <span className="text-xs font-medium text-secondary">Mode</span>
         <select
           value={settings.mode}
           onChange={(event) => void save(event.target.value as Settings["mode"])}
@@ -51,7 +51,7 @@ export default function ApplicationAgentSettings() {
           <option value="FILL_TO_SUBMIT">Fill To Submit - fills the form, then you review and submit</option>
         </select>
       </label>
-      <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+      <p className="text-xs text-verified bg-verified-quiet border border-verified-line rounded-lg px-3 py-2">
         AUTO_SUBMIT is permanently disabled. Every completed form stops at final review for you.
       </p>
     </section>

@@ -260,17 +260,17 @@ export default function CanonicalProfileForm() {
   }
 
   if (status === "loading") {
-    return <p className="text-sm text-slate-500">Loading your profile…</p>;
+    return <p className="text-sm text-tertiary">Loading your profile…</p>;
   }
 
   return (
     <form onSubmit={save} className="space-y-8">
       {gaps.length > 0 ? (
-        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4">
+        <div className="rounded-lg border border-caution-line bg-caution-quiet p-4">
           <p className="text-sm font-medium text-amber-900">
             An employer form cannot be completed from this profile yet.
           </p>
-          <ul className="mt-2 list-disc pl-5 text-sm text-amber-800">
+          <ul className="mt-2 list-disc pl-5 text-sm text-caution">
             {gaps.map((gap) => (
               <li key={gap}>{gap}</li>
             ))}
@@ -279,13 +279,13 @@ export default function CanonicalProfileForm() {
       ) : null}
 
       {TEXT_FIELD_GROUPS.map((group) => (
-        <section key={group.title} className="rounded-xl border border-slate-200 bg-white p-6">
-          <h2 className="font-medium text-slate-900">{group.title}</h2>
-          {group.hint ? <p className="mt-1 text-sm text-slate-500">{group.hint}</p> : null}
+        <section key={group.title} className="rounded-lg border border-hairline bg-surface p-6">
+          <h2 className="font-medium text-primary">{group.title}</h2>
+          {group.hint ? <p className="mt-1 text-sm text-tertiary">{group.hint}</p> : null}
           <div className="mt-4 grid grid-cols-2 gap-4">
             {group.fields.map((field) => (
               <label key={field.name} className="block text-sm">
-                <span className="text-slate-700">{field.label}</span>
+                <span className="text-secondary">{field.label}</span>
                 <input
                   name={field.name}
                   type={field.type ?? "text"}
@@ -294,7 +294,7 @@ export default function CanonicalProfileForm() {
                   className="input mt-1 w-full"
                 />
                 {field.hint ? (
-                  <span className="mt-1 block text-xs text-slate-500">{field.hint}</span>
+                  <span className="mt-1 block text-xs text-tertiary">{field.hint}</span>
                 ) : null}
               </label>
             ))}
@@ -302,12 +302,12 @@ export default function CanonicalProfileForm() {
         </section>
       ))}
 
-      <section className="rounded-xl border border-slate-200 bg-white p-6">
-        <h2 className="font-medium text-slate-900">Application preferences</h2>
+      <section className="rounded-lg border border-hairline bg-surface p-6">
+        <h2 className="font-medium text-primary">Application preferences</h2>
         <div className="mt-4 grid grid-cols-2 gap-4">
           {SELECT_FIELDS.map((field) => (
             <label key={field.name} className="block text-sm">
-              <span className="text-slate-700">{field.label}</span>
+              <span className="text-secondary">{field.label}</span>
               <select
                 name={field.name}
                 value={stringValue(profile, field.name)}
@@ -321,13 +321,13 @@ export default function CanonicalProfileForm() {
                 ))}
               </select>
               {field.hint ? (
-                <span className="mt-1 block text-xs text-slate-500">{field.hint}</span>
+                <span className="mt-1 block text-xs text-tertiary">{field.hint}</span>
               ) : null}
             </label>
           ))}
           {LIST_FIELDS.map((field) => (
             <label key={field.name} className="block text-sm">
-              <span className="text-slate-700">{field.label}</span>
+              <span className="text-secondary">{field.label}</span>
               <input
                 name={field.name}
                 value={listValue(profile, field.name)}
@@ -344,7 +344,7 @@ export default function CanonicalProfileForm() {
                 }
                 className="input mt-1 w-full"
               />
-              <span className="mt-1 block text-xs text-slate-500">{field.hint}</span>
+              <span className="mt-1 block text-xs text-tertiary">{field.hint}</span>
             </label>
           ))}
         </div>
@@ -352,7 +352,7 @@ export default function CanonicalProfileForm() {
         <div className="mt-6 grid grid-cols-2 gap-4">
           {TRISTATE_FIELDS.map((field) => (
             <label key={field.name} className="block text-sm">
-              <span className="text-slate-700">{field.label}</span>
+              <span className="text-secondary">{field.label}</span>
               <select
                 name={field.name}
                 value={triValue(profile, field.name)}
@@ -366,23 +366,23 @@ export default function CanonicalProfileForm() {
                 <option value="no">No</option>
               </select>
               {field.hint ? (
-                <span className="mt-1 block text-xs text-slate-500">{field.hint}</span>
+                <span className="mt-1 block text-xs text-tertiary">{field.hint}</span>
               ) : null}
             </label>
           ))}
         </div>
       </section>
 
-      <section className="rounded-xl border border-slate-200 bg-white p-6">
-        <h2 className="font-medium text-slate-900">Sensitive questions</h2>
-        <p className="mt-1 text-sm text-slate-500">
+      <section className="rounded-lg border border-hairline bg-surface p-6">
+        <h2 className="font-medium text-primary">Sensitive questions</h2>
+        <p className="mt-1 text-sm text-tertiary">
           Only what you type here is ever disclosed. Left empty, the agent leaves the question for
           you rather than answering it — including declining on your behalf.
         </p>
         <div className="mt-4 grid grid-cols-2 gap-4">
           {SENSITIVE_FIELDS.map((field) => (
             <label key={field.name} className="block text-sm">
-              <span className="text-slate-700">{field.label}</span>
+              <span className="text-secondary">{field.label}</span>
               <input
                 name={field.name}
                 value={stringValue(profile, field.name)}
@@ -399,12 +399,12 @@ export default function CanonicalProfileForm() {
         <button
           type="submit"
           disabled={status === "saving"}
-          className="rounded-lg bg-brand px-5 py-2 text-sm font-medium text-white disabled:opacity-50"
+          className="rounded-lg bg-accent px-5 py-2 text-sm font-medium text-white disabled:opacity-50"
         >
           {status === "saving" ? "Saving…" : "Save profile"}
         </button>
-        {status === "saved" ? <span className="text-sm text-emerald-700">Saved.</span> : null}
-        {error ? <span className="text-sm text-red-700">{error}</span> : null}
+        {status === "saved" ? <span className="text-sm text-verified">Saved.</span> : null}
+        {error ? <span className="text-sm text-critical">{error}</span> : null}
       </div>
     </form>
   );

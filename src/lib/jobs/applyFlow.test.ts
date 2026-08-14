@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const UI_FILES = [
   path.resolve(process.cwd(), "src/components/JobCard.tsx"),
-  path.resolve(process.cwd(), "src/app/jobs/[id]/page.tsx"),
+  path.resolve(process.cwd(), "src/app/(app)/jobs/[id]/page.tsx"),
 ];
 
 /**

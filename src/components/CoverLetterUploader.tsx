@@ -68,8 +68,8 @@ export default function CoverLetterUploader() {
   }
 
   return (
-    <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
-      <h2 className="font-medium text-slate-900">Master cover letter (optional)</h2>
+    <section className="bg-surface rounded-lg border border-hairline p-6 space-y-4">
+      <h2 className="font-medium text-primary">Master cover letter (optional)</h2>
 
       {!doc && (
         <div
@@ -84,17 +84,17 @@ export default function CoverLetterUploader() {
             const file = e.dataTransfer.files?.[0];
             if (file) handleFile(file);
           }}
-          className={`rounded-xl border-2 border-dashed p-8 text-center transition-colors ${
-            dragActive ? "border-brand bg-brand/5" : "border-slate-300"
+          className={`rounded-lg border-2 border-dashed p-8 text-center transition-colors ${
+            dragActive ? "border-accent-line bg-accent/5" : "border-line"
           }`}
         >
-          <p className="text-slate-600 font-medium mb-3">Drag your master cover letter PDF here</p>
-          <p className="text-slate-400 text-sm mb-4">or</p>
+          <p className="text-secondary font-medium mb-3">Drag your master cover letter PDF here</p>
+          <p className="text-faint text-sm mb-4">or</p>
           <button
             type="button"
             onClick={() => inputRef.current?.click()}
             disabled={uploading}
-            className="rounded-lg bg-brand text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-brand-dark transition-colors"
+            className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-dark transition-colors"
           >
             {uploading ? "Uploading…" : "Choose PDF"}
           </button>
@@ -112,15 +112,15 @@ export default function CoverLetterUploader() {
       )}
 
       {error && (
-        <div className="rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-sm px-4 py-3">{error}</div>
+        <div className="rounded-lg bg-critical-quiet border border-critical-line text-critical text-sm px-4 py-3">{error}</div>
       )}
 
       {doc && (
-        <div className="flex items-center justify-between text-xs text-slate-500">
+        <div className="flex items-center justify-between text-xs text-tertiary">
           <span>
             📄 {doc.filename} · {formatBytes(doc.sizeBytes)} · {doc.pageCount} page{doc.pageCount === 1 ? "" : "s"}
           </span>
-          <button onClick={handleRemove} className="text-brand hover:underline">
+          <button onClick={handleRemove} className="text-accent-text hover:underline">
             Remove
           </button>
         </div>

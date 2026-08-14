@@ -5,32 +5,32 @@ import { badgeFor, type BadgeKind } from "@/lib/jobs/verificationModel";
 // official-destination verification.
 const BADGE: Record<BadgeKind, { style: string; label: string; title: string }> = {
   official_verified: {
-    style: "bg-emerald-100 text-emerald-800 border-emerald-300",
+    style: "bg-verified-quiet text-verified border-verified-line",
     label: "✓ Official destination verified",
     title: "The official employer application page was independently confirmed at the last check.",
   },
   source_listed: {
-    style: "bg-sky-100 text-sky-800 border-sky-300",
+    style: "bg-info-quiet text-info border-info-line",
     label: "Source listed",
     title: "Currently listed on the discovery source (Jobright/Simplify/Intern List). Official destination not yet independently verified — still active and applyable.",
   },
   verification_pending: {
-    style: "bg-amber-100 text-amber-800 border-amber-300",
+    style: "bg-caution-quiet text-caution border-caution-line",
     label: "Verification pending",
     title: "A destination check is queued or was temporarily inconclusive. Still active and applyable.",
   },
   closed_confirmed: {
-    style: "bg-rose-100 text-rose-700 border-rose-300",
+    style: "bg-critical-quiet text-critical border-critical-line",
     label: "Closed confirmed",
     title: "The destination explicitly reported the posting as closed/removed (404/410).",
   },
   destination_mismatch: {
-    style: "bg-orange-100 text-orange-800 border-orange-300",
+    style: "bg-caution-quiet text-caution border-caution-line",
     label: "Destination mismatch",
     title: "The final destination clearly has a different company/title/job id.",
   },
   security_blocked: {
-    style: "bg-rose-200 text-rose-900 border-rose-400",
+    style: "bg-critical-quiet text-critical border-critical-line",
     label: "Security blocked",
     title: "The destination appears fraudulent/malicious or violates the application safety policy.",
   },

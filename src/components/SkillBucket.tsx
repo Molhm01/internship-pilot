@@ -32,20 +32,20 @@ export default function SkillBucket({
 }) {
   const style = STYLES[variant];
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4">
+    <div className="rounded-lg border border-hairline bg-surface p-4">
       <div className="flex items-center gap-2 mb-1">
         <span className={`w-2 h-2 rounded-full ${style.dot}`} />
-        <h3 className="text-sm font-semibold text-slate-800">{style.title}</h3>
+        <h3 className="text-sm font-semibold text-primary">{style.title}</h3>
       </div>
-      <p className="text-xs text-slate-500 mb-3">{style.description}</p>
+      <p className="text-xs text-tertiary mb-3">{style.description}</p>
       {items.length === 0 ? (
-        <p className="text-xs text-slate-400 italic">None</p>
+        <p className="text-xs text-faint italic">None</p>
       ) : (
         <ul className="space-y-2">
           {items.map((item, i) => (
             <li key={i} className="text-sm">
-              <span className="font-medium text-slate-800">{item.skill}</span>
-              <p className="text-xs text-slate-500">{item.reason}</p>
+              <span className="font-medium text-primary">{item.skill}</span>
+              <p className="text-xs text-tertiary">{item.reason}</p>
             </li>
           ))}
         </ul>

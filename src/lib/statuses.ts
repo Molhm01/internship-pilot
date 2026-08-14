@@ -44,22 +44,22 @@ export const STATUS_LABELS: Record<TrackerStatus, string> = {
 };
 
 export const STATUS_COLORS: Record<TrackerStatus, string> = {
-  DISCOVERED: "bg-slate-100 text-slate-700 border-slate-300",
-  VERIFIED: "bg-sky-100 text-sky-700 border-sky-300",
-  INELIGIBLE: "bg-neutral-200 text-neutral-600 border-neutral-300",
-  TAILORING: "bg-amber-100 text-amber-700 border-amber-300",
-  DOCUMENT_QA: "bg-amber-100 text-amber-800 border-amber-300",
-  READY_TO_APPLY: "bg-indigo-100 text-indigo-700 border-indigo-300",
-  QUEUED: "bg-indigo-100 text-indigo-800 border-indigo-300",
-  APPLYING: "bg-cyan-100 text-cyan-700 border-cyan-300",
-  NEEDS_USER_ACTION: "bg-orange-100 text-orange-800 border-orange-300",
-  SUBMITTED: "bg-blue-100 text-blue-700 border-blue-300",
-  ASSESSMENT_REQUIRED: "bg-purple-100 text-purple-700 border-purple-300",
-  INTERVIEW: "bg-violet-100 text-violet-700 border-violet-300",
-  REJECTED: "bg-rose-100 text-rose-700 border-rose-300",
-  OFFER: "bg-emerald-100 text-emerald-700 border-emerald-300",
-  CLOSED: "bg-neutral-200 text-neutral-600 border-neutral-300",
-  FAILED: "bg-red-100 text-red-700 border-red-300",
+  DISCOVERED: "bg-n-150 text-secondary border-line",
+  VERIFIED: "bg-info-quiet text-info border-info-line",
+  INELIGIBLE: "bg-n-150 text-tertiary border-line",
+  TAILORING: "bg-caution-quiet text-caution border-caution-line",
+  DOCUMENT_QA: "bg-caution-quiet text-caution border-caution-line",
+  READY_TO_APPLY: "bg-accent-quiet text-accent-text border-accent-line",
+  QUEUED: "bg-accent-quiet text-accent-text border-accent-line",
+  APPLYING: "bg-accent-quiet text-accent-text border-accent-line",
+  NEEDS_USER_ACTION: "bg-caution-quiet text-caution border-caution-line",
+  SUBMITTED: "bg-info-quiet text-info border-info-line",
+  ASSESSMENT_REQUIRED: "bg-info-quiet text-info border-info-line",
+  INTERVIEW: "bg-accent-quiet text-accent-text border-accent-line",
+  REJECTED: "bg-critical-quiet text-critical border-critical-line",
+  OFFER: "bg-verified-quiet text-verified border-verified-line",
+  CLOSED: "bg-n-150 text-tertiary border-line",
+  FAILED: "bg-critical-quiet text-critical border-critical-line",
 };
 
 export const FACT_TYPES = [
