@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from "next/server";
+import { withUser } from "@/lib/auth/session";
+import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { isCloudRuntime } from "@/lib/runtime/deployment";
@@ -106,6 +107,7 @@ async function transferDocuments(
   input: z.infer<typeof inputSchema>,
   baseUrl: string,
   token: string,
+  userId: string,
 ): Promise<{ resumeId: string; coverLetterId?: string }> {
   if (!input.websiteJobId) {
     return {
@@ -122,6 +124,10 @@ async function transferDocuments(
   ];
   const documents = await prisma.generatedDocument.findMany({
     where: {
+      // Owner first. Document ids arrive in the request body, so without this
+      // the route would hand another applicant's résumé to the local agent on
+      // the strength of an id and a matching job.
+      userId,
       id: { in: requestedIds },
       jobId: input.websiteJobId,
       qaStatus: "pass",
@@ -168,7 +174,13 @@ async function transferDocuments(
   return { resumeId: result.resumeId, ...(result.coverLetterId ? { coverLetterId: result.coverLetterId } : {}) };
 }
 
-export async function POST(request: NextRequest) {
+/**
+ * Hands an application to the user's own local agent.
+ *
+ * The documents transferred are looked up against the signed-in user; the job
+ * is shared, the résumé is not.
+ */
+export const POST = withUser(async (request, user) => {
   try {
     const body = await request.json().catch(() => null);
     const parsed = inputSchema.safeParse(body);
@@ -206,7 +218,7 @@ export async function POST(request: NextRequest) {
     const destination = await resolveOfficialApplicationDestination(
       storedJob ?? { officialApplyUrl: input.url },
     );
-    const documentIds = await transferDocuments(input, baseUrl, token);
+    const documentIds = await transferDocuments(input, baseUrl, token, user.id);
     const session = sessionSchema.parse(
       await agentRequest(baseUrl, token, "/application-sessions", {
         method: "POST",
@@ -249,4 +261,4 @@ export async function POST(request: NextRequest) {
     });
     return NextResponse.json({ error: "SESSION_CREATION_FAILED" }, { status: 500 });
   }
-}
+});

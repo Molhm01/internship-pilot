@@ -40,7 +40,7 @@ describe("POST /api/jobs/[id]/generate-documents", () => {
       coverLetterDocumentId: "cover-v2",
       agentDelivery: generated.agentDelivery,
     });
-    expect(generateDocumentsForJob).toHaveBeenCalledWith("job-1", {
+    expect(generateDocumentsForJob).toHaveBeenCalledWith("job-1", "test-user", {
       includeCoverLetter: true,
     });
   });
@@ -77,4 +77,22 @@ describe("POST /api/jobs/[id]/generate-documents", () => {
       error: "Document generation failed unexpectedly. Existing versions were kept.",
     });
   });
+});
+
+// Route handlers authenticate through this module. The tests below call them
+// directly, so a session has to exist; who it belongs to is exercised by
+// src/lib/auth/multiUserIsolation.test.ts against a real database.
+vi.mock("@/lib/auth/session", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/auth/session")>("@/lib/auth/session");
+  const user = { id: "test-user", email: "test@example.test", name: "Test", image: null, emailVerified: true };
+  return {
+    ...actual,
+    currentUser: async () => user,
+    requireUser: async () => user,
+    guardSession: async () => null,
+    withUser:
+      <C>(handler: (request: Request, sessionUser: typeof user, context: C) => Promise<Response>) =>
+      async (request: Request, context: C) =>
+        handler(request, user, context),
+  };
 });

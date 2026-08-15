@@ -86,6 +86,7 @@ async function deliverStored(
  */
 export async function deliverLatestDocumentsForJob(
   jobId: string,
+  userId: string,
   deliver: typeof deliverDocumentToAgent = deliverDocumentToAgent,
 ): Promise<LatestDeliveryReport> {
   const job = await prisma.job.findUnique({

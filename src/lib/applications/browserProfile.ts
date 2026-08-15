@@ -1,7 +1,7 @@
 import path from "node:path";
 import { access, mkdir } from "node:fs/promises";
 import { chromium, type BrowserContext, type Page } from "playwright";
-import { getOrCreateExtensionApiToken } from "./extensionAuth";
+import { issueWorkerExtensionToken } from "./extensionAuth";
 import { applicationExtensionPath, applicationProfilePath } from "./browserPaths";
 
 export { applicationExtensionPath, applicationProfilePath };
@@ -111,9 +111,12 @@ export async function createWorkerBrowserContext(
  * The daemon's simple singleton entry point (the current worker uses this).
  * Loads the extension via createWorkerBrowserContext and caches the context.
  */
-export async function launchWorkerBrowserContext(): Promise<BrowserContext> {
+export async function launchWorkerBrowserContext(userId: string): Promise<BrowserContext> {
   if (workerContext) return workerContext;
-  const token = await getOrCreateExtensionApiToken();
+  // The worker acts for one user, so it carries that user's own extension
+  // token. There is no installation-wide credential any more, and a browser
+  // launched without an owner could not be answered by the extension API.
+  const token = await issueWorkerExtensionToken(userId);
   const { context } = await createWorkerBrowserContext(token);
   workerContext = context;
   return workerContext;

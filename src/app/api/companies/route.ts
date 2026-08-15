@@ -1,7 +1,18 @@
+/*
+ * Shared data, but not public data.
+ *
+ * Every handler in this file operates on the global catalogue rather than on
+ * one person's rows, so there is no owner to filter by — but a signed-out
+ * request still has no business here, and the proxy's cookie check is not an
+ * authorization layer. The session is verified on the server, per request.
+ */
+import { guardSession } from "@/lib/auth/session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 
 export async function GET() {
+  const denied = await guardSession();
+  if (denied) return denied;
   const companies = await prisma.company.findMany({
     orderBy: [{ priority: "asc" }, { name: "asc" }],
   });
@@ -9,6 +20,8 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  const denied = await guardSession();
+  if (denied) return denied;
   const body = await req.json().catch(() => null);
   if (!body?.name?.trim()) {
     return NextResponse.json({ error: "name is required" }, { status: 400 });

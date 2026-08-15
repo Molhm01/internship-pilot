@@ -18,8 +18,19 @@ function isUniqueConstraintError(error: unknown): boolean {
  * Queue one durable run. This function deliberately contains no Playwright
  * import and performs no browser or network work, so it is safe in a route.
  */
-export async function enqueueApplication(jobId: string): Promise<{ runId: string; status: string; queued: boolean }> {
-  const settings = await getApplicationSettings();
+/**
+ * Queues an application run for one user against one job.
+ *
+ * Every function in this module now takes the owner explicitly. A run holds the
+ * answers that will be typed into an employer's form, so "which run is this"
+ * and "whose run is this" have to be one question — a run id alone is not
+ * authority to read, resume, retry or cancel it.
+ */
+export async function enqueueApplication(
+  jobId: string,
+  userId: string,
+): Promise<{ runId: string; status: string; queued: boolean }> {
+  const settings = await getApplicationSettings(userId);
   if (settings.mode === "OFF") {
     throw new ApplicationAgentError("The Application Agent is turned off. Enable Fill To Submit in Settings first.");
   }
@@ -165,8 +176,11 @@ export async function enqueueApplication(jobId: string): Promise<{ runId: string
   }
 }
 
-export async function queueAnsweredRun(runId: string): Promise<{ runId: string; status: string }> {
-  const run = await prisma.applicationRun.findUnique({ where: { id: runId } });
+export async function queueAnsweredRun(
+  runId: string,
+  userId: string,
+): Promise<{ runId: string; status: string }> {
+  const run = await prisma.applicationRun.findFirst({ where: { id: runId, userId } });
   if (!run) {
     throw new ApplicationAgentError("This run has no pending question to resume.");
   }
@@ -204,10 +218,13 @@ export async function queueAnsweredRun(runId: string): Promise<{ runId: string; 
   return { runId, status: "queued" };
 }
 
-export async function retryFailedRun(runId: string): Promise<{ runId: string; status: string }> {
-  const run = await prisma.applicationRun.findUnique({
-    where: { id: runId },
-    include: { job: { include: { applicationRuns: true } } },
+export async function retryFailedRun(
+  runId: string,
+  userId: string,
+): Promise<{ runId: string; status: string }> {
+  const run = await prisma.applicationRun.findFirst({
+    where: { id: runId, userId },
+    include: { job: { include: { applicationRuns: { where: { userId } } } } },
   });
   if (!run) {
     throw new ApplicationAgentError("Only a failed ApplicationRun can be retried with this action.");

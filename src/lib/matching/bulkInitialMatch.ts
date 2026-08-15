@@ -3,13 +3,30 @@ import { prisma } from "@/lib/db";
 import { scheduleInitialAiMatch } from "@/lib/matching/initialAiMatchQueue";
 
 const VALID_SCORE = { gte: 0, lte: 100 };
-const UNSCORED_ACTIVE_WHERE: Prisma.JobWhereInput = {
-  activeFeed: true,
-  AND: [
-    { OR: [{ matchScore: null }, { matchScore: { lt: 0 } }, { matchScore: { gt: 100 } }] },
-    { matchResults: { none: { score: VALID_SCORE } } },
-  ],
-};
+/**
+ * "Unscored" is a question about a person and a job, not about a job.
+ *
+ * The predicate used to read `Job.matchScore` — a single denormalized column on
+ * the shared row — so once anybody had scored a posting it counted as scored
+ * for everyone. It now asks whether THIS user has a valid score, through their
+ * own `UserJobState` and their own `MatchResult` rows.
+ */
+function unscoredActiveWhere(userId: string): Prisma.JobWhereInput {
+  return {
+    activeFeed: true,
+    AND: [
+      {
+        OR: [
+          { userStates: { none: { userId } } },
+          { userStates: { some: { userId, matchScore: null } } },
+          { userStates: { some: { userId, matchScore: { lt: 0 } } } },
+          { userStates: { some: { userId, matchScore: { gt: 100 } } } },
+        ],
+      },
+      { matchResults: { none: { userId, score: VALID_SCORE } } },
+    ],
+  };
+}
 
 export type BulkInitialMatchScheduleResult = {
   ok: true;
@@ -91,7 +108,9 @@ function logQueueFailure(jobId: string, error: unknown) {
   }));
 }
 
-export async function scheduleAllUnscoredActiveJobs(): Promise<BulkInitialMatchScheduleResult> {
+export async function scheduleAllUnscoredActiveJobs(
+  userId: string,
+): Promise<BulkInitialMatchScheduleResult> {
   await assertInitialAiMatchQueueReady();
   let activeCount: number;
   let jobs: Array<{ id: string }>;
@@ -99,7 +118,7 @@ export async function scheduleAllUnscoredActiveJobs(): Promise<BulkInitialMatchS
     [activeCount, jobs] = await Promise.all([
       prisma.job.count({ where: { activeFeed: true } }),
       prisma.job.findMany({
-        where: UNSCORED_ACTIVE_WHERE,
+        where: unscoredActiveWhere(userId),
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
         select: { id: true },
       }),
@@ -114,7 +133,7 @@ export async function scheduleAllUnscoredActiveJobs(): Promise<BulkInitialMatchS
   let failedToQueue = 0;
   for (const job of jobs) {
     try {
-      const result = await scheduleInitialAiMatch(job.id, {
+      const result = await scheduleInitialAiMatch(job.id, userId, {
         retryFailed: true,
         startWorker: false,
       });
@@ -139,7 +158,9 @@ export async function scheduleAllUnscoredActiveJobs(): Promise<BulkInitialMatchS
   };
 }
 
-export async function getBulkInitialMatchStatus(): Promise<BulkInitialMatchStatus> {
+export async function getBulkInitialMatchStatus(
+  userId: string,
+): Promise<BulkInitialMatchStatus> {
   await assertInitialAiMatchQueueReady();
   const activeInitialWork: Prisma.InitialAiMatchJobWhereInput = {
     job: { activeFeed: true },
@@ -148,7 +169,7 @@ export async function getBulkInitialMatchStatus(): Promise<BulkInitialMatchStatu
   let counts: [number, number, number, number, number, number];
   try {
     counts = await Promise.all([
-      prisma.job.count({ where: UNSCORED_ACTIVE_WHERE }),
+      prisma.job.count({ where: unscoredActiveWhere(userId) }),
       prisma.initialAiMatchJob.count({ where: { ...activeInitialWork, state: "PENDING" } }),
       prisma.initialAiMatchJob.count({ where: { ...activeInitialWork, state: "RUNNING" } }),
       prisma.initialAiMatchJob.count({ where: { ...activeInitialWork, state: "SUCCEEDED" } }),

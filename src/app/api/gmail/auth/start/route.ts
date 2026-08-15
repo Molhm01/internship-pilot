@@ -1,7 +1,15 @@
+import { withUser } from "@/lib/auth/session";
 import { NextResponse } from "next/server";
 import { buildAuthUrl, GmailNotConfiguredError } from "@/lib/gmail/oauth";
 
-export async function GET() {
+/**
+ * Starts the Gmail authorization.
+ *
+ * Behind a session because the callback attaches the mailbox to whoever is
+ * signed in — an anonymous start would send someone to Google and then have
+ * nowhere to put the result.
+ */
+export const GET = withUser(async () => {
   try {
     const url = buildAuthUrl();
     return NextResponse.redirect(url);
@@ -11,4 +19,4 @@ export async function GET() {
     }
     throw err;
   }
-}
+});

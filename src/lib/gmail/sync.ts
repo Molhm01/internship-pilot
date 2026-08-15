@@ -69,9 +69,11 @@ export async function processEmail(
 export async function applyProcessedEmail(
   email: FetchedEmail,
   result: ProcessedEmailResult,
+  userId: string,
 ): Promise<void> {
   await prisma.trackedEmail.create({
     data: {
+      userId,
       gmailMessageId: email.gmailMessageId,
       threadId: email.threadId,
       subject: email.subject,
@@ -85,8 +87,16 @@ export async function applyProcessedEmail(
   });
 
   if (result.statusApplied && result.matchedJobId) {
-    await prisma.job.update({ where: { id: result.matchedJobId }, data: { status: result.statusApplied } });
+    // The tracker moves for the person whose mailbox said so, on their own
+    // state row. Writing `Job.status` here would have moved the posting for
+    // every other applicant on the strength of one person's rejection email.
+    await prisma.userJobState.upsert({
+      where: { userId_jobId: { userId, jobId: result.matchedJobId } },
+      create: { userId, jobId: result.matchedJobId, applicationStatus: result.statusApplied },
+      update: { applicationStatus: result.statusApplied },
+    });
     await logAudit({
+      userId,
       jobId: result.matchedJobId,
       actor: "gmail-tracking",
       action: "status-updated-from-email",
@@ -95,6 +105,7 @@ export async function applyProcessedEmail(
     });
   } else if (result.matchedJobId) {
     await logAudit({
+      userId,
       jobId: result.matchedJobId,
       actor: "gmail-tracking",
       action: "email-classified",
@@ -107,6 +118,7 @@ export async function applyProcessedEmail(
     const a = result.classification.assessment;
     await prisma.assessmentInboxEntry.create({
       data: {
+        userId,
         jobId: result.matchedJobId,
         sourceEmailId: email.gmailMessageId,
         company: result.classification.company ?? "Unknown company",
@@ -130,11 +142,42 @@ export async function applyProcessedEmail(
 
 export type SyncSummary = { checked: number; classified: number; newAssessments: number; errors: number; skipped: "not_connected" | null };
 
-export async function syncGmailInbox(): Promise<SyncSummary> {
-  const accessToken = await getValidAccessToken();
+/**
+ * Syncs every connected mailbox, one user at a time.
+ *
+ * The scheduler runs on a timer with nobody signed in, so it cannot pass a
+ * user. It asks which accounts have connected a mailbox and syncs each — the
+ * fan-out equivalent of what the single-user version did, with the summaries
+ * added together so the health panel keeps reporting one line.
+ */
+export async function syncAllConnectedGmailInboxes(): Promise<SyncSummary> {
+  const accounts = await prisma.gmailAccount.findMany({
+    where: { userId: { not: null } },
+    select: { userId: true },
+  });
+  const total: SyncSummary = {
+    checked: 0,
+    classified: 0,
+    newAssessments: 0,
+    errors: 0,
+    skipped: accounts.length === 0 ? "not_connected" : null,
+  };
+  for (const account of accounts) {
+    if (!account.userId) continue;
+    const summary = await syncGmailInbox(account.userId);
+    total.checked += summary.checked;
+    total.classified += summary.classified;
+    total.newAssessments += summary.newAssessments;
+    total.errors += summary.errors;
+  }
+  return total;
+}
+
+export async function syncGmailInbox(userId: string): Promise<SyncSummary> {
+  const accessToken = await getValidAccessToken(userId);
   if (!accessToken) return { checked: 0, classified: 0, newAssessments: 0, errors: 0, skipped: "not_connected" };
 
-  const account = await prisma.gmailAccount.findUnique({ where: { id: "default" } });
+  const account = await prisma.gmailAccount.findUnique({ where: { userId } });
   const sinceEpochSeconds = account?.lastSyncAt
     ? Math.floor(account.lastSyncAt.getTime() / 1000)
     : Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000);
@@ -147,12 +190,14 @@ export async function syncGmailInbox(): Promise<SyncSummary> {
     for (const id of ids) {
       summary.checked++;
       try {
-        const existing = await prisma.trackedEmail.findUnique({ where: { gmailMessageId: id } });
+        const existing = await prisma.trackedEmail.findUnique({
+          where: { userId_gmailMessageId: { userId, gmailMessageId: id } },
+        });
         if (existing) continue;
 
         const email = await fetchMessage(accessToken, id);
         const result = await processEmail(email, candidates);
-        await applyProcessedEmail(email, result);
+        await applyProcessedEmail(email, result, userId);
         summary.classified++;
         if (result.classification.classification === "assessment") summary.newAssessments++;
       } catch {
@@ -163,6 +208,6 @@ export async function syncGmailInbox(): Promise<SyncSummary> {
     summary.errors++;
   }
 
-  await prisma.gmailAccount.update({ where: { id: "default" }, data: { lastSyncAt: new Date() } });
+  await prisma.gmailAccount.update({ where: { userId }, data: { lastSyncAt: new Date() } });
   return summary;
 }

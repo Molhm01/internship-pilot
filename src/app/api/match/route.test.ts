@@ -44,7 +44,7 @@ describe("POST /api/match", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ jobId: "job-1" }),
-    }));
+    }), {});
 
     expect(response.status).toBe(200);
     const body = await response.json();
@@ -62,7 +62,7 @@ describe("POST /api/match", () => {
     });
     expect(JSON.stringify(body)).not.toContain("private-candidate-detail");
     expect(JSON.stringify(body)).not.toContain("private-fact-id");
-    expect(runMatchForJob).toHaveBeenCalledWith("job-1", { origin: "MANUAL" });
+    expect(runMatchForJob).toHaveBeenCalledWith("job-1", { userId: "test-user", origin: "MANUAL" });
   });
 
   it("returns a clear inline-safe error response", async () => {
@@ -77,7 +77,7 @@ describe("POST /api/match", () => {
     const response = await POST(new Request("http://localhost/api/match", {
       method: "POST",
       body: JSON.stringify({ jobId: "job-1" }),
-    }));
+    }), {});
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({
@@ -92,7 +92,7 @@ describe("POST /api/match", () => {
     const response = await POST(new Request("http://localhost/api/match", {
       method: "POST",
       body: JSON.stringify({ allUnscored: true }),
-    }));
+    }), {});
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({
@@ -118,4 +118,22 @@ describe("POST /api/match", () => {
     expect(schedulerSource).not.toContain("triggerScoringWorker");
     expect(schedulerSource).not.toContain("scoringQueue");
   });
+});
+
+// Route handlers authenticate through this module. The tests below call them
+// directly, so a session has to exist; who it belongs to is exercised by
+// src/lib/auth/multiUserIsolation.test.ts against a real database.
+vi.mock("@/lib/auth/session", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/auth/session")>("@/lib/auth/session");
+  const user = { id: "test-user", email: "test@example.test", name: "Test", image: null, emailVerified: true };
+  return {
+    ...actual,
+    currentUser: async () => user,
+    requireUser: async () => user,
+    guardSession: async () => null,
+    withUser:
+      <C>(handler: (request: Request, sessionUser: typeof user, context: C) => Promise<Response>) =>
+      async (request: Request, context: C) =>
+        handler(request, user, context),
+  };
 });

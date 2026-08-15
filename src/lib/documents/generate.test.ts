@@ -21,7 +21,6 @@ const logAudit = vi.fn();
 vi.mock("@/lib/db", () => ({
   prisma: {
     job: { findUnique: (...args: unknown[]) => findJob(...args) },
-    applicationProfile: { findUnique: (...args: unknown[]) => findProfile(...args) },
     resumeFact: { findMany: (...args: unknown[]) => findFacts(...args) },
     resumeBullet: { findMany: (...args: unknown[]) => findBullets(...args) },
     generatedDocument: {
@@ -29,6 +28,12 @@ vi.mock("@/lib/db", () => ({
       create: (...args: unknown[]) => createDocument(...args),
     },
   },
+}));
+
+// The application profile is assembled from the user-owned models now. The
+// projection is mocked rather than the retired singleton table.
+vi.mock("@/lib/profile/applicationProfile", () => ({
+  applicationProfileForUser: (...args: unknown[]) => findProfile(...args),
 }));
 
 vi.mock("node:fs/promises", () => ({
@@ -133,7 +138,7 @@ describe("generateDocumentsForJob", () => {
   });
 
   it("creates and persists a QA-approved resume and cover-letter PDF", async () => {
-    const result = await generateDocumentsForJob(job.id, { includeCoverLetter: true });
+    const result = await generateDocumentsForJob(job.id, "test-user", { includeCoverLetter: true });
 
     expect(result.resume).toMatchObject({ type: "resume", version: 1, qaStatus: "pass" });
     expect(result.coverLetter).toMatchObject({ type: "coverLetter", version: 1, qaStatus: "pass" });
@@ -155,8 +160,8 @@ describe("generateDocumentsForJob", () => {
   });
 
   it("appends V2 without overwriting the V1 records", async () => {
-    await generateDocumentsForJob(job.id, { includeCoverLetter: true });
-    await generateDocumentsForJob(job.id, { includeCoverLetter: true });
+    await generateDocumentsForJob(job.id, "test-user", { includeCoverLetter: true });
+    await generateDocumentsForJob(job.id, "test-user", { includeCoverLetter: true });
 
     expect(persisted.map((record) => `${String(record.type)}:${String(record.version)}`)).toEqual([
       "resume:1",
@@ -183,7 +188,7 @@ describe("generateDocumentsForJob", () => {
       }],
     });
 
-    const result = await generateDocumentsForJob(job.id, { includeCoverLetter: true });
+    const result = await generateDocumentsForJob(job.id, "test-user", { includeCoverLetter: true });
 
     expect(result.resume).toMatchObject({ id: "resume-v2", version: 2, qaStatus: "pass" });
     expect(result.coverLetter).toMatchObject({ id: "coverLetter-v2", version: 2, qaStatus: "pass" });
@@ -209,7 +214,7 @@ describe("generateDocumentsForJob", () => {
     persisted.push({ id: "resume-v1", type: "resume", version: 1, qaStatus: "pass" });
     createDocument.mockRejectedValueOnce(new Error("database unavailable"));
 
-    await expect(generateDocumentsForJob(job.id, { includeCoverLetter: true })).rejects.toMatchObject({
+    await expect(generateDocumentsForJob(job.id, "test-user", { includeCoverLetter: true })).rejects.toMatchObject({
       message: "Resume persistence failed. Existing document versions were kept.",
       stage: "resume_persistence",
     });
@@ -225,7 +230,7 @@ describe("generateDocumentsForJob", () => {
       }],
     });
 
-    await expect(generateDocumentsForJob(job.id, { includeCoverLetter: true })).rejects.toMatchObject({
+    await expect(generateDocumentsForJob(job.id, "test-user", { includeCoverLetter: true })).rejects.toMatchObject({
       stage: "validation",
       unsupportedClaims: [expect.objectContaining({
         phrase: "Dean's List",
@@ -250,7 +255,7 @@ describe("generateDocumentsForJob", () => {
       }],
     });
 
-    await generateDocumentsForJob(job.id, { includeCoverLetter: false });
+    await generateDocumentsForJob(job.id, "test-user", { includeCoverLetter: false });
 
     const source = writeFile.mock.calls.map((call) => String(call[1])).join("\n");
     expect(source).toContain("Analyzed raw IQ data at 1090 MHz");
@@ -272,7 +277,7 @@ describe("generateDocumentsForJob", () => {
   it("rejects a missing job description before creating files or records", async () => {
     findJob.mockResolvedValue({ ...job, description: "" });
 
-    await expect(generateDocumentsForJob(job.id)).rejects.toEqual(
+    await expect(generateDocumentsForJob(job.id, "test-user")).rejects.toEqual(
       new DocumentGenerationError("A usable job description is required before tailored documents can be generated."),
     );
     expect(writeFile).not.toHaveBeenCalled();
@@ -283,7 +288,7 @@ describe("generateDocumentsForJob", () => {
     persisted.push({ id: "resume-v1", type: "resume", version: 1, qaStatus: "pass" });
     evaluateStrictDocumentQa.mockReturnValueOnce({ status: "fail", issues: ["Unsupported claim detected."] });
 
-    await expect(generateDocumentsForJob(job.id)).rejects.toThrow("Resume generation failed QA");
+    await expect(generateDocumentsForJob(job.id, "test-user")).rejects.toThrow("Resume generation failed QA");
     expect(persisted).toHaveLength(2);
     expect(persisted[0]).toMatchObject({ id: "resume-v1", version: 1, qaStatus: "pass" });
     expect(persisted[1]).toMatchObject({ type: "resume", version: 2, qaStatus: "fail" });

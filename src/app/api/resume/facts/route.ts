@@ -1,18 +1,26 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { FACT_TYPES } from "@/lib/statuses";
+import { withUser } from "@/lib/auth/session";
 
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
+/**
+ * Résumé facts belong to the person whose résumé they came from.
+ *
+ * Both handlers take their owner from the session and nowhere else. There is no
+ * `userId` parameter to tamper with, and the list query cannot be widened by a
+ * query string: `status` filters within one user's rows, never across users.
+ */
+export const GET = withUser(async (request, user) => {
+  const { searchParams } = new URL(request.url);
   const status = searchParams.get("status");
 
   const facts = await prisma.resumeFact.findMany({
-    where: status ? { status } : undefined,
+    where: { userId: user.id, ...(status ? { status } : {}) },
     orderBy: [{ type: "asc" }, { createdAt: "asc" }],
   });
 
   return NextResponse.json({ facts });
-}
+});
 
 type IncomingFact = {
   type: string;
@@ -21,8 +29,8 @@ type IncomingFact = {
   source?: string;
 };
 
-export async function POST(req: Request) {
-  const body = await req.json().catch(() => null);
+export const POST = withUser(async (request, user) => {
+  const body = await request.json().catch(() => null);
   const items: IncomingFact[] | null = Array.isArray(body?.facts) ? body.facts : null;
 
   if (!items || items.length === 0) {
@@ -42,6 +50,7 @@ export async function POST(req: Request) {
     items.map((item) =>
       prisma.resumeFact.create({
         data: {
+          userId: user.id,
           type: item.type,
           content: item.content.trim(),
           detail: item.detail?.trim() || null,
@@ -53,4 +62,4 @@ export async function POST(req: Request) {
   );
 
   return NextResponse.json({ facts: created }, { status: 201 });
-}
+});

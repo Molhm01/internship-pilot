@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { scheduleInitialAiMatch } from "@/lib/matching/initialAiMatchQueue";
+import { scheduleInitialAiMatchForAllUsers } from "@/lib/matching/initialAiMatchQueue";
 
 export type InitialBackfillOptions = {
   batchSize: number;
@@ -44,8 +44,8 @@ export async function backfillUnscoredInitialMatches(
   let scheduled = 0;
   let skipped = 0;
   for (const job of jobs) {
-    const result = await scheduleInitialAiMatch(job.id);
-    if (result.scheduled) scheduled += 1;
+    const result = await scheduleInitialAiMatchForAllUsers(job.id);
+    if (result.scheduled > 0) scheduled += 1;
     else skipped += 1;
   }
   return { selected: jobs.length, scheduled, skipped, dryRun: false };

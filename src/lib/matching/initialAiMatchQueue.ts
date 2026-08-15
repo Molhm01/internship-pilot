@@ -48,7 +48,7 @@ type PersistedMatch = {
 
 type InitialScorer = (
   jobId: string,
-  options: { origin: MatchOrigin },
+  options: { userId: string; origin: MatchOrigin },
 ) => Promise<PersistedMatch>;
 
 let scorer: InitialScorer = runMatchForJob;
@@ -103,8 +103,20 @@ export function isCompleteInitialMatch(match: PersistedMatch): boolean {
     && match.origin === INITIAL_MATCH_ORIGIN;
 }
 
+/**
+ * Queues the one automatic score a newly discovered internship gets — for one
+ * user.
+ *
+ * The queue used to hold one item per job. That was right when there was one
+ * applicant: "has this job been scored?" and "has this job been scored for
+ * you?" were the same question. They are not any more, so the item, the
+ * uniqueness constraint and every "already scored" check below are per user.
+ * Otherwise the first applicant to be scored would mark the job done for
+ * everybody, and the second would never be scored at all.
+ */
 export async function scheduleInitialAiMatch(
   jobId: string,
+  userId: string,
   options: InitialMatchScheduleOptions = {},
 ): Promise<InitialMatchScheduleResult> {
   const [job, approvedFactCount] = await Promise.all([
@@ -112,30 +124,35 @@ export async function scheduleInitialAiMatch(
       where: { id: jobId },
       select: {
         id: true,
-        matchScore: true,
         description: true,
         jobResponsibilities: true,
         jobQualifications: true,
         matchResults: {
-          where: { score: { gte: 0, lte: 100 } },
+          where: { userId, score: { gte: 0, lte: 100 } },
           orderBy: { createdAt: "desc" },
           take: 1,
           select: { id: true },
         },
+        userStates: {
+          where: { userId },
+          take: 1,
+          select: { matchScore: true },
+        },
         initialAiMatchJobs: {
-          where: { matchType: INITIAL_MATCH_TYPE },
+          where: { userId, matchType: INITIAL_MATCH_TYPE },
           take: 1,
           select: { id: true, state: true },
         },
       },
     }),
-    prisma.resumeFact.count({ where: { status: { in: ["approved", "edited"] } } }),
+    prisma.resumeFact.count({ where: { userId, status: { in: ["approved", "edited"] } } }),
   ]);
 
   if (!job) return { scheduled: false, reason: "JOB_NOT_FOUND" };
+  const existingScore = job.userStates[0]?.matchScore ?? null;
   if (
     job.matchResults.length > 0
-    || (Number.isInteger(job.matchScore) && job.matchScore! >= 0 && job.matchScore! <= 100)
+    || (Number.isInteger(existingScore) && existingScore! >= 0 && existingScore! <= 100)
   ) {
     return { scheduled: false, reason: "ALREADY_SCORED" };
   }
@@ -168,6 +185,7 @@ export async function scheduleInitialAiMatch(
       })
       : prisma.initialAiMatchJob.create({
         data: {
+          userId,
           jobId,
           matchType: INITIAL_MATCH_TYPE,
           state: "PENDING",
@@ -196,6 +214,57 @@ export async function scheduleInitialAiMatch(
   progress("scheduled", { jobId, matchType: INITIAL_MATCH_TYPE });
   if (options.startWorker !== false) triggerInitialAiMatchWorker();
   return { scheduled: true, reason: "SCHEDULED" };
+}
+
+/**
+ * Everyone the automatic first score can meaningfully run for.
+ *
+ * Discovery has no user in scope — a sync run belongs to the installation, not
+ * to a person — but the score it triggers does. So the fan-out is explicit:
+ * every user who has at least one approved résumé fact, which is exactly the
+ * set the scorer could produce a result for. Users with no facts are skipped
+ * rather than queued and failed.
+ *
+ * With one account this behaves exactly as the single-user version did.
+ */
+export async function usersEligibleForInitialMatch(): Promise<string[]> {
+  const rows = await prisma.resumeFact.findMany({
+    where: { userId: { not: null }, status: { in: ["approved", "edited"] } },
+    distinct: ["userId"],
+    select: { userId: true },
+  });
+  return rows.map((row) => row.userId).filter((id): id is string => Boolean(id));
+}
+
+/**
+ * Queues the automatic score of a newly discovered job for every eligible user.
+ *
+ * Failures are per user and never propagate: one account's queue write failing
+ * must not abort ingestion of a job that every other account can still see.
+ */
+export async function scheduleInitialAiMatchForAllUsers(
+  jobId: string,
+  options: InitialMatchScheduleOptions = {},
+): Promise<{ scheduled: number; considered: number }> {
+  const userIds = await usersEligibleForInitialMatch();
+  let scheduled = 0;
+  for (const userId of userIds) {
+    try {
+      const result = await scheduleInitialAiMatch(jobId, userId, options);
+      if (result.scheduled) scheduled += 1;
+    } catch (error) {
+      console.error("[initial-ai-match] scheduling failed for one user", {
+        jobId,
+        // The id, never the person: no email, no name, nothing from a profile.
+        userId,
+        errorCode:
+          error && typeof error === "object" && "code" in error
+            ? String((error as { code: unknown }).code)
+            : "SCHEDULE_FAILED",
+      });
+    }
+  }
+  return { scheduled, considered: userIds.length };
 }
 
 const TRANSIENT_ERROR_CODES = new Set([
@@ -263,9 +332,25 @@ export async function processNextInitialAiMatch(now = new Date()): Promise<boole
       nextAttemptAt: { lte: now },
     },
     orderBy: [{ nextAttemptAt: "asc" }, { createdAt: "asc" }],
-    select: { id: true, jobId: true, state: true, attemptCount: true, createdAt: true },
+    select: {
+      id: true,
+      userId: true,
+      jobId: true,
+      state: true,
+      attemptCount: true,
+      createdAt: true,
+    },
   });
   if (!item) return false;
+  // Legacy queue rows predate ownership and cannot be scored, because there is
+  // nobody to score them for. Retiring one is not a failure of the job.
+  if (!item.userId) {
+    await prisma.initialAiMatchJob.update({
+      where: { id: item.id },
+      data: { state: "PERMANENT_FAILED", lastErrorCode: "OWNER_UNKNOWN", completedAt: now, lockedAt: null },
+    });
+    return true;
+  }
 
   const claimStartedAt = performance.now();
   const claimed = await prisma.initialAiMatchJob.updateMany({
@@ -300,7 +385,7 @@ export async function processNextInitialAiMatch(now = new Date()): Promise<boole
       where: { id: item.jobId },
       select: {
         matchResults: {
-          where: { score: { gte: 0, lte: 100 } },
+          where: { userId: item.userId, score: { gte: 0, lte: 100 } },
           orderBy: { createdAt: "desc" },
           take: 1,
           select: { id: true },
@@ -329,7 +414,7 @@ export async function processNextInitialAiMatch(now = new Date()): Promise<boole
       return true;
     }
 
-    const match = await scorer(item.jobId, { origin: INITIAL_MATCH_ORIGIN });
+    const match = await scorer(item.jobId, { userId: item.userId, origin: INITIAL_MATCH_ORIGIN });
     if (!isCompleteInitialMatch(match)) {
       throw new MatchError(
         "The automatic AI Match result was incomplete.",

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { applicationProfileForUser } from "@/lib/profile/applicationProfile";
 import { mkdir, readFile } from "node:fs/promises";
 import type { Page } from "playwright";
 import { prisma } from "@/lib/db";
@@ -101,7 +102,11 @@ export async function processApplicationRun(
       && document.qaStatus === "pass"
       && document.identityVerified,
     );
-    const profile = await prisma.applicationProfile.findUnique({ where: { id: "default" } });
+    // The run carries its owner, so the worker fills from that person's
+    // profile. There is no installation profile to fall back to, and a run with
+    // no owner is a legacy row that must not be filled from anybody's data.
+    if (!run.userId) throw new Error("This application run has no owner and cannot be filled.");
+    const profile = await applicationProfileForUser(run.userId);
     if (!profile) throw new Error("No Application Profile is saved.");
     await assertGeneratedDocumentUploadable(resumeDoc.id);
     if (coverLetterDoc) await assertGeneratedDocumentUploadable(coverLetterDoc.id);
@@ -135,7 +140,7 @@ export async function processApplicationRun(
         github: profile.github,
         website: profile.website,
         school: profile.school,
-        previousSchool: profile.previousSchool,
+        previousSchool: null,
         addressStreet: profile.addressStreet,
         addressCity: profile.addressCity,
         addressState: profile.addressState,
@@ -322,14 +327,23 @@ export async function processApplicationRun(
           finishedAt: terminal ? new Date() : null,
         },
       });
-      await prisma.job.update({
-        where: { id: job.id },
-        data: { status: result.status === "needs_user_action" ? "NEEDS_USER_ACTION" : result.status === "filled" ? "READY_TO_APPLY" : "FAILED" },
+      // The tracker moves for the applicant whose run this is. Writing
+      // `Job.status` moved the posting for everyone who could see it.
+      const runStatus =
+        result.status === "needs_user_action"
+          ? "NEEDS_USER_ACTION"
+          : result.status === "filled"
+            ? "READY_TO_APPLY"
+            : "FAILED";
+      await prisma.userJobState.upsert({
+        where: { userId_jobId: { userId: run.userId, jobId: job.id } },
+        create: { userId: run.userId, jobId: job.id, applicationStatus: runStatus },
+        update: { applicationStatus: runStatus },
       });
       if (result.status === "filled") {
         notifyWindows("Ready for your final review", `${job.title} at ${job.company} is filled in. Submit remains entirely manual.`);
       }
-      const appSettings = await getApplicationSettings().catch(() => null);
+      const appSettings = await getApplicationSettings(run.userId).catch(() => null);
       const keepFailedOpen = appSettings?.keepFailedApplicationOpen !== false;
       keepApplicationPage = result.status === "needs_user_action" || result.status === "filled" || (result.status === "failed" && keepFailedOpen);
       await prisma.applicationRun.update({
@@ -337,6 +351,7 @@ export async function processApplicationRun(
         data: { tabRemainsOpen: keepApplicationPage },
       }).catch(() => {});
       await logAudit({
+        userId: run.userId,
         jobId: job.id,
         actor: "application-agent",
         action: `application-run-${result.status}`,
@@ -351,7 +366,9 @@ export async function processApplicationRun(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const technical = error instanceof Error ? error.stack ?? error.message : String(error);
-    const appSettings = await getApplicationSettings().catch(() => null);
+    const appSettings = run.userId
+      ? await getApplicationSettings(run.userId).catch(() => null)
+      : null;
     const keepFailedOpen = appSettings?.keepFailedApplicationOpen !== false;
     keepApplicationPage = keepFailedOpen;
     const classified = classifyErrorCode(message);

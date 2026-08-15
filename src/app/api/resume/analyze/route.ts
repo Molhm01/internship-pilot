@@ -1,9 +1,20 @@
+import { guardSession } from "@/lib/auth/session";
 import { NextResponse } from "next/server";
 import { ollamaGenerateJSON, OllamaError } from "@/lib/ollama";
 import { buildResumeAnalysisPrompt } from "@/lib/prompts";
 import { resumeAnalysisResponseSchema } from "@/lib/validation";
 
+/**
+ * Analyses pasted résumé text with the local model.
+ *
+ * Nothing is stored here — the caller reviews the extracted facts and posts the
+ * ones they approve to /api/resume/facts, which is where ownership is recorded.
+ * The session gate is still required: this reads the full text of somebody's
+ * résumé and spends minutes of local model time doing it.
+ */
 export async function POST(req: Request) {
+  const denied = await guardSession();
+  if (denied) return denied;
   const body = await req.json().catch(() => null);
   const resumeText = typeof body?.resumeText === "string" ? body.resumeText.trim() : "";
 

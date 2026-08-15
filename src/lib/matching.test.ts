@@ -6,6 +6,7 @@ const findJob = vi.fn();
 const findFacts = vi.fn();
 const createMatchResult = vi.fn();
 const updateJob = vi.fn();
+const upsertUserJobState = vi.fn();
 const transaction = vi.fn();
 const ollamaGenerateJSON = vi.fn();
 const logAudit = vi.fn();
@@ -22,6 +23,9 @@ vi.mock("@/lib/db", () => ({
     matchResult: {
       create: (...args: unknown[]) => createMatchResult(...args),
     },
+    userJobState: {
+      upsert: (...args: unknown[]) => upsertUserJobState(...args),
+    },
     $transaction: (...args: unknown[]) => transaction(...args),
   },
 }));
@@ -37,6 +41,9 @@ vi.mock("@/lib/applications/audit", () => ({
 
 import { MATCH_MODEL_TIMEOUT_MS, runMatchForJob } from "./matching";
 import { OllamaError } from "./ollama";
+
+/** The owner every scoring call is made for in this suite. */
+const TEST_USER = "test-user";
 
 const job = {
   id: "job-1",
@@ -86,19 +93,21 @@ describe("runMatchForJob", () => {
       eligibility: "Pass",
     });
     updateJob.mockResolvedValue({ id: job.id });
+    upsertUserJobState.mockResolvedValue({ userId: TEST_USER, jobId: job.id });
     transaction.mockImplementation((operations: Promise<unknown>[]) => Promise.all(operations));
     logAudit.mockResolvedValue(undefined);
   });
 
   it("uses the selected job and approved profile facts, then persists the result", async () => {
-    const result = await runMatchForJob(job.id);
+    const result = await runMatchForJob(job.id, { userId: TEST_USER });
 
     expect(findJob).toHaveBeenCalledWith({
       where: { id: job.id },
       select: expect.objectContaining({ id: true, description: true, jobQualifications: true }),
     });
+    // Only this user's approved facts. A match reads one person's résumé.
     expect(findFacts).toHaveBeenCalledWith({
-      where: { status: { in: ["approved", "edited"] } },
+      where: { userId: TEST_USER, status: { in: ["approved", "edited"] } },
       orderBy: { createdAt: "asc" },
       select: { id: true, type: true, content: true, detail: true },
     });
@@ -121,10 +130,19 @@ describe("runMatchForJob", () => {
         origin: "MANUAL",
       }),
     }));
-    expect(updateJob).toHaveBeenCalledWith({
-      where: { id: job.id },
-      data: { matchScore: 82, eligibilityStatus: "Pass" },
-    });
+    // The score is denormalized onto this user's state row. Writing it to the
+    // shared Job row is what let one applicant's score become everyone's.
+    expect(updateJob).not.toHaveBeenCalled();
+    expect(upsertUserJobState).toHaveBeenCalledWith(expect.objectContaining({
+      where: { userId_jobId: { userId: TEST_USER, jobId: job.id } },
+      create: expect.objectContaining({
+        userId: TEST_USER,
+        jobId: job.id,
+        matchScore: 82,
+        eligibilityStatus: "Pass",
+      }),
+      update: expect.objectContaining({ matchScore: 82, eligibilityStatus: "Pass" }),
+    }));
     expect(transaction).toHaveBeenCalledOnce();
     expect(result).toMatchObject({ id: "match-1", jobId: job.id, score: 82 });
   });
@@ -132,7 +150,7 @@ describe("runMatchForJob", () => {
   it("rejects a missing job description before reading facts or calling the model", async () => {
     findJob.mockResolvedValue({ ...job, description: "   " });
 
-    await expect(runMatchForJob(job.id)).rejects.toMatchObject({
+    await expect(runMatchForJob(job.id, { userId: TEST_USER })).rejects.toMatchObject({
       status: 400,
       message: expect.stringContaining("usable job description"),
     });
@@ -144,19 +162,19 @@ describe("runMatchForJob", () => {
   it("returns a clear service error when the model fails without persisting anything", async () => {
     ollamaGenerateJSON.mockRejectedValue(new OllamaError("The local model failed."));
 
-    await expect(runMatchForJob(job.id)).rejects.toMatchObject({
+    await expect(runMatchForJob(job.id, { userId: TEST_USER })).rejects.toMatchObject({
       status: 503,
       code: "MODEL_UNAVAILABLE",
       message: "The local AI model is unavailable. Check Ollama, then try again.",
     });
     expect(createMatchResult).not.toHaveBeenCalled();
-    expect(updateJob).not.toHaveBeenCalled();
+    expect(upsertUserJobState).not.toHaveBeenCalled();
   });
 
   it("returns a stable timeout error when the model does not finish", async () => {
     ollamaGenerateJSON.mockRejectedValue(new OllamaError("The operation timed out."));
 
-    await expect(runMatchForJob(job.id)).rejects.toMatchObject({
+    await expect(runMatchForJob(job.id, { userId: TEST_USER })).rejects.toMatchObject({
       status: 504,
       code: "MODEL_TIMEOUT",
       message: expect.stringContaining("too long"),
@@ -176,7 +194,7 @@ describe("runMatchForJob", () => {
   ])("rejects malformed model output: %s", async (_label, output) => {
     ollamaGenerateJSON.mockResolvedValue(output);
 
-    await expect(runMatchForJob(job.id)).rejects.toMatchObject({
+    await expect(runMatchForJob(job.id, { userId: TEST_USER })).rejects.toMatchObject({
       status: 502,
       code: "MODEL_RESPONSE_INVALID",
     });
@@ -189,7 +207,7 @@ describe("runMatchForJob", () => {
     const previous = { id: "match-v1", score: 77, eligibility: "Pass" };
     transaction.mockRejectedValue(new Error("database unavailable"));
 
-    await expect(runMatchForJob(job.id)).rejects.toMatchObject({
+    await expect(runMatchForJob(job.id, { userId: TEST_USER })).rejects.toMatchObject({
       code: "MATCH_PERSISTENCE_FAILED",
     });
     expect(previous).toEqual({ id: "match-v1", score: 77, eligibility: "Pass" });
@@ -200,7 +218,7 @@ describe("runMatchForJob", () => {
     findFacts.mockResolvedValue([{ ...facts[0], detail: sensitive }]);
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
-    const response = await runMatchForJob(job.id);
+    const response = await runMatchForJob(job.id, { userId: TEST_USER });
     const logs = JSON.stringify(info.mock.calls);
 
     expect(logs).toContain("job_loaded");
@@ -218,8 +236,8 @@ describe("runMatchForJob", () => {
       .mockResolvedValueOnce({ id: "match-v1", jobId: job.id, score: 82, eligibility: "Pass" })
       .mockResolvedValueOnce({ id: "match-v2", jobId: job.id, score: 82, eligibility: "Pass" });
 
-    const first = await runMatchForJob(job.id);
-    const second = await runMatchForJob(job.id);
+    const first = await runMatchForJob(job.id, { userId: TEST_USER });
+    const second = await runMatchForJob(job.id, { userId: TEST_USER });
 
     expect(first).toMatchObject({ id: "match-v1" });
     expect(second).toMatchObject({ id: "match-v2" });
@@ -228,7 +246,7 @@ describe("runMatchForJob", () => {
   });
 
   it("stores manual and INITIAL_AUTO origins separately without changing scoring", async () => {
-    await runMatchForJob(job.id, { origin: "INITIAL_AUTO" });
+    await runMatchForJob(job.id, { userId: TEST_USER, origin: "INITIAL_AUTO" });
 
     expect(createMatchResult).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ origin: "INITIAL_AUTO", score: 82 }),

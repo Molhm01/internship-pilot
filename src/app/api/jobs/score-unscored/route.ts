@@ -3,10 +3,12 @@ import {
   BulkInitialMatchError,
   scheduleAllUnscoredActiveJobs,
 } from "@/lib/matching/bulkInitialMatch";
+import { withUser } from "@/lib/auth/session";
 
-export async function POST() {
+/** Queues every job this user has no score for. Never anybody else's queue. */
+export const POST = withUser(async (_request, user) => {
   try {
-    const result = await scheduleAllUnscoredActiveJobs();
+    const result = await scheduleAllUnscoredActiveJobs(user.id);
     return NextResponse.json(result, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     const known = error instanceof BulkInitialMatchError ? error : null;
@@ -31,4 +33,4 @@ export async function POST() {
       { status: known?.status ?? 500, headers: { "cache-control": "no-store" } },
     );
   }
-}
+});

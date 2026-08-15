@@ -1,98 +1,131 @@
-import { createHash, randomBytes } from "node:crypto";
-import { cookies } from "next/headers";
-import { prisma } from "@/lib/db";
+import { headers } from "next/headers";
+import { NextResponse } from "next/server";
+import { auth } from "@/lib/auth/betterAuth";
 
 /**
- * Session handling.
+ * Who is asking.
  *
- * The cookie holds a random 256-bit value; the database holds only its SHA-256
- * digest. A copy of the database therefore cannot be replayed as a login, and
- * the raw token never appears in a log, a query string, or an API response.
+ * This module is the single place the application answers that question, and
+ * every private route goes through it. That is deliberate: the rule this whole
+ * conversion exists to enforce — *the session decides the owner, never the
+ * request* — is only enforceable if there is one function that can be audited
+ * and one that everything calls.
+ *
+ * There is no function here that takes a user id. A `userId` in a query string,
+ * a JSON body, or a header is a claim by whoever sent it, and this application
+ * does not accept claims. It reads the signed session cookie and nothing else.
  */
-
-export const SESSION_COOKIE = "internship_pilot_session";
-/** Thirty days. Long enough to be usable, short enough to expire. */
-export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-
-export function hashToken(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
-}
 
 export type SessionUser = {
   id: string;
   email: string;
-  displayName: string | null;
+  name: string;
+  image: string | null;
+  emailVerified: boolean;
 };
 
-/** Issues a session and returns the raw cookie value exactly once. */
-export async function createSession(userId: string): Promise<string> {
-  const token = randomBytes(32).toString("base64url");
-  await prisma.userSession.create({
-    data: {
-      tokenHash: hashToken(token),
-      userId,
-      expiresAt: new Date(Date.now() + SESSION_TTL_MS),
-    },
-  });
-  return token;
-}
-
-/** Applies the session cookie. `httpOnly` keeps page scripts away from it. */
-export async function setSessionCookie(token: string): Promise<void> {
-  const store = await cookies();
-  store.set(SESSION_COOKIE, token, {
-    httpOnly: true,
-    sameSite: "lax",
-    // The app runs on http://localhost, where a Secure cookie would be dropped.
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge: Math.floor(SESSION_TTL_MS / 1000),
-  });
-}
-
-export async function clearSessionCookie(): Promise<void> {
-  const store = await cookies();
-  store.delete(SESSION_COOKIE);
-}
-
-/**
- * The signed-in user, or null.
- *
- * An expired session is deleted on sight rather than merely rejected, so a
- * stale row cannot linger and be resurrected by a clock change.
- */
+/** The signed-in user, or null. Never throws — callers decide what null means. */
 export async function currentUser(): Promise<SessionUser | null> {
-  const store = await cookies();
-  const token = store.get(SESSION_COOKIE)?.value;
-  if (!token) return null;
-
-  const session = await prisma.userSession.findUnique({
-    where: { tokenHash: hashToken(token) },
-    include: { user: true },
-  });
-  if (!session) return null;
-  if (session.expiresAt.getTime() <= Date.now()) {
-    await prisma.userSession.delete({ where: { id: session.id } }).catch(() => undefined);
-    return null;
-  }
+  const session = await auth.api.getSession({ headers: await headers() });
+  if (!session?.user) return null;
   return {
     id: session.user.id,
     email: session.user.email,
-    displayName: session.user.displayName,
+    name: session.user.name ?? "",
+    image: session.user.image ?? null,
+    emailVerified: Boolean(session.user.emailVerified),
   };
 }
 
-/** Ends the current session everywhere, not just in this browser. */
-export async function destroyCurrentSession(): Promise<void> {
-  const store = await cookies();
-  const token = store.get(SESSION_COOKIE)?.value;
-  if (token) {
-    await prisma.userSession.deleteMany({ where: { tokenHash: hashToken(token) } });
+/** Thrown by `requireUser`; carries the response the route should return. */
+export class UnauthenticatedError extends Error {
+  readonly response: NextResponse;
+
+  constructor() {
+    super("Authentication required.");
+    this.name = "UnauthenticatedError";
+    this.response = unauthorizedResponse();
   }
-  await clearSessionCookie();
 }
 
-/** Removes every expired row. Cheap, and keeps the table from growing forever. */
-export async function pruneExpiredSessions(): Promise<void> {
-  await prisma.userSession.deleteMany({ where: { expiresAt: { lte: new Date() } } });
+export function unauthorizedResponse(): NextResponse {
+  return NextResponse.json(
+    { error: "You need to be signed in to do that." },
+    { status: 401, headers: { "cache-control": "no-store" } },
+  );
+}
+
+/**
+ * A signed-in user, or a thrown 401.
+ *
+ * The throwing form exists so a route cannot *forget* to handle the null case:
+ * `const user = await requireUser()` either yields a real user or never returns,
+ * where `if (!user) return 401` is a line somebody can leave out and no type
+ * checker will notice.
+ */
+export async function requireUser(): Promise<SessionUser> {
+  const user = await currentUser();
+  if (!user) throw new UnauthenticatedError();
+  return user;
+}
+
+/**
+ * Wraps a route handler so `requireUser()` inside it becomes a 401 rather than
+ * a 500.
+ *
+ * ```ts
+ * export const GET = withUser(async (_request, user) => {
+ *   const rows = await prisma.resumeFact.findMany({ where: { userId: user.id } });
+ *   return NextResponse.json({ facts: rows });
+ * });
+ * ```
+ *
+ * The `user` argument is the only source of ownership the body is given, which
+ * is the point: there is nothing else in scope to accidentally filter by.
+ */
+export function withUser<Context = unknown>(
+  handler: (request: Request, user: SessionUser, context: Context) => Promise<Response>,
+): (request: Request, context: Context) => Promise<Response> {
+  return async (request: Request, context: Context) => {
+    let user: SessionUser;
+    try {
+      user = await requireUser();
+    } catch (error) {
+      if (error instanceof UnauthenticatedError) return error.response;
+      throw error;
+    }
+    return handler(request, user, context);
+  };
+}
+
+/**
+ * A 401 response, or null when the caller is signed in.
+ *
+ * The non-throwing form, for routes that operate on shared data and so have no
+ * owner to thread through a wrapper:
+ *
+ * ```ts
+ * const denied = await guardSession();
+ * if (denied) return denied;
+ * ```
+ *
+ * `requireUser()` throws, which is right inside `withUser` where the wrapper
+ * catches it, and wrong at the top of a bare handler where an uncaught throw
+ * becomes a 500. An authentication failure must read as 401.
+ */
+export async function guardSession(): Promise<NextResponse | null> {
+  const user = await currentUser();
+  return user ? null : unauthorizedResponse();
+}
+
+/**
+ * The answer to a request for somebody else's row.
+ *
+ * 404, not 403. "You may not see this" confirms the resource exists, which is
+ * itself a disclosure: an attacker walking document ids learns which ones are
+ * real. A row that is not yours is indistinguishable from a row that is not
+ * there, because from your account those are the same thing.
+ */
+export function notFoundResponse(what = "That was not found."): NextResponse {
+  return NextResponse.json({ error: what }, { status: 404, headers: { "cache-control": "no-store" } });
 }

@@ -42,9 +42,12 @@ import {
   scheduleInitialAiMatch,
 } from "./initialAiMatchQueue";
 
+/** The owner every scoring call is made for in this suite. */
+const TEST_USER = "test-user";
+
 const schedulableJob = {
   id: "job-new",
-  matchScore: null,
+  userStates: [],
   description: "Build and test embedded firmware, analyze device data, document results, and collaborate with engineers throughout the product lifecycle.",
   jobResponsibilities: null,
   jobQualifications: null,
@@ -86,7 +89,7 @@ describe("durable INITIAL AI Match queue", () => {
   it("schedules a genuinely new job once and deduplicates repeated events", async () => {
     const backgroundScorer = vi.fn();
     __setInitialAiMatchScorerForTests(backgroundScorer);
-    await expect(scheduleInitialAiMatch("job-new")).resolves.toEqual({
+    await expect(scheduleInitialAiMatch("job-new", TEST_USER)).resolves.toEqual({
       scheduled: true,
       reason: "SCHEDULED",
     });
@@ -95,7 +98,7 @@ describe("durable INITIAL AI Match queue", () => {
       ...schedulableJob,
       initialAiMatchJobs: [{ id: "initial-work", state: "PENDING" }],
     });
-    await expect(scheduleInitialAiMatch("job-new")).resolves.toEqual({
+    await expect(scheduleInitialAiMatch("job-new", TEST_USER)).resolves.toEqual({
       scheduled: false,
       reason: "ALREADY_SCHEDULED",
     });
@@ -114,7 +117,7 @@ describe("durable INITIAL AI Match queue", () => {
       initialAiMatchJobs: [{ id: "initial-failed", state: "PERMANENT_FAILED" }],
     });
 
-    await expect(scheduleInitialAiMatch("job-new", { retryFailed: true })).resolves.toEqual({
+    await expect(scheduleInitialAiMatch("job-new", TEST_USER, { retryFailed: true })).resolves.toEqual({
       scheduled: true,
       reason: "SCHEDULED",
     });
@@ -136,25 +139,25 @@ describe("durable INITIAL AI Match queue", () => {
       ...schedulableJob,
       matchResults: [{ id: "existing-match" }],
     });
-    await expect(scheduleInitialAiMatch("scored-job")).resolves.toMatchObject({
+    await expect(scheduleInitialAiMatch("scored-job", TEST_USER)).resolves.toMatchObject({
       scheduled: false,
       reason: "ALREADY_SCORED",
     });
 
-    jobFindUnique.mockResolvedValueOnce({ ...schedulableJob, matchScore: 77 });
-    await expect(scheduleInitialAiMatch("legacy-scored-job", { retryFailed: true })).resolves.toMatchObject({
+    jobFindUnique.mockResolvedValueOnce({ ...schedulableJob, userStates: [{ matchScore: 77 }] });
+    await expect(scheduleInitialAiMatch("legacy-scored-job", TEST_USER, { retryFailed: true })).resolves.toMatchObject({
       scheduled: false,
       reason: "ALREADY_SCORED",
     });
 
     jobFindUnique.mockResolvedValueOnce({ ...schedulableJob, description: "short" });
-    await expect(scheduleInitialAiMatch("incomplete-job")).resolves.toMatchObject({
+    await expect(scheduleInitialAiMatch("incomplete-job", TEST_USER)).resolves.toMatchObject({
       scheduled: false,
       reason: "JOB_DESCRIPTION_INSUFFICIENT",
     });
 
     factCount.mockResolvedValueOnce(0);
-    await expect(scheduleInitialAiMatch("no-profile-job")).resolves.toMatchObject({
+    await expect(scheduleInitialAiMatch("no-profile-job", TEST_USER)).resolves.toMatchObject({
       scheduled: false,
       reason: "PROFILE_FACTS_MISSING",
     });
@@ -163,13 +166,13 @@ describe("durable INITIAL AI Match queue", () => {
 
   it("retries an offline model, then persists a complete INITIAL_AUTO result when available", async () => {
     const now = new Date("2026-08-01T12:00:00.000Z");
-    queueFindFirst.mockResolvedValueOnce({
+    queueFindFirst.mockResolvedValueOnce({ userId: TEST_USER,
       id: "initial-work",
       jobId: "job-new",
       state: "PENDING",
       attemptCount: 0,
     });
-    jobFindUnique.mockResolvedValueOnce({ matchResults: [] });
+    jobFindUnique.mockResolvedValueOnce({ matchResults: [], userStates: [] });
     const scorer = vi.fn()
       .mockRejectedValueOnce(new MatchError("offline", 503, "MODEL_UNAVAILABLE"))
       .mockResolvedValueOnce(completeMatch);
@@ -185,16 +188,16 @@ describe("durable INITIAL AI Match queue", () => {
       }),
     });
 
-    queueFindFirst.mockResolvedValueOnce({
+    queueFindFirst.mockResolvedValueOnce({ userId: TEST_USER,
       id: "initial-work",
       jobId: "job-new",
       state: "RETRYABLE_FAILED",
       attemptCount: 1,
     });
-    jobFindUnique.mockResolvedValueOnce({ matchResults: [] });
+    jobFindUnique.mockResolvedValueOnce({ matchResults: [], userStates: [] });
     await processNextInitialAiMatch(new Date("2026-08-01T12:01:00.000Z"));
 
-    expect(scorer).toHaveBeenLastCalledWith("job-new", { origin: "INITIAL_AUTO" });
+    expect(scorer).toHaveBeenLastCalledWith("job-new", { userId: TEST_USER, origin: "INITIAL_AUTO" });
     expect(queueUpdate).toHaveBeenLastCalledWith({
       where: { id: "initial-work" },
       data: expect.objectContaining({
@@ -208,13 +211,13 @@ describe("durable INITIAL AI Match queue", () => {
   it("stops retrying transient failures at the bounded attempt limit", async () => {
     const scorer = vi.fn().mockRejectedValue(new MatchError("offline", 503, "MODEL_UNAVAILABLE"));
     __setInitialAiMatchScorerForTests(scorer);
-    queueFindFirst.mockResolvedValue({
+    queueFindFirst.mockResolvedValue({ userId: TEST_USER,
       id: "initial-work",
       jobId: "job-new",
       state: "RETRYABLE_FAILED",
       attemptCount: INITIAL_MATCH_MAX_ATTEMPTS - 1,
     });
-    jobFindUnique.mockResolvedValue({ matchResults: [] });
+    jobFindUnique.mockResolvedValue({ matchResults: [], userStates: [] });
 
     await processNextInitialAiMatch(new Date("2026-08-01T12:10:00.000Z"));
 
@@ -229,14 +232,14 @@ describe("durable INITIAL AI Match queue", () => {
 
   it("releases a timed-out queue item for a bounded retry", async () => {
     const now = new Date("2026-08-01T12:00:00.000Z");
-    queueFindFirst.mockResolvedValueOnce({
+    queueFindFirst.mockResolvedValueOnce({ userId: TEST_USER,
       id: "initial-timeout",
       jobId: "job-timeout",
       state: "PENDING",
       attemptCount: 0,
       createdAt: new Date("2026-08-01T11:59:30.000Z"),
     });
-    jobFindUnique.mockResolvedValueOnce({ matchResults: [] });
+    jobFindUnique.mockResolvedValueOnce({ matchResults: [], userStates: [] });
     __setInitialAiMatchScorerForTests(vi.fn().mockRejectedValue(
       new MatchError("timed out", 504, "MODEL_TIMEOUT"),
     ));
@@ -261,13 +264,13 @@ describe("durable INITIAL AI Match queue", () => {
       "JOB_DESCRIPTION_INSUFFICIENT",
     ));
     __setInitialAiMatchScorerForTests(scorer);
-    queueFindFirst.mockResolvedValue({
+    queueFindFirst.mockResolvedValue({ userId: TEST_USER,
       id: "initial-work",
       jobId: "job-new",
       state: "PENDING",
       attemptCount: 0,
     });
-    jobFindUnique.mockResolvedValue({ matchResults: [] });
+    jobFindUnique.mockResolvedValue({ matchResults: [], userStates: [] });
 
     await processNextInitialAiMatch(new Date("2026-08-01T12:00:00.000Z"));
 
@@ -288,25 +291,27 @@ describe("durable INITIAL AI Match queue", () => {
     queueFindFirst
       .mockResolvedValueOnce({
         id: "initial-first",
+        userId: TEST_USER,
         jobId: "job-first",
         state: "PENDING",
         attemptCount: 0,
       })
       .mockResolvedValueOnce({
         id: "initial-second",
+        userId: TEST_USER,
         jobId: "job-second",
         state: "PENDING",
         attemptCount: 0,
       });
     jobFindUnique
-      .mockResolvedValueOnce({ matchResults: [] })
-      .mockResolvedValueOnce({ matchResults: [] });
+      .mockResolvedValueOnce({ matchResults: [], userStates: [] })
+      .mockResolvedValueOnce({ matchResults: [], userStates: [] });
 
     await processNextInitialAiMatch(new Date("2026-08-01T13:00:00.000Z"));
     await processNextInitialAiMatch(new Date("2026-08-01T13:00:01.000Z"));
 
-    expect(scorer).toHaveBeenNthCalledWith(1, "job-first", { origin: "INITIAL_AUTO" });
-    expect(scorer).toHaveBeenNthCalledWith(2, "job-second", { origin: "INITIAL_AUTO" });
+    expect(scorer).toHaveBeenNthCalledWith(1, "job-first", { userId: TEST_USER, origin: "INITIAL_AUTO" });
+    expect(scorer).toHaveBeenNthCalledWith(2, "job-second", { userId: TEST_USER, origin: "INITIAL_AUTO" });
     expect(queueUpdate).toHaveBeenCalledWith({
       where: { id: "initial-first" },
       data: expect.objectContaining({ state: "PERMANENT_FAILED" }),
@@ -340,6 +345,7 @@ describe("durable INITIAL AI Match queue", () => {
   it("allows only one of two workers to atomically claim the same queue row", async () => {
     const pending = {
       id: "initial-shared",
+      userId: TEST_USER,
       jobId: "job-shared",
       state: "PENDING",
       attemptCount: 0,
@@ -352,7 +358,7 @@ describe("durable INITIAL AI Match queue", () => {
     queueUpdateMany
       .mockResolvedValueOnce({ count: 1 })
       .mockResolvedValueOnce({ count: 0 });
-    jobFindUnique.mockResolvedValue({ matchResults: [] });
+    jobFindUnique.mockResolvedValue({ matchResults: [], userStates: [] });
     const scorer = vi.fn().mockResolvedValue(completeMatch);
     __setInitialAiMatchScorerForTests(scorer);
 
@@ -362,19 +368,19 @@ describe("durable INITIAL AI Match queue", () => {
     );
 
     expect(scorer).toHaveBeenCalledOnce();
-    expect(scorer).toHaveBeenCalledWith("job-shared", { origin: "INITIAL_AUTO" });
+    expect(scorer).toHaveBeenCalledWith("job-shared", { userId: TEST_USER, origin: "INITIAL_AUTO" });
   });
 
   it("does not retry an invalid result and never changes an existing saved score", async () => {
     const scorer = vi.fn().mockResolvedValue({ ...completeMatch, score: 101 });
     __setInitialAiMatchScorerForTests(scorer);
-    queueFindFirst.mockResolvedValueOnce({
+    queueFindFirst.mockResolvedValueOnce({ userId: TEST_USER,
       id: "initial-work",
       jobId: "job-new",
       state: "PENDING",
       attemptCount: 0,
     });
-    jobFindUnique.mockResolvedValueOnce({ matchResults: [] });
+    jobFindUnique.mockResolvedValueOnce({ matchResults: [], userStates: [] });
     await processNextInitialAiMatch();
     expect(queueUpdate).toHaveBeenLastCalledWith({
       where: { id: "initial-work" },
@@ -383,7 +389,7 @@ describe("durable INITIAL AI Match queue", () => {
 
     vi.resetAllMocks();
     queueFindMany.mockResolvedValue([]);
-    queueFindFirst.mockResolvedValueOnce({
+    queueFindFirst.mockResolvedValueOnce({ userId: TEST_USER,
       id: "initial-existing",
       jobId: "job-scored",
       state: "PENDING",
@@ -393,7 +399,7 @@ describe("durable INITIAL AI Match queue", () => {
     queueUpdate.mockResolvedValue({});
     jobUpdate.mockResolvedValue({});
     transaction.mockImplementation((operations: Promise<unknown>[]) => Promise.all(operations));
-    jobFindUnique.mockResolvedValueOnce({ matchResults: [{ id: "match-existing" }] });
+    jobFindUnique.mockResolvedValueOnce({ matchResults: [{ id: "match-existing" }], userStates: [] });
     const existingScorer = vi.fn();
     __setInitialAiMatchScorerForTests(existingScorer);
     await processNextInitialAiMatch();
@@ -412,7 +418,13 @@ describe("durable INITIAL AI Match queue", () => {
 
     expect(detailPage).not.toContain("scheduleInitialAiMatch");
     expect(detailPage).not.toContain("triggerInitialAiMatchWorker");
-    expect(jobsRoute.slice(0, jobsRoute.indexOf("export async function POST"))).not.toContain("scheduleInitialAiMatch(");
+    // The read path must never schedule. The marker follows the handler's
+    // declaration style — it is now `export const POST = withUser(…)` — so
+    // this still slices at the boundary between GET and POST rather than
+    // silently measuring the whole file.
+    const postAt = jobsRoute.indexOf("export const POST");
+    expect(postAt).toBeGreaterThan(-1);
+    expect(jobsRoute.slice(0, postAt)).not.toContain("scheduleInitialAiMatch(");
     expect(worker).not.toContain("ApplicationSession");
     expect(worker).not.toContain("applications/queue");
     expect(worker).not.toContain("application-worker");

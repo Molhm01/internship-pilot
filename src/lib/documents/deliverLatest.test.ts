@@ -64,7 +64,7 @@ describe("re-sending the latest stored documents", () => {
       Promise.resolve({ delivered: true, documentId: `id-${documentType}`, documentType, filename: "f.pdf" }),
     );
 
-    const report = await deliverLatestDocumentsForJob("job-1", deliver);
+    const report = await deliverLatestDocumentsForJob("job-1", "test-user", deliver);
 
     expect(report.resume).toEqual({
       delivered: true, documentId: "id-resume", documentType: "resume", filename: "f.pdf",
@@ -95,7 +95,7 @@ describe("re-sending the latest stored documents", () => {
       .mockResolvedValueOnce({ delivered: false, documentType: "resume", reason: "The agent refused it." })
       .mockResolvedValueOnce({ delivered: true, documentId: "id-c", documentType: "cover_letter", filename: "c.pdf" });
 
-    const report = await deliverLatestDocumentsForJob("job-1", deliver);
+    const report = await deliverLatestDocumentsForJob("job-1", "test-user", deliver);
 
     expect(report.resume).toMatchObject({ delivered: false });
     expect(report.coverLetter).toMatchObject({ delivered: true });
@@ -109,7 +109,7 @@ describe("re-sending the latest stored documents", () => {
       delivered: true, documentId: "id-r", documentType: "resume", filename: "r.pdf",
     });
 
-    const report = await deliverLatestDocumentsForJob("job-1", deliver);
+    const report = await deliverLatestDocumentsForJob("job-1", "test-user", deliver);
 
     expect(report.resume).toMatchObject({ delivered: true });
     expect(report.coverLetter).toBeNull();
@@ -124,7 +124,7 @@ describe("re-sending the latest stored documents", () => {
     );
     const deliver = vi.fn();
 
-    const report = await deliverLatestDocumentsForJob("job-1", deliver);
+    const report = await deliverLatestDocumentsForJob("job-1", "test-user", deliver);
 
     expect(report.resume).toMatchObject({ delivered: false });
     expect(deliver).not.toHaveBeenCalled();
@@ -133,7 +133,7 @@ describe("re-sending the latest stored documents", () => {
   it("refuses when the job has no generated documents at all", async () => {
     findFirst.mockResolvedValue(null);
 
-    await expect(deliverLatestDocumentsForJob("job-1", vi.fn()))
+    await expect(deliverLatestDocumentsForJob("job-1", "test-user", vi.fn()))
       .rejects.toBeInstanceOf(NoStoredDocumentsError);
   });
 });

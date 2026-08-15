@@ -8,6 +8,7 @@ import {
   resolveOfficialJobDestination,
 } from "@/lib/applications/officialDestination";
 import { scheduleInitialAiMatch } from "@/lib/matching/initialAiMatchQueue";
+import { withUser } from "@/lib/auth/session";
 import { jobOrderBy, parseJobSort, sortJobs } from "@/lib/jobs/jobSort";
 import { jobsQueryErrorDevDetail, jobsQueryErrorLog } from "@/lib/jobs/jobsQueryError";
 import { parseSourcePostedAt } from "@/lib/sync/sourceDate";
@@ -16,7 +17,43 @@ function parseListParam(value: string | null): string[] {
   return value ? value.split(",").map((v) => v.trim()).filter(Boolean) : [];
 }
 
-async function getJobsResponse(req: Request) {
+/**
+ * Projects one user's state onto a shared job row.
+ *
+ * The feed's shape is unchanged — `status`, `matchScore` and
+ * `eligibilityStatus` are still top-level fields on each job — but they are now
+ * read from this user's `UserJobState` rather than from the shared columns of
+ * the same name. Every reader of the API therefore keeps working, and none of
+ * them can see anybody else's tracker state.
+ *
+ * A job with no state row for this user is simply undecided: DISCOVERED, no
+ * score. That is the correct answer for a posting they have never looked at.
+ */
+function withUserState<T extends { userStates?: unknown[] }>(job: T) {
+  const state = (job.userStates ?? [])[0] as
+    | {
+        applicationStatus: string;
+        saved: boolean;
+        hidden: boolean;
+        notes: string | null;
+        matchScore: number | null;
+        eligibilityStatus: string | null;
+      }
+    | undefined;
+  const rest = { ...(job as T & { userStates?: unknown[] }) };
+  delete rest.userStates;
+  return {
+    ...rest,
+    status: state?.applicationStatus ?? "DISCOVERED",
+    matchScore: state?.matchScore ?? null,
+    eligibilityStatus: state?.eligibilityStatus ?? null,
+    saved: state?.saved ?? false,
+    hidden: state?.hidden ?? false,
+    notes: state?.notes ?? null,
+  };
+}
+
+async function getJobsResponse(req: Request, userId: string) {
   const { searchParams } = new URL(req.url);
   const location = searchParams.get("location");
   const status = searchParams.get("status");
@@ -52,7 +89,9 @@ async function getJobsResponse(req: Request) {
   // PostgreSQL's does not, and a filter for "remote" that stops matching
   // "Remote" reads as a broken feed rather than a changed database.
   if (location) where.location = { contains: location, mode: "insensitive" };
-  if (status) where.status = status;
+  // Tracker status is this user's, so the filter is a constraint on their
+  // state row rather than on the shared job.
+  if (status) where.userStates = { some: { userId, applicationStatus: status } };
   if (internshipTerm) where.internshipTerm = { contains: internshipTerm, mode: "insensitive" };
   if (duration) where.duration = { contains: duration, mode: "insensitive" };
   if (postingDateFrom || postingDateTo) {
@@ -75,7 +114,15 @@ async function getJobsResponse(req: Request) {
   if (citizenshipOrClearance === "true") where.citizenshipOrClearance = true;
   if (citizenshipOrClearance === "false") where.citizenshipOrClearance = false;
   if (compMin) where.compMaxHourly = { gte: parseFloat(compMin) };
-  if (matchScoreMin) where.matchScore = { gte: parseInt(matchScoreMin, 10) };
+  if (matchScoreMin) {
+    where.userStates = {
+      some: {
+        ...(status ? { applicationStatus: status } : {}),
+        userId,
+        matchScore: { gte: parseInt(matchScoreMin, 10) },
+      },
+    };
+  }
   // Visibility is enforced centrally here (single place, not per-component):
   //  - An explicit verificationStatus filter still works (used by tooling).
   //  - Otherwise feed=active (default) shows Active-feed jobs, feed=needsReview
@@ -105,13 +152,18 @@ async function getJobsResponse(req: Request) {
   // The default feed still never drops jobs for lacking an AI match score,
   // official verification, or an ATS mirror — visibility is governed solely by
   // activeFeed above.
-  let jobs = await prisma.job.findMany({
+  const rows = await prisma.job.findMany({
     where,
     orderBy: jobOrderBy(sort),
     include: {
-      matchResults: { orderBy: { createdAt: "desc" }, take: 1 },
+      // Scoped, both of them. An unscoped include on a shared row is the
+      // quietest way to leak: the query looks right and the payload carries
+      // every other applicant's score.
+      matchResults: { where: { userId }, orderBy: { createdAt: "desc" }, take: 1 },
+      userStates: { where: { userId }, take: 1 },
     },
   });
+  let jobs = rows.map(withUserState);
 
   // Fields stored as JSON strings are filtered in-memory — the dataset here
   // is small (a personal job board, not a production job search engine).
@@ -150,9 +202,9 @@ async function getJobsResponse(req: Request) {
   );
 }
 
-export async function GET(req: Request) {
+export const GET = withUser(async (req, user) => {
   try {
-    return await getJobsResponse(req);
+    return await getJobsResponse(req, user.id);
   } catch (error) {
     // The exact ORM error, classified and redacted (no connection string, no
     // credential, no description or profile text) — see jobsQueryError.ts.
@@ -178,9 +230,17 @@ export async function GET(req: Request) {
       },
     );
   }
-}
+});
 
-export async function POST(req: Request) {
+/**
+ * Adds a job by hand.
+ *
+ * The Job row itself is canonical and shared — a posting somebody pasted in is
+ * still a real posting, and the discovery pipeline treats it like any other.
+ * What is personal is the tracker status that came with it, which goes to this
+ * user's own state row.
+ */
+export const POST = withUser(async (req, user) => {
   const body = await req.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "Invalid body" }, { status: 400 });
 
@@ -240,7 +300,6 @@ export async function POST(req: Request) {
       sourcePostedText: manualPostedAt.sourcePostedText,
       sourceDateConfidence: manualPostedAt.sourceDateConfidence,
       sourceCapturedAt: now,
-      status: body.status || "DISCOVERED",
       // Manually entered jobs are trusted by construction — the user pasted
       // them in themselves, so there's nothing to independently verify.
       verificationStatus:
@@ -275,8 +334,15 @@ export async function POST(req: Request) {
     },
   });
 
+  // The person who added it gets the tracker state they asked for.
+  await prisma.userJobState.upsert({
+    where: { userId_jobId: { userId: user.id, jobId: job.id } },
+    create: { userId: user.id, jobId: job.id, applicationStatus: body.status || "DISCOVERED" },
+    update: { applicationStatus: body.status || "DISCOVERED" },
+  });
+
   try {
-    await scheduleInitialAiMatch(job.id);
+    await scheduleInitialAiMatch(job.id, user.id);
   } catch (error) {
     console.error("[api/jobs] initial AI Match scheduling failed", {
       jobId: job.id,
@@ -287,4 +353,4 @@ export async function POST(req: Request) {
   }
 
   return NextResponse.json({ job }, { status: 201 });
-}
+});

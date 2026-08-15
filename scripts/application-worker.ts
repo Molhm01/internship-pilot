@@ -3,7 +3,8 @@ import { createServer, type Server } from "node:http";
 import { prisma } from "@/lib/db";
 import { applicationProfilePath } from "@/lib/applications/browserProfile";
 import { BrowserManager } from "@/lib/applications/browserManager";
-import { getOrCreateExtensionApiToken } from "@/lib/applications/extensionAuth";
+import { issueWorkerExtensionToken } from "@/lib/applications/extensionAuth";
+import { prisma } from "@/lib/db";
 import { processApplicationRun } from "@/lib/applications/worker";
 import {
   acquireApplicationWorkerLock,
@@ -168,7 +169,25 @@ async function main(): Promise<void> {
     lock.startHeartbeat();
     await repairDuplicateRuns();
     await recoverInterruptedRuns();
-    const extensionApiToken = await getOrCreateExtensionApiToken();
+    // The worker drives a real browser with the extension loaded, and the
+    // extension API is per user now, so the worker needs an owner. It takes the
+    // account named by APPLICATION_WORKER_USER_ID, or the only account when
+    // there is exactly one — never "the first of several", because filling an
+    // employer form from the wrong person's profile is the failure this whole
+    // conversion exists to prevent.
+    const configuredUserId = process.env.APPLICATION_WORKER_USER_ID?.trim();
+    let workerUserId = configuredUserId ?? null;
+    if (!workerUserId) {
+      const users = await prisma.user.findMany({ select: { id: true }, take: 2 });
+      if (users.length === 1) workerUserId = users[0]!.id;
+    }
+    if (!workerUserId) {
+      throw new Error(
+        "Set APPLICATION_WORKER_USER_ID to the account this worker fills applications for. "
+          + "There is more than one account (or none), and the worker will not guess.",
+      );
+    }
+    const extensionApiToken = await issueWorkerExtensionToken(workerUserId);
     browserManager = new BrowserManager(extensionApiToken, async (health) => {
       await lock?.update({
         browserReady: health.state === "healthy",

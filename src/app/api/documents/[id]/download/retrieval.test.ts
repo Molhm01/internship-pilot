@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const findUnique = vi.fn();
+const findFirst = vi.fn();
 
 vi.mock("@/lib/db", () => ({
-  prisma: { generatedDocument: { findUnique: (...args: unknown[]) => findUnique(...args) } },
+  prisma: { generatedDocument: { findFirst: (...args: unknown[]) => findFirst(...args) } },
 }));
 
 const { GET } = await import("./route");
@@ -31,6 +31,24 @@ beforeAll(async () => {
   await writeFile(path.join(root, "resume-v4.pdf"), PDF);
 });
 
+// Route handlers authenticate through this module. The tests below call them
+// directly, so a session has to exist; who it belongs to is exercised by
+// src/lib/auth/multiUserIsolation.test.ts against a real database.
+vi.mock("@/lib/auth/session", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/auth/session")>("@/lib/auth/session");
+  const user = { id: "test-user", email: "test@example.test", name: "Test", image: null, emailVerified: true };
+  return {
+    ...actual,
+    currentUser: async () => user,
+    requireUser: async () => user,
+    guardSession: async () => null,
+    withUser:
+      <C>(handler: (request: Request, sessionUser: typeof user, context: C) => Promise<Response>) =>
+      async (request: Request, context: C) =>
+        handler(request, user, context),
+  };
+});
+
 afterAll(async () => {
   delete process.env.LOCAL_DOCUMENT_STORAGE_ROOT;
   await rm(root, { recursive: true, force: true });
@@ -44,7 +62,7 @@ function params(id: string) {
 
 describe("GET /api/documents/[id]/download", () => {
   it("serves a document stored as a local path", async () => {
-    findUnique.mockResolvedValue({
+    findFirst.mockResolvedValue({
       id: "doc-1",
       type: "resume",
       version: 4,
@@ -60,7 +78,7 @@ describe("GET /api/documents/[id]/download", () => {
   });
 
   it("does not open a path that escapes the storage root", async () => {
-    findUnique.mockResolvedValue({
+    findFirst.mockResolvedValue({
       id: "doc-2",
       type: "resume",
       version: 1,
@@ -73,7 +91,7 @@ describe("GET /api/documents/[id]/download", () => {
   });
 
   it("reports a missing object instead of serving an empty PDF", async () => {
-    findUnique.mockResolvedValue({
+    findFirst.mockResolvedValue({
       id: "doc-3",
       type: "coverLetter",
       version: 2,
@@ -89,7 +107,7 @@ describe("GET /api/documents/[id]/download", () => {
   });
 
   it("404s an unknown document without touching storage", async () => {
-    findUnique.mockResolvedValue(null);
+    findFirst.mockResolvedValue(null);
 
     const response = await GET(new Request("http://test/api/documents/nope/download"), params("nope"));
 

@@ -1,9 +1,20 @@
+/*
+ * Shared data, but not public data.
+ *
+ * Every handler in this file operates on the global catalogue rather than on
+ * one person's rows, so there is no owner to filter by — but a signed-out
+ * request still has no business here, and the proxy's cookie check is not an
+ * authorization layer. The session is verified on the server, per request.
+ */
+import { guardSession } from "@/lib/auth/session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { csvFileExists } from "@/lib/employers/csv";
 import { getApprovedEmployerImportStatus, syncApprovedEmployersFromCsv } from "@/lib/employers/sync";
 
 export async function GET(req: Request) {
+  const denied = await guardSession();
+  if (denied) return denied;
   const params = new URL(req.url).searchParams;
   const search = params.get("search")?.trim() ?? "";
   const sector = params.get("sector")?.trim() ?? "";
@@ -48,6 +59,8 @@ export async function GET(req: Request) {
 }
 
 export async function POST() {
+  const denied = await guardSession();
+  if (denied) return denied;
   const result = await syncApprovedEmployersFromCsv();
   return NextResponse.json({ result }, { status: result.ran ? 200 : 422 });
 }

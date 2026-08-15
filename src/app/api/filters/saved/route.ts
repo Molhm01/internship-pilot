@@ -1,11 +1,17 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { withUser } from "@/lib/auth/session";
 
-export const DEFAULT_FILTER_NAME = "Molhm Engineering Internships";
+export const DEFAULT_FILTER_NAME = "Engineering internships";
 
 // Electrical, hardware, embedded, electronics, testing, controls,
-// semiconductor and manufacturing/test roles; Clifton/North Jersey/NYC area
-// or remote; a separate relocation toggle; verified and currently open only.
+// semiconductor and manufacturing/test roles; a 60-mile radius with remote
+// included; a separate relocation toggle.
+//
+// This is a *starting point* offered to a new account, not a description of
+// anybody. It used to be named after the original user and created once
+// globally, which in a hosted deployment would greet every new signup with a
+// stranger's saved search.
 const DEFAULT_FILTER = {
   disciplines: [
     "electrical",
@@ -24,29 +30,42 @@ const DEFAULT_FILTER = {
   // no per-preset flag needed any more.
 };
 
-async function ensureDefaultFilter() {
-  await prisma.savedFilter.upsert({
-    where: { name: DEFAULT_FILTER_NAME },
-    update: {},
-    create: { name: DEFAULT_FILTER_NAME, filterJson: JSON.stringify(DEFAULT_FILTER) },
+/**
+ * Seeds this user's starter preset, once.
+ *
+ * `createMany … skipDuplicates` rather than `upsert`: two tabs opening the Jobs
+ * page at the same moment both find nothing and both insert, and the unique
+ * index on (userId, name) is what makes the second one a no-op instead of a
+ * 500.
+ */
+async function ensureDefaultFilter(userId: string): Promise<void> {
+  await prisma.savedFilter.createMany({
+    data: [{ userId, name: DEFAULT_FILTER_NAME, filterJson: JSON.stringify(DEFAULT_FILTER) }],
+    skipDuplicates: true,
   });
 }
 
-export async function GET() {
-  await ensureDefaultFilter();
-  const filters = await prisma.savedFilter.findMany({ orderBy: { createdAt: "asc" } });
+export const GET = withUser(async (_request, user) => {
+  await ensureDefaultFilter(user.id);
+  const filters = await prisma.savedFilter.findMany({
+    where: { userId: user.id },
+    orderBy: { createdAt: "asc" },
+  });
   return NextResponse.json({ filters });
-}
+});
 
-export async function POST(req: Request) {
-  const body = await req.json().catch(() => null);
+export const POST = withUser(async (request, user) => {
+  const body = await request.json().catch(() => null);
   if (!body?.name?.trim() || !body?.filter) {
     return NextResponse.json({ error: "name and filter are required" }, { status: 400 });
   }
+  const name = String(body.name).trim().slice(0, 200);
+  // Scoped by the compound key, so saving a filter called "Remote" cannot
+  // overwrite another account's filter of the same name.
   const filter = await prisma.savedFilter.upsert({
-    where: { name: body.name.trim() },
+    where: { userId_name: { userId: user.id, name } },
     update: { filterJson: JSON.stringify(body.filter) },
-    create: { name: body.name.trim(), filterJson: JSON.stringify(body.filter) },
+    create: { userId: user.id, name, filterJson: JSON.stringify(body.filter) },
   });
   return NextResponse.json({ filter }, { status: 201 });
-}
+});

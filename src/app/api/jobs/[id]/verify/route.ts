@@ -1,3 +1,12 @@
+/*
+ * Shared data, but not public data.
+ *
+ * Every handler in this file operates on the global catalogue rather than on
+ * one person's rows, so there is no owner to filter by — but a signed-out
+ * request still has no business here, and the proxy's cookie check is not an
+ * authorization layer. The session is verified on the server, per request.
+ */
+import { guardSession } from "@/lib/auth/session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { recheckOfficialUrl, verifyJob } from "@/lib/sync/verify";
@@ -13,6 +22,8 @@ import {
 // Re-checks a single job on demand — used right before the user would apply,
 // per "recheck the official page immediately before any future application".
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await guardSession();
+  if (denied) return denied;
   const { id } = await params;
   const job = await prisma.job.findUnique({ where: { id } });
   if (!job) return NextResponse.json({ error: "Job not found" }, { status: 404 });

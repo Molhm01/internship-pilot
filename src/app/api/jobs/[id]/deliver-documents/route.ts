@@ -3,6 +3,9 @@ import {
   NoStoredDocumentsError,
   deliverLatestDocumentsForJob,
 } from "@/lib/documents/deliverLatest";
+import { withUser } from "@/lib/auth/session";
+
+type Params = { params: Promise<{ id: string }> };
 
 /**
  * "Send latest documents to extension".
@@ -13,11 +16,11 @@ import {
  * already on the page.
  */
 
-export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export const POST = withUser<Params>(async (_req, user, { params }) => {
   let id = "unknown";
   try {
     ({ id } = await params);
-    const report = await deliverLatestDocumentsForJob(id);
+    const report = await deliverLatestDocumentsForJob(id, user.id);
     console.info(JSON.stringify({
       event: "tailored-document-redelivery",
       jobId: id,
@@ -37,4 +40,4 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
       { status: 500 },
     );
   }
-}
+});

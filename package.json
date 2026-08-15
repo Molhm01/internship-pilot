@@ -66,6 +66,7 @@
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:import-sqlite": "tsx scripts/migrate-sqlite-to-postgres.ts",
+    "claim:legacy-data": "tsx scripts/claim-legacy-user-data.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
@@ -89,6 +90,7 @@
     "@react-three/drei": "^10.7.8",
     "@react-three/fiber": "^9.7.0",
     "@vercel/blob": "^2.8.0",
+    "better-auth": "^1.6.29",
     "cmdk": "^1.1.1",
     "geist": "^1.7.2",
     "lucide-react": "^1.31.0",

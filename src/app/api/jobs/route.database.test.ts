@@ -1,9 +1,27 @@
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/lib/db";
 import { Prisma } from "@/generated/prisma/client";
 import { FRESHNESS_FIELDS } from "@/lib/jobs/jobsQueryError";
 import { jobOrderBy, JOB_SORT_OPTIONS } from "@/lib/jobs/jobSort";
 import { GET } from "./route";
+
+// Route handlers authenticate through this module. The tests below call them
+// directly, so a session has to exist; who it belongs to is exercised by
+// src/lib/auth/multiUserIsolation.test.ts against a real database.
+vi.mock("@/lib/auth/session", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/auth/session")>("@/lib/auth/session");
+  const user = { id: "test-user", email: "test@example.test", name: "Test", image: null, emailVerified: true };
+  return {
+    ...actual,
+    currentUser: async () => user,
+    requireUser: async () => user,
+    guardSession: async () => null,
+    withUser:
+      <C>(handler: (request: Request, sessionUser: typeof user, context: C) => Promise<Response>) =>
+      async (request: Request, context: C) =>
+        handler(request, user, context),
+  };
+});
 
 // These tests run against a real PostgreSQL database through the real Prisma
 // Client, with no mocks. They are the regression net for the Jobs page failing
@@ -33,7 +51,7 @@ type JobsBody = {
 };
 
 async function get(url: string): Promise<{ status: number; body: JobsBody }> {
-  const response = await GET(new Request(url));
+  const response = await GET(new Request(url), {});
   return { status: response.status, body: await response.json() };
 }
 

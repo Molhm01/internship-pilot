@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { DocumentGenerationError, generateDocumentsForJob } from "@/lib/documents/generate";
 import { LocalOnlyFeatureError } from "@/lib/runtime/deployment";
 import type { AgentDeliveryOutcome } from "@/lib/documents/agentDelivery";
+import { withUser } from "@/lib/auth/session";
+
+type Params = { params: Promise<{ id: string }> };
 
 type GenerationResponse = {
   ok: boolean;
@@ -37,14 +40,15 @@ function progress(jobId: string, stage: string, details: Record<string, unknown>
   console.info(JSON.stringify({ event: "tailored-document-generation", jobId, stage, ...details }));
 }
 
-export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+/** Generates this user's tailored documents for a shared job. */
+export const POST = withUser<Params>(async (req, user, { params }) => {
   let id = "unknown";
   try {
     ({ id } = await params);
     progress(id, "request_received");
     const body = await req.json().catch(() => ({}));
     const includeCoverLetter = body?.includeCoverLetter !== false;
-    const result = await generateDocumentsForJob(id, { includeCoverLetter });
+    const result = await generateDocumentsForJob(id, user.id, { includeCoverLetter });
     const payload: GenerationResponse = {
       ok: true,
       resumeDocumentId: result.resume.id,
@@ -82,4 +86,4 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     progress(id, "response_returned", { ok: false, stage: "unexpected" });
     return NextResponse.json(payload, { status: 500 });
   }
-}
+});

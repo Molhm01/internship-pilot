@@ -1,16 +1,18 @@
 import { getExtensionRunState } from "@/lib/applications/extensionApi";
-import {
-  extensionUnauthorizedResponse,
-  isExtensionRequestAuthorized,
-} from "@/lib/applications/extensionAuth";
+import { withExtensionUser } from "@/lib/applications/extensionAuth";
 
-export async function GET(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> },
-) {
-  if (!(await isExtensionRequestAuthorized(request))) return extensionUnauthorizedResponse();
+type Params = { params: Promise<{ id: string }> };
+
+/**
+ * The state of one application run, for the extension driving it.
+ *
+ * Scoped to the token's user: a run id is not a capability. A run holds the
+ * questions an employer asked and the answers that were given, so reading
+ * somebody else's by id would disclose their application.
+ */
+export const GET = withExtensionUser<Params>(async (_request, userId, { params }) => {
   const { id } = await params;
-  const run = await getExtensionRunState(id);
+  const run = await getExtensionRunState(id, userId);
   if (!run) {
     return Response.json(
       { error: "ApplicationRun not found." },
@@ -18,4 +20,4 @@ export async function GET(
     );
   }
   return Response.json({ run }, { headers: { "cache-control": "no-store" } });
-}
+});

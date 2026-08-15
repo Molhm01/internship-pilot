@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { MatchError, runMatchForJob } from "@/lib/matching";
+import { withUser } from "@/lib/auth/session";
 
 type PublicMatch = {
   eligibility: "PASS" | "BORDERLINE" | "FAIL";
@@ -75,7 +76,14 @@ function publicMatch(matchResult: {
   };
 }
 
-export async function POST(req: Request) {
+/**
+ * Runs AI Match for the signed-in user against one job.
+ *
+ * The job id comes from the request; the person it is scored for never does.
+ * Two users asking for the same job get two results, each written against
+ * their own résumé facts and their own UserJobState.
+ */
+export const POST = withUser(async (req, user) => {
   const body = await req.json().catch(() => null);
   const jobId = typeof body?.jobId === "string" && body.jobId.trim()
     ? body.jobId.trim()
@@ -91,7 +99,7 @@ export async function POST(req: Request) {
 
   progress(jobId, "request_received");
   try {
-    const matchResult = await runMatchForJob(jobId, { origin: "MANUAL" });
+    const matchResult = await runMatchForJob(jobId, { userId: user.id, origin: "MANUAL" });
     const match = publicMatch(matchResult);
     progress(jobId, "response_returned", { ok: true });
     return NextResponse.json({ ok: true, match });
@@ -114,4 +122,4 @@ export async function POST(req: Request) {
       { status: 500 },
     );
   }
-}
+});

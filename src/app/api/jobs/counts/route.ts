@@ -1,12 +1,21 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { jobsQueryErrorDevDetail, jobsQueryErrorLog } from "@/lib/jobs/jobsQueryError";
+import { withUser } from "@/lib/auth/session";
 
 // Authoritative, always-fresh counts for the Jobs header. Computed directly
 // from stored state so the numbers can never drift from what the feed returns.
 // no-store so a backfill/sync/repair is reflected immediately. There is no
 // "Needs Review" pool counter — availability is reported as badges instead.
-async function getJobCountsResponse() {
+/**
+ * The Jobs header counts.
+ *
+ * Split down the middle. Availability counts — active, verified, closed,
+ * quarantined, total — describe the shared catalogue and are the same number
+ * for everybody. Scoring and eligibility counts describe one person's progress
+ * through it, and are computed from their own state rows.
+ */
+async function getJobCountsResponse(userId: string) {
   const [
     active,
     officiallyVerified,
@@ -27,16 +36,30 @@ async function getJobCountsResponse() {
     prisma.job.count({ where: { verificationStatus: { in: ["VERIFICATION_PENDING", "Pending", "NeedsReview"] } } }),
     prisma.job.count({ where: { verificationStatus: "Closed" } }),
     prisma.job.count({ where: { verificationStatus: "SecurityQuarantine" } }),
-    prisma.job.count({ where: { activeFeed: true, matchScore: { not: null } } }),
-    prisma.job.count({ where: { activeFeed: true, matchScore: null } }),
+    prisma.job.count({
+      where: { activeFeed: true, userStates: { some: { userId, matchScore: { not: null } } } },
+    }),
+    prisma.job.count({
+      where: {
+        activeFeed: true,
+        OR: [
+          { userStates: { none: { userId } } },
+          { userStates: { some: { userId, matchScore: null } } },
+        ],
+      },
+    }),
     prisma.job.count({
       where: {
         activeFeed: true,
         scoringState: { in: ["QUEUED", "SCORING", "RETRYABLE_FAILED"] },
       },
     }),
-    prisma.job.count({ where: { activeFeed: true, eligibilityStatus: "Pass" } }),
-    prisma.job.count({ where: { activeFeed: true, eligibilityStatus: "Fail" } }),
+    prisma.job.count({
+      where: { activeFeed: true, userStates: { some: { userId, eligibilityStatus: "Pass" } } },
+    }),
+    prisma.job.count({
+      where: { activeFeed: true, userStates: { some: { userId, eligibilityStatus: "Fail" } } },
+    }),
     prisma.job.count(),
   ]);
   return NextResponse.json(
@@ -58,9 +81,9 @@ async function getJobCountsResponse() {
   );
 }
 
-export async function GET() {
+export const GET = withUser(async (_request, user) => {
   try {
-    return await getJobCountsResponse();
+    return await getJobCountsResponse(user.id);
   } catch (error) {
     console.error("[api/jobs/counts] jobs count query failed", jobsQueryErrorLog(error));
     return NextResponse.json(
@@ -75,4 +98,4 @@ export async function GET() {
       },
     );
   }
-}
+});

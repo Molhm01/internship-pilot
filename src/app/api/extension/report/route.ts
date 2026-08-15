@@ -2,13 +2,9 @@ import {
   extensionReportSchema,
   recordExtensionReport,
 } from "@/lib/applications/extensionApi";
-import {
-  extensionUnauthorizedResponse,
-  isExtensionRequestAuthorized,
-} from "@/lib/applications/extensionAuth";
+import { withExtensionUser } from "@/lib/applications/extensionAuth";
 
-export async function POST(request: Request) {
-  if (!(await isExtensionRequestAuthorized(request))) return extensionUnauthorizedResponse();
+export const POST = withExtensionUser(async (request, userId) => {
   const body = await request.json().catch(() => null);
   const parsed = extensionReportSchema.safeParse(body);
   if (!parsed.success) {
@@ -18,7 +14,7 @@ export async function POST(request: Request) {
     );
   }
   try {
-    await recordExtensionReport(parsed.data);
+    await recordExtensionReport(parsed.data, userId);
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     return Response.json(
@@ -26,4 +22,4 @@ export async function POST(request: Request) {
       { status: 400, headers: { "cache-control": "no-store" } },
     );
   }
-}
+});

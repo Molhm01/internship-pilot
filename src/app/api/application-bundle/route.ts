@@ -10,6 +10,8 @@ import {
   type CompanyRelationshipRow,
   type ProfileRow,
 } from "@/lib/applications/profileSnapshot";
+import { applicationProfileForUser } from "@/lib/profile/applicationProfile";
+import { withUser } from "@/lib/auth/session";
 
 /**
  * The profile half of the application bundle.
@@ -26,9 +28,15 @@ import {
  * instead of answering "have you worked here before" out of thin air.
  *
  * No password or credential is read, returned, or logged here.
+ *
+ * Every part of the bundle — profile, résumé facts, approved answers, work
+ * history, what the applicant knows about this employer — is read for the
+ * signed-in user. This route previously read all six unscoped, which in a
+ * hosted deployment would have handed one applicant's entire application
+ * identity to whichever browser asked for it.
  */
-export async function GET(request: Request) {
-  const row = await prisma.applicationProfile.findUnique({ where: { id: "default" } });
+export const GET = withUser(async (request, user) => {
+  const row = await applicationProfileForUser(user.id);
   if (!row) {
     return NextResponse.json(
       { error: "No application profile has been saved yet. Fill in the Profile page first." },
@@ -39,17 +47,25 @@ export async function GET(request: Request) {
   const company = new URL(request.url).searchParams.get("company")?.trim();
 
   const [facts, answers, experiences, projects, educations, relationship] = await Promise.all([
-    prisma.resumeFact.findMany({ where: { status: { in: ["approved", "edited"] } } }),
-    prisma.approvedAnswer.findMany({ orderBy: { updatedAt: "desc" }, take: 500 }),
-    prisma.experience.findMany({ orderBy: { sortOrder: "asc" } }),
-    prisma.project.findMany({ orderBy: { sortOrder: "asc" } }),
-    prisma.education.findMany({ orderBy: { sortOrder: "asc" } }),
+    prisma.resumeFact.findMany({
+      where: { userId: user.id, status: { in: ["approved", "edited"] } },
+    }),
+    prisma.approvedAnswer.findMany({
+      where: { userId: user.id },
+      orderBy: { updatedAt: "desc" },
+      take: 500,
+    }),
+    prisma.experience.findMany({ where: { userId: user.id }, orderBy: { sortOrder: "asc" } }),
+    prisma.project.findMany({ where: { userId: user.id }, orderBy: { sortOrder: "asc" } }),
+    prisma.education.findMany({ where: { userId: user.id }, orderBy: { sortOrder: "asc" } }),
     company
-      ? prisma.companyRelationshipFact.findUnique({ where: { companyKey: companyKey(company) } })
+      ? prisma.companyRelationshipFact.findUnique({
+          where: { userId_companyKey: { userId: user.id, companyKey: companyKey(company) } },
+        })
       : Promise.resolve(null),
   ]);
 
-  const profileRow = row as unknown as ProfileRow;
+  const profileRow: ProfileRow = row;
   const companyRelationship = buildCompanyRelationship(
     relationship as CompanyRelationshipRow | null,
   );
@@ -84,4 +100,4 @@ export async function GET(request: Request) {
     },
     { headers: { "cache-control": "no-store" } },
   );
-}
+});

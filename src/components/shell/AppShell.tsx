@@ -24,9 +24,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [account, setAccount] = useState<
-    { user: { email: string } | null; singleUserMode: boolean } | undefined
-  >(undefined);
+  const [account, setAccount] = useState<{ user: { email: string } | null } | undefined>(
+    undefined,
+  );
 
   // Restored after mount rather than read during render, so the server and the
   // first client paint agree on the expanded layout.
@@ -51,18 +51,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   /**
-   * Three states, not two: not asked yet, signed in, and "this deployment has
-   * no accounts at all". The third is why `singleUserMode` is read rather than
-   * inferred from a null user — otherwise local mode would permanently offer a
-   * "Log in" link to a page that does not exist.
+   * Who is signed in, asked of the server on every navigation.
+   *
+   * Undefined means "not asked yet" and renders nothing, so the sidebar never
+   * flickers an email in or a sign-out link away. The session cookie is
+   * HttpOnly, so this cannot be answered locally — the server is the only thing
+   * that knows.
    */
   useEffect(() => {
-    void fetch("/api/auth/me")
-      .then((response) => (response.ok ? response.json() : { user: null, singleUserMode: true }))
-      .then((data: { user: { email: string } | null; singleUserMode?: boolean }) =>
-        setAccount({ user: data.user, singleUserMode: data.singleUserMode !== false }),
+    void fetch("/api/auth/get-session")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: { user?: { email: string } } | null) =>
+        setAccount({ user: data?.user ?? null }),
       )
-      .catch(() => setAccount({ user: null, singleUserMode: true }));
+      .catch(() => setAccount({ user: null }));
   }, [pathname]);
 
   // Close the mobile drawer on navigation, or it covers the page just opened.
@@ -124,7 +126,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </nav>
 
         <div className="shrink-0 border-t border-hairline p-2">
-          {account && !account.singleUserMode && account.user && (
+          {account?.user && (
             <div className={cn("mb-1.5", collapsed ? "hidden" : "px-2")}>
               <p className="truncate text-micro text-faint" title={account.user.email}>
                 {account.user.email}
@@ -146,7 +148,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <PanelLeftClose className="size-4" aria-hidden />
               )}
             </button>
-            {account && !account.singleUserMode && account.user && !collapsed && (
+            {account?.user && !collapsed && (
               <Link
                 href="/logout"
                 aria-label="Log out"

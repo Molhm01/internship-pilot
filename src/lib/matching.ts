@@ -60,10 +60,22 @@ function timing(jobId: string, stage: string, durationMs: number, details: Recor
 // automatic background scoring that runs after a discovered job is verified.
 export type MatchOrigin = "MANUAL" | "INITIAL_AUTO";
 
+/**
+ * Scores one job for one person.
+ *
+ * `userId` is required and is not optional-with-a-default on purpose. A match
+ * is a statement about a particular applicant — it reads their approved résumé
+ * facts and it produces a number that belongs to them — and the version of this
+ * function that took only a job id could not have been written correctly in a
+ * multi-user system: it read whichever facts were in the table and wrote the
+ * result onto the shared Job row, so the last person to score a job set
+ * everybody's score.
+ */
 export async function runMatchForJob(
   jobId: string,
-  options: { origin?: MatchOrigin } = {},
+  options: { userId: string; origin?: MatchOrigin },
 ) {
+  const { userId } = options;
   const totalStartedAt = performance.now();
   const jobReadStartedAt = performance.now();
   const job = await prisma.job.findUnique({
@@ -94,7 +106,7 @@ export async function runMatchForJob(
 
   const profileReadStartedAt = performance.now();
   const approvedFacts = await prisma.resumeFact.findMany({
-    where: { status: { in: ["approved", "edited"] } },
+    where: { userId, status: { in: ["approved", "edited"] } },
     orderBy: { createdAt: "asc" },
     select: { id: true, type: true, content: true, detail: true },
   });
@@ -217,6 +229,7 @@ export async function runMatchForJob(
     [matchResult] = await prisma.$transaction([
       prisma.matchResult.create({
         data: {
+          userId,
           jobId,
           eligibility: grounded.eligibility,
           eligibilityReason: grounded.eligibilityReason,
@@ -232,11 +245,22 @@ export async function runMatchForJob(
           origin: options.origin ?? "MANUAL",
         },
       }),
-      prisma.job.update({
-        where: { id: jobId },
-        data: {
+      // The denormalized copy lives on the per-user state row, never on the
+      // shared Job. Job.matchScore/eligibilityStatus are deprecated columns
+      // that nothing reads any more.
+      prisma.userJobState.upsert({
+        where: { userId_jobId: { userId, jobId } },
+        create: {
+          userId,
+          jobId,
           matchScore: grounded.matchScore,
           eligibilityStatus: grounded.eligibility,
+          matchedAt: new Date(),
+        },
+        update: {
+          matchScore: grounded.matchScore,
+          eligibilityStatus: grounded.eligibility,
+          matchedAt: new Date(),
         },
       }),
     ]);
@@ -252,6 +276,7 @@ export async function runMatchForJob(
 
   try {
     await logAudit({
+      userId,
       jobId,
       actor: "ai-match",
       action: "eligibility-scored",

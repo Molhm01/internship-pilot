@@ -1,14 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const findMany = vi.fn();
-const scheduleInitialAiMatch = vi.fn();
+const scheduleInitialAiMatchForAllUsers = vi.fn();
 
 vi.mock("@/lib/db", () => ({
   prisma: { job: { findMany: (...args: unknown[]) => findMany(...args) } },
 }));
 
+// Backfill fans out over every eligible user now, because a job's automatic
+// first score is one per person rather than one globally.
 vi.mock("@/lib/matching/initialAiMatchQueue", () => ({
-  scheduleInitialAiMatch: (...args: unknown[]) => scheduleInitialAiMatch(...args),
+  scheduleInitialAiMatchForAllUsers: (...args: unknown[]) =>
+    scheduleInitialAiMatchForAllUsers(...args),
 }));
 
 import { backfillUnscoredInitialMatches } from "./initialBackfill";
@@ -17,7 +20,7 @@ describe("manual unscored INITIAL-match backfill", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     findMany.mockResolvedValue([{ id: "unscored-1" }, { id: "unscored-2" }]);
-    scheduleInitialAiMatch.mockResolvedValue({ scheduled: true, reason: "SCHEDULED" });
+    scheduleInitialAiMatchForAllUsers.mockResolvedValue({ scheduled: 1, considered: 1 });
   });
 
   it("dry-runs only jobs without a valid score or active INITIAL work", async () => {
@@ -38,7 +41,7 @@ describe("manual unscored INITIAL-match backfill", () => {
       take: 2,
       select: { id: true },
     });
-    expect(scheduleInitialAiMatch).not.toHaveBeenCalled();
+    expect(scheduleInitialAiMatchForAllUsers).not.toHaveBeenCalled();
   });
 
   it("schedules only the bounded selected fixture batch when explicitly executed", async () => {
@@ -48,6 +51,6 @@ describe("manual unscored INITIAL-match backfill", () => {
       skipped: 0,
       dryRun: false,
     });
-    expect(scheduleInitialAiMatch).toHaveBeenCalledTimes(2);
+    expect(scheduleInitialAiMatchForAllUsers).toHaveBeenCalledTimes(2);
   });
 });

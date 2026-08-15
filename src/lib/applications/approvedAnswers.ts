@@ -25,12 +25,22 @@ export async function getApprovedAnswer(label: string): Promise<string | null> {
   return row?.answer ?? null;
 }
 
-export async function saveApprovedAnswer(label: string, answer: string): Promise<void> {
+/**
+ * Saves an answer for reuse, for one applicant.
+ *
+ * The owner is required. This used to write rows with `userId: null` — the
+ * legacy owner — so an answer one person gave to "Why this company?" became the
+ * answer every account reused.
+ */
+export async function saveApprovedAnswer(
+  label: string,
+  answer: string,
+  userId: string,
+): Promise<void> {
   const questionText = normalizeQuestionText(label);
-  const existing = await prisma.approvedAnswer.findFirst({ where: { userId: null, questionText } });
-  if (existing) {
-    await prisma.approvedAnswer.update({ where: { id: existing.id }, data: { answer } });
-    return;
-  }
-  await prisma.approvedAnswer.create({ data: { questionText, answer } });
+  await prisma.approvedAnswer.upsert({
+    where: { userId_questionText: { userId, questionText } },
+    update: { answer },
+    create: { userId, questionText, answer },
+  });
 }

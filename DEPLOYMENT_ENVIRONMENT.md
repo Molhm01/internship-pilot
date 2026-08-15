@@ -22,6 +22,10 @@ declines the loopback call rather than attempting it.
 | Variable | Where it belongs | Required? | Purpose | Secret? |
 | --- | --- | --- | --- | --- |
 | `DATABASE_URL` | Vercel production **and** local development | **Yes** | PostgreSQL connection string. Vercel injects it when a Prisma Postgres store is connected; `npx prisma dev` prints one locally. | **Yes** |
+| `BETTER_AUTH_SECRET` | Vercel production **and** local development | **Yes** | Signs session cookies. Generate one per environment; rotating it signs everybody out. | **Yes** |
+| `BETTER_AUTH_URL` | Vercel production | **Yes** in production | Canonical origin for authentication and the OAuth callback. Falls back to `VERCEL_PROJECT_PRODUCTION_URL`/`VERCEL_URL`, then `http://localhost:3000`. Set explicitly: the per-deployment `VERCEL_URL` is the wrong redirect target for a stable Google client. | No |
+| `GOOGLE_CLIENT_ID` | Vercel production, optional | No | Google OAuth client. Without it *and* the secret, "Continue with Google" is not shown. | No |
+| `GOOGLE_CLIENT_SECRET` | Vercel production, optional | No | The other half of the Google OAuth client. | **Yes** |
 | `NEXT_PUBLIC_APP_URL` | Vercel production | **Yes** in production | Canonical public origin. Drives `metadataBase` and the default Gmail OAuth callback. Falls back to `VERCEL_PROJECT_PRODUCTION_URL` / `VERCEL_URL`, then to `http://localhost:3000` in development only. | No — deliberately public |
 | `BLOB_READ_WRITE_TOKEN` | Vercel production | **Yes** when storage is `vercel-blob` | Vercel Blob store credential. Injected automatically once a Blob store is connected. | **Yes** |
 | `DOCUMENT_STORAGE_DRIVER` | Optional, either side | No | `local` or `vercel-blob`. Defaults from the runtime: local installs write to disk, cloud deployments to Blob. | No |
@@ -46,8 +50,7 @@ declines the loopback call rather than attempting it.
 | `INTERNSHIP_AGENT_BASE_URL` | Local Agent only | No | Loopback address of the Internship Agent. Must be `http://` loopback. Default `http://127.0.0.1:4317`. | No |
 | `INTERNSHIP_AGENT_TOKEN` | Local Agent only | No | Shared secret the Agent accepts. Fallback for the token file. | **Yes** |
 | `INTERNSHIP_AGENT_TOKEN_FILE` | Local Agent only | No | Preferred: absolute path to the Agent's `local-data/agent-token.txt`, read at request time so a recreated Agent data directory cannot leave this side on a stale secret. | Points at a secret |
-| `INTERNSHIP_PILOT_EXTENSION_TOKEN` | Optional, either side | No | Bearer token the extension presents to `/api/extension/*`. Generated and stored in the database when unset. | **Yes** |
-| `INTERNSHIP_PILOT_SINGLE_USER` | Local development only | No | `true` exposes the profile without an account. A deployment reachable by more than one person must set this to `false`. | No |
+| `APPLICATION_WORKER_USER_ID` | Local Agent only | No | Which account the local Playwright worker fills applications for. Needed only when the install has more than one account; the worker refuses to guess. | No |
 | `APPLICATION_BROWSER_PROFILE_DIR` | Local development only | No | Persistent Playwright profile for the application worker. | No |
 | `APPLICATION_OUTPUT_DIR` | Local development only | No | Where application-run artefacts are written. | No |
 | `APPLICATION_WORKER_PORT` | Local development only | No | Health port of the local application worker. | No |
@@ -64,11 +67,15 @@ Minimum for a working deployment:
 DATABASE_URL             (injected by the Prisma Postgres integration)
 BLOB_READ_WRITE_TOKEN    (injected by the Blob store integration)
 NEXT_PUBLIC_APP_URL      (set by hand, per environment)
+BETTER_AUTH_SECRET       (generate one per environment; never reuse)
+BETTER_AUTH_URL          (the stable production origin)
 ```
 
 Add `GMAIL_*`, `USAJOBS_*`, and `GOOGLE_PLACES_API_KEY` only if those features
-are wanted. Set `INTERNSHIP_PILOT_SINGLE_USER=false` on any deployment more
-than one person can reach.
+are wanted, and `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` for Google sign-in.
+
+There is no longer a single-user switch. Every private route authenticates the
+session and filters by its user id; accounts are the only mode.
 
 Do **not** set `INTERNSHIP_AGENT_TOKEN`, `INTERNSHIP_AGENT_TOKEN_FILE`, or
 `TYPST_BIN` on Vercel. They describe software on the user's computer.
@@ -80,7 +87,7 @@ exactly one variable carries that prefix: `NEXT_PUBLIC_APP_URL`, which is the
 site's own address and public by definition.
 
 Never add a `NEXT_PUBLIC_` prefix to `DATABASE_URL`, `BLOB_READ_WRITE_TOKEN`,
-`INTERNSHIP_AGENT_TOKEN`, `INTERNSHIP_PILOT_EXTENSION_TOKEN`,
+`INTERNSHIP_AGENT_TOKEN`, `BETTER_AUTH_SECRET`, `GOOGLE_CLIENT_SECRET`,
 `GMAIL_CLIENT_SECRET`, `GMAIL_TOKEN_ENCRYPTION_KEY`, `USAJOBS_API_KEY`, or
 `GOOGLE_PLACES_API_KEY`. `src/lib/runtime/environmentContract.test.ts` fails
 if one of them appears with that prefix or is read from a client module.

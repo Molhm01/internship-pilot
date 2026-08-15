@@ -3,11 +3,13 @@ import {
   BulkInitialMatchError,
   getBulkInitialMatchStatus,
 } from "@/lib/matching/bulkInitialMatch";
+import { withUser } from "@/lib/auth/session";
 
-export async function GET() {
+/** Scoring progress for the signed-in user's own queue. */
+export const GET = withUser(async (_request, user) => {
   try {
     return NextResponse.json(
-      { ok: true, status: await getBulkInitialMatchStatus() },
+      { ok: true, status: await getBulkInitialMatchStatus(user.id) },
       { headers: { "cache-control": "no-store" } },
     );
   } catch (error) {
@@ -31,4 +33,4 @@ export async function GET() {
       { status: known?.status ?? 500, headers: { "cache-control": "no-store" } },
     );
   }
-}
+});

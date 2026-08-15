@@ -39,9 +39,13 @@ export type GenerateBulletsResult = { count: number; rejected: number };
 
 // Regenerates the entire bullet library from the current set of approved
 // facts. Safe to re-run after new facts are approved.
-export async function generateBulletLibrary(): Promise<GenerateBulletsResult> {
+export async function generateBulletLibrary(userId: string): Promise<GenerateBulletsResult> {
   const facts = await prisma.resumeFact.findMany({
-    where: { status: { in: ["approved", "edited"] }, type: { in: BULLET_CATEGORIES as unknown as string[] } },
+    where: {
+      userId,
+      status: { in: ["approved", "edited"] },
+      type: { in: BULLET_CATEGORIES as unknown as string[] },
+    },
   });
   if (facts.length === 0) {
     throw new Error("No approved experience/project/activity facts yet — approve some on the Profile page first.");

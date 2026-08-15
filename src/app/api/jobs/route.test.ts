@@ -3,12 +3,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const findMany = vi.fn();
 const createJob = vi.fn();
 const scheduleInitialAiMatch = vi.fn();
+const upsertUserJobState = vi.fn();
 
 vi.mock("@/lib/db", () => ({
   prisma: {
     job: {
       findMany: (...args: unknown[]) => findMany(...args),
       create: (...args: unknown[]) => createJob(...args),
+    },
+    userJobState: {
+      upsert: (...args: unknown[]) => upsertUserJobState(...args),
     },
   },
 }));
@@ -40,10 +44,8 @@ const existingJobs = [
     title: "Firmware Intern",
     company: "Signal Labs",
     location: "Newark, NJ",
-    status: "DISCOVERED",
     workplaceType: "Remote",
-    matchScore: 84,
-    eligibilityStatus: "Pass",
+    userStates: [{ applicationStatus: "DISCOVERED", matchScore: 84, eligibilityStatus: "Pass", saved: false, hidden: false, notes: null }],
     verificationStatus: "ACTIVE_SOURCE_LISTED",
     sourceListingUrl: "https://source.example/jobs/1",
     officialApplicationUrl: "https://employer.example/apply/1",
@@ -57,10 +59,8 @@ const existingJobs = [
     title: "Hardware Intern",
     company: "Board Works",
     location: "Boston, MA",
-    status: "SAVED",
     workplaceType: "On Site",
-    matchScore: 62,
-    eligibilityStatus: "Unknown",
+    userStates: [{ applicationStatus: "SAVED", matchScore: 62, eligibilityStatus: "Unknown", saved: true, hidden: false, notes: null }],
     verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
     sourceListingUrl: "https://source.example/jobs/2",
     officialApplicationUrl: "https://employer.example/apply/2",
@@ -77,10 +77,11 @@ describe("GET /api/jobs", () => {
     findMany.mockResolvedValue(existingJobs);
     createJob.mockResolvedValue({ id: "job-new", title: "New Firmware Intern" });
     scheduleInitialAiMatch.mockResolvedValue({ scheduled: true, reason: "SCHEDULED" });
+    upsertUserJobState.mockResolvedValue({ applicationStatus: "DISCOVERED" });
   });
 
   it("returns 200 with existing jobs and preserves job fields", async () => {
-    const response = await GET(new Request("http://localhost/api/jobs?feed=all"));
+    const response = await GET(new Request("http://localhost/api/jobs?feed=all"), {});
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -91,6 +92,8 @@ describe("GET /api/jobs", () => {
       "job-existing-2",
     ]);
     expect(body.jobs[0]).toMatchObject({
+      // Flat, and read from this user's state row.
+      status: "DISCOVERED",
       matchScore: 84,
       eligibilityStatus: "Pass",
       verificationStatus: "ACTIVE_SOURCE_LISTED",
@@ -98,12 +101,15 @@ describe("GET /api/jobs", () => {
       officialApplicationUrl: "https://employer.example/apply/1",
       matchResults: [{ score: 84, eligibility: "Pass" }],
     });
+    // The raw relation is projected into the flat fields above and not
+    // returned: the client sees "your status", never a list of state rows.
+    expect(body.jobs[0]).not.toHaveProperty("userStates");
   });
 
   it("preserves database filters, JSON filters, ordering, and pagination", async () => {
     const response = await GET(new Request(
       "http://localhost/api/jobs?feed=all&location=Newark&status=DISCOVERED&workplaceType=Remote&matchScoreMin=70&disciplines=firmware&graduationYear=2027&limit=1&offset=0",
-    ));
+    ), {});
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -112,9 +118,12 @@ describe("GET /api/jobs", () => {
         // `mode` is required on PostgreSQL to keep the case-insensitive
         // matching SQLite gave this filter for free.
         location: { contains: "Newark", mode: "insensitive" },
-        status: "DISCOVERED",
         workplaceType: "Remote",
-        matchScore: { gte: 70 },
+        // Status and score are this user's, so they filter the state row
+        // rather than the shared job.
+        userStates: {
+          some: { userId: "test-user", applicationStatus: "DISCOVERED", matchScore: { gte: 70 } },
+        },
       },
       // Newest SOURCE posting first — never newest row-insert first.
       orderBy: [
@@ -124,7 +133,8 @@ describe("GET /api/jobs", () => {
         { id: "desc" },
       ],
       include: {
-        matchResults: { orderBy: { createdAt: "desc" }, take: 1 },
+        matchResults: { where: { userId: "test-user" }, orderBy: { createdAt: "desc" }, take: 1 },
+        userStates: { where: { userId: "test-user" }, take: 1 },
       },
     });
     expect(body).toMatchObject({
@@ -139,7 +149,7 @@ describe("GET /api/jobs", () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
     findMany.mockRejectedValue(new Error("database unavailable"));
 
-    const response = await GET(new Request("http://localhost/api/jobs"));
+    const response = await GET(new Request("http://localhost/api/jobs"), {});
 
     expect(response.status).toBe(500);
     expect(await response.json()).toMatchObject({
@@ -163,7 +173,7 @@ describe("GET /api/jobs", () => {
     validationError.name = "PrismaClientValidationError";
     findMany.mockRejectedValue(validationError);
 
-    const response = await GET(new Request("http://localhost/api/jobs?sort=newest"));
+    const response = await GET(new Request("http://localhost/api/jobs?sort=newest"), {});
     const body = await response.json();
 
     expect(response.status).toBe(500);
@@ -191,13 +201,31 @@ describe("GET /api/jobs", () => {
         description: "Build and test embedded firmware, analyze device data, document results, and collaborate with engineers throughout the product lifecycle.",
         url: "https://employer.example/jobs/new",
       }),
-    }));
+    }), {});
 
     expect(response.status).toBe(201);
     expect(createJob).toHaveBeenCalledOnce();
-    expect(scheduleInitialAiMatch).toHaveBeenCalledWith("job-new");
+    expect(scheduleInitialAiMatch).toHaveBeenCalledWith("job-new", "test-user");
     expect(createJob.mock.invocationCallOrder[0]).toBeLessThan(scheduleInitialAiMatch.mock.invocationCallOrder[0]);
   });
+});
+
+// Route handlers authenticate through this module. The tests below call them
+// directly, so a session has to exist; who it belongs to is exercised by
+// src/lib/auth/multiUserIsolation.test.ts against a real database.
+vi.mock("@/lib/auth/session", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/auth/session")>("@/lib/auth/session");
+  const user = { id: "test-user", email: "test@example.test", name: "Test", image: null, emailVerified: true };
+  return {
+    ...actual,
+    currentUser: async () => user,
+    requireUser: async () => user,
+    guardSession: async () => null,
+    withUser:
+      <C>(handler: (request: Request, sessionUser: typeof user, context: C) => Promise<Response>) =>
+      async (request: Request, context: C) =>
+        handler(request, user, context),
+  };
 });
 
 // --- freshness ordering (see JOB_FRESHNESS_SORT_AUDIT.md) -------------------
@@ -218,7 +246,7 @@ const freshnessFixture = [
     updatedAt: ago(MINUTE),
     firstSeenAt: ago(MINUTE),
     scoringState: "SCORING",
-    matchScore: 91,
+    userStates: [{ applicationStatus: "DISCOVERED", matchScore: 91, eligibilityStatus: null, saved: false, hidden: false, notes: null }],
     verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
     disciplineTags: null,
     graduationYears: null,
@@ -231,7 +259,7 @@ const freshnessFixture = [
     updatedAt: ago(2 * MINUTE),
     firstSeenAt: ago(2 * MINUTE),
     scoringState: "SCORED",
-    matchScore: 88,
+    userStates: [{ applicationStatus: "DISCOVERED", matchScore: 88, eligibilityStatus: null, saved: false, hidden: false, notes: null }],
     verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
     disciplineTags: null,
     graduationYears: null,
@@ -285,7 +313,7 @@ const freshnessFixture = [
 ];
 
 async function orderedIds(url: string): Promise<string[]> {
-  const body = await (await GET(new Request(url))).json();
+  const body = await (await GET(new Request(url), {})).json();
   return body.jobs.map((job: { id: string }) => job.id);
 }
 
@@ -317,7 +345,7 @@ describe("GET /api/jobs default freshness ordering", () => {
   });
 
   it("echoes the applied sort so the client can trust the URL", async () => {
-    const body = await (await GET(new Request("http://localhost/api/jobs?feed=all&sort=match"))).json();
+    const body = await (await GET(new Request("http://localhost/api/jobs?feed=all&sort=match"), {})).json();
     expect(body.sort).toBe("match");
   });
 

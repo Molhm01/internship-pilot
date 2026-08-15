@@ -1,11 +1,19 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { withUser } from "@/lib/auth/session";
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+type Params = { params: Promise<{ id: string }> };
+
+/**
+ * This user’s application attempts against this job. An application run holds
+ * every answer that was submitted to the employer, so it is as private as the
+ * profile it was filled from.
+ */
+export const GET = withUser<Params>(async (_req, user, { params }) => {
   const { id } = await params;
   const startedAt = performance.now();
   const runs = await prisma.applicationRun.findMany({
-    where: { jobId: id },
+    where: { jobId: id, userId: user.id },
     orderBy: { createdAt: "desc" },
     take: 50,
   });
@@ -18,4 +26,4 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     }));
   }
   return NextResponse.json({ runs });
-}
+});

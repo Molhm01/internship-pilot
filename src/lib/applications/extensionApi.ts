@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { MASTER_EDUCATION, MASTER_EXPERIENCE } from "@/lib/documents/masterResume";
 import { classifyField, lookupAnswer } from "./answerBank";
 import { normalizeQuestionText } from "./approvedAnswers";
+import { applicationProfileForUser } from "@/lib/profile/applicationProfile";
 import type { FillContext } from "./types";
 import { isActiveAvailability, canonicalAvailability, AVAILABILITY } from "@/lib/jobs/verificationModel";
 import { isUsableResume } from "@/lib/documents/strategy";
@@ -78,12 +79,25 @@ function sameApplicationUrl(officialUrl: string | null, currentUrl: string): boo
   }
 }
 
-async function findRunForPage(runId: string | null | undefined, pageUrl: string) {
+/**
+ * The run this page belongs to, among the runs THIS user owns.
+ *
+ * Both branches are owner-scoped. The id branch matters because a run id from
+ * the extension is an untrusted input; the URL branch matters more, because
+ * "the most recently updated run whose job matches this page" would otherwise
+ * happily return another applicant's run for the same employer — two people
+ * applying to the same internship is the normal case, not an edge case.
+ */
+async function findRunForPage(
+  runId: string | null | undefined,
+  pageUrl: string,
+  userId: string,
+) {
   const include = {
-    job: { include: { generatedDocuments: true } },
+    job: { include: { generatedDocuments: { where: { userId } } } },
   } as const;
   if (runId) {
-    const run = await prisma.applicationRun.findUnique({ where: { id: runId }, include });
+    const run = await prisma.applicationRun.findFirst({ where: { id: runId, userId }, include });
     if (!run) throw new Error("The extension could not find this ApplicationRun.");
     if (!sameApplicationUrl(run.job.officialApplyUrl ?? run.job.url ?? run.job.officialJobUrl, pageUrl)) {
       throw new Error("The current page does not match the verified application URL for this run.");
@@ -91,7 +105,7 @@ async function findRunForPage(runId: string | null | undefined, pageUrl: string)
     return run;
   }
   const candidates = await prisma.applicationRun.findMany({
-    where: { status: { in: ["queued", "running", "needs_user_action", "filled"] } },
+    where: { userId, status: { in: ["queued", "running", "needs_user_action", "filled"] } },
     include,
     orderBy: { updatedAt: "desc" },
     take: 50,
@@ -113,7 +127,7 @@ function parseRunAnswers(value: string | null): Record<string, string> {
   }
 }
 
-function profileContext(profile: NonNullable<Awaited<ReturnType<typeof prisma.applicationProfile.findUnique>>>) {
+function profileContext(profile: NonNullable<Awaited<ReturnType<typeof applicationProfileForUser>>>) {
   let locationPreferences: string[] | null = null;
   try {
     const parsed = JSON.parse(profile.locationPreferences ?? "null");
@@ -130,7 +144,9 @@ function profileContext(profile: NonNullable<Awaited<ReturnType<typeof prisma.ap
     github: profile.github,
     website: profile.website,
     school: profile.school,
-    previousSchool: profile.previousSchool,
+    // Not carried by the user-owned profile. Null is the honest answer: the
+    // agent asks rather than filling a school the applicant never entered.
+    previousSchool: null,
     addressStreet: profile.addressStreet,
     addressCity: profile.addressCity,
     addressState: profile.addressState,
@@ -167,8 +183,8 @@ function optionMatches(option: string, value: string): boolean {
   return left.includes(right) || right.includes(left);
 }
 
-export async function buildExtensionFillPlan(input: FillPlanRequest) {
-  const run = await findRunForPage(input.runId, input.pageUrl);
+export async function buildExtensionFillPlan(input: FillPlanRequest, userId: string) {
+  const run = await findRunForPage(input.runId, input.pageUrl, userId);
   if (!["queued", "running", "needs_user_action", "filled"].includes(run.status)) {
     throw new Error(`ApplicationRun ${run.id} cannot be filled from status ${run.status}.`);
   }
@@ -182,7 +198,7 @@ export async function buildExtensionFillPlan(input: FillPlanRequest) {
   if (!isActiveAvailability(run.job.verificationStatus)) {
     throw new Error("The extension refuses to fill an application that is not currently active.");
   }
-  const profile = await prisma.applicationProfile.findUnique({ where: { id: "default" } });
+  const profile = await applicationProfileForUser(userId);
   if (!profile?.fullName || !profile.email || !profile.phone || !profile.school) {
     throw new Error("Candidate Profile is missing a required identity field.");
   }
@@ -198,7 +214,7 @@ export async function buildExtensionFillPlan(input: FillPlanRequest) {
     throw new Error("The selected cover letter is not job-specific, QA-passed, and identity-verified.");
   }
 
-  const approvedRows = await prisma.approvedAnswer.findMany();
+  const approvedRows = await prisma.approvedAnswer.findMany({ where: { userId } });
   const reusableAnswers = new Map(approvedRows.map((row) => [row.questionText, row.answer]));
   const runAnswers = parseRunAnswers(run.answers);
   const ctx: FillContext = {
@@ -282,11 +298,15 @@ export async function buildExtensionFillPlan(input: FillPlanRequest) {
   };
 }
 
-export async function recordExtensionReport(input: z.infer<typeof extensionReportSchema>): Promise<void> {
-  const run = await prisma.applicationRun.findUnique({ where: { id: input.runId } });
+export async function recordExtensionReport(
+  input: z.infer<typeof extensionReportSchema>,
+  userId: string,
+): Promise<void> {
+  const run = await prisma.applicationRun.findFirst({ where: { id: input.runId, userId } });
   if (!run || run.jobId !== input.jobId) throw new Error("Extension report did not match its ApplicationRun.");
   await prisma.auditLogEntry.create({
     data: {
+      userId,
       jobId: run.jobId,
       actor: "application-agent",
       action: "extension-page-autofill",
@@ -303,9 +323,9 @@ export async function recordExtensionReport(input: z.infer<typeof extensionRepor
   });
 }
 
-export async function getExtensionRunState(id: string) {
-  return prisma.applicationRun.findUnique({
-    where: { id },
+export async function getExtensionRunState(id: string, userId: string) {
+  return prisma.applicationRun.findFirst({
+    where: { id, userId },
     select: {
       id: true,
       jobId: true,

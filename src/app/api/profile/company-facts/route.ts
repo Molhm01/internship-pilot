@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { companyKey } from "@/lib/applications/profileSnapshot";
+import { withUser } from "@/lib/auth/session";
 
 /**
  * What the applicant knows about one employer.
@@ -24,19 +25,22 @@ function text(value: unknown): string | null {
   return trimmed ? trimmed : null;
 }
 
-export async function GET(request: Request) {
+export const GET = withUser(async (request, user) => {
   const company = new URL(request.url).searchParams.get("company")?.trim();
   if (!company) {
-    const all = await prisma.companyRelationshipFact.findMany({ orderBy: { companyName: "asc" } });
+    const all = await prisma.companyRelationshipFact.findMany({
+      where: { userId: user.id },
+      orderBy: { companyName: "asc" },
+    });
     return NextResponse.json({ facts: all }, { headers: { "cache-control": "no-store" } });
   }
   const fact = await prisma.companyRelationshipFact.findUnique({
-    where: { companyKey: companyKey(company) },
+    where: { userId_companyKey: { userId: user.id, companyKey: companyKey(company) } },
   });
   return NextResponse.json({ fact }, { headers: { "cache-control": "no-store" } });
-}
+});
 
-export async function PUT(request: Request) {
+export const PUT = withUser(async (request, user) => {
   const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
   if (!body) return NextResponse.json({ error: "Send a JSON body." }, { status: 400 });
 
@@ -74,18 +78,18 @@ export async function PUT(request: Request) {
 
   const key = companyKey(companyName);
   const fact = await prisma.companyRelationshipFact.upsert({
-    where: { companyKey: key },
+    where: { userId_companyKey: { userId: user.id, companyKey: key } },
     update: data,
-    create: { companyKey: key, ...data },
+    create: { userId: user.id, companyKey: key, ...data },
   });
   return NextResponse.json({ fact });
-}
+});
 
-export async function DELETE(request: Request) {
+export const DELETE = withUser(async (request, user) => {
   const company = new URL(request.url).searchParams.get("company")?.trim();
   if (!company) return NextResponse.json({ error: "Name a company." }, { status: 400 });
-  await prisma.companyRelationshipFact
-    .delete({ where: { companyKey: companyKey(company) } })
-    .catch(() => undefined);
+  await prisma.companyRelationshipFact.deleteMany({
+    where: { userId: user.id, companyKey: companyKey(company) },
+  });
   return NextResponse.json({ ok: true });
-}
+});

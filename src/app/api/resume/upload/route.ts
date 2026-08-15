@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { extractPdfText, hasPdfMagicBytes, MAX_PDF_SIZE_BYTES, PdfExtractionError } from "@/lib/pdf";
 import { saveResumePdf } from "@/lib/resumeStorage";
+import { withUser } from "@/lib/auth/session";
 
-export async function POST(req: Request) {
+export const POST = withUser(async (req, user) => {
   const formData = await req.formData().catch(() => null);
   const file = formData?.get("file");
   const kindRaw = formData?.get("kind");
@@ -55,6 +56,7 @@ export async function POST(req: Request) {
 
   const created = await prisma.resumeDocument.create({
     data: {
+      userId: user.id,
       kind,
       filename: file.name,
       sizeBytes: file.size,
@@ -65,7 +67,7 @@ export async function POST(req: Request) {
     },
   });
 
-  const storagePath = await saveResumePdf(created.id, bytes);
+  const storagePath = await saveResumePdf(user.id, created.id, bytes);
   const doc = await prisma.resumeDocument.update({
     where: { id: created.id },
     data: { storagePath },
@@ -85,4 +87,4 @@ export async function POST(req: Request) {
     },
     { status: 201 },
   );
-}
+});

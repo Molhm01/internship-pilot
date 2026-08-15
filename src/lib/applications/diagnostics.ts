@@ -1,4 +1,5 @@
 import path from "node:path";
+import { applicationProfileForUser } from "@/lib/profile/applicationProfile";
 import { access, mkdir } from "node:fs/promises";
 import { constants } from "node:fs";
 import { prisma } from "@/lib/db";
@@ -61,7 +62,8 @@ async function chromiumExecutablePath(): Promise<string> {
   return chromium.executablePath();
 }
 
-export async function getAgentDiagnostics() {
+/** The agent as one user sees it: their profile, their documents, their runs. */
+export async function getAgentDiagnostics(userId: string) {
   const cloud = isCloudRuntime();
   const visionInstallation = await checkOllamaVisionHealth();
   let chromiumInstalled = false;
@@ -115,21 +117,21 @@ export async function getAgentDiagnostics() {
   const extensionLoaded = Boolean(workerRunning && workerHealth?.extensionReady && workerHealth.extensionId);
 
   const [profile, resumeAvailable, resumeDoc, coverDoc, lastRun, settings, greenhouseInspectionSetting, leverInspectionSetting, ollamaVisionPreflightSetting, activeGroups] = await Promise.all([
-    prisma.applicationProfile.findUnique({ where: { id: "default" } }),
+    applicationProfileForUser(userId),
     access(
       path.join(/* turbopackIgnore: true */ process.cwd(), "templates", "master_resume_reference.pdf"),
       constants.R_OK,
     ).then(() => true).catch(() => false),
-    prisma.generatedDocument.findFirst({ where: { type: "resume", qaStatus: "pass" }, orderBy: { createdAt: "desc" } }),
-    prisma.generatedDocument.findFirst({ where: { type: "coverLetter", qaStatus: "pass" }, orderBy: { createdAt: "desc" } }),
-    prisma.applicationRun.findFirst({ orderBy: { updatedAt: "desc" } }),
-    getApplicationSettings(),
+    prisma.generatedDocument.findFirst({ where: { userId, type: "resume", qaStatus: "pass" }, orderBy: { createdAt: "desc" } }),
+    prisma.generatedDocument.findFirst({ where: { userId, type: "coverLetter", qaStatus: "pass" }, orderBy: { createdAt: "desc" } }),
+    prisma.applicationRun.findFirst({ where: { userId }, orderBy: { updatedAt: "desc" } }),
+    getApplicationSettings(userId),
     prisma.appSetting.findUnique({ where: { key: "greenhouseRealInspection" } }),
     prisma.appSetting.findUnique({ where: { key: "leverRealInspection" } }),
     prisma.appSetting.findUnique({ where: { key: "ollamaVisionPreflight" } }),
     prisma.applicationRun.groupBy({
       by: ["jobId"],
-      where: { status: { in: ["queued", "running", "needs_user_action"] } },
+      where: { userId, status: { in: ["queued", "running", "needs_user_action"] } },
       _count: { _all: true },
     }),
   ]);

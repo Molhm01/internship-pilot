@@ -25,6 +25,9 @@ import {
   scheduleAllUnscoredActiveJobs,
 } from "./bulkInitialMatch";
 
+/** The owner every scoring call is made for in this suite. */
+const TEST_USER = "test-user";
+
 describe("bulk INITIAL AI Match scheduling", () => {
   beforeEach(() => vi.resetAllMocks());
 
@@ -36,7 +39,7 @@ describe("bulk INITIAL AI Match scheduling", () => {
       .mockResolvedValueOnce({ scheduled: false, reason: "ALREADY_SCHEDULED" })
       .mockResolvedValueOnce({ scheduled: true, reason: "SCHEDULED" });
 
-    await expect(scheduleAllUnscoredActiveJobs()).resolves.toEqual({
+    await expect(scheduleAllUnscoredActiveJobs(TEST_USER)).resolves.toEqual({
       ok: true,
       eligible: 3,
       queued: 2,
@@ -45,15 +48,15 @@ describe("bulk INITIAL AI Match scheduling", () => {
       failedToQueue: 0,
     });
     expect(scheduleInitialAiMatch).toHaveBeenCalledTimes(3);
-    expect(scheduleInitialAiMatch).toHaveBeenNthCalledWith(1, "job-1", {
+    expect(scheduleInitialAiMatch).toHaveBeenNthCalledWith(1, "job-1", TEST_USER, {
       retryFailed: true,
       startWorker: false,
     });
-    expect(scheduleInitialAiMatch).toHaveBeenNthCalledWith(2, "job-2", {
+    expect(scheduleInitialAiMatch).toHaveBeenNthCalledWith(2, "job-2", TEST_USER, {
       retryFailed: true,
       startWorker: false,
     });
-    expect(scheduleInitialAiMatch).toHaveBeenNthCalledWith(3, "job-3", {
+    expect(scheduleInitialAiMatch).toHaveBeenNthCalledWith(3, "job-3", TEST_USER, {
       retryFailed: true,
       startWorker: false,
     });
@@ -67,7 +70,7 @@ describe("bulk INITIAL AI Match scheduling", () => {
       .mockRejectedValueOnce(Object.assign(new Error("unique collision detail"), { code: "P2002" }))
       .mockResolvedValueOnce({ scheduled: true, reason: "SCHEDULED" });
 
-    await expect(scheduleAllUnscoredActiveJobs()).resolves.toEqual({
+    await expect(scheduleAllUnscoredActiveJobs(TEST_USER)).resolves.toEqual({
       ok: true,
       eligible: 3,
       queued: 2,
@@ -86,7 +89,7 @@ describe("bulk INITIAL AI Match scheduling", () => {
       .mockRejectedValueOnce(Object.assign(new Error("database detail"), { code: "SQLITE_BUSY" }))
       .mockResolvedValueOnce({ scheduled: true, reason: "SCHEDULED" });
 
-    await expect(scheduleAllUnscoredActiveJobs()).resolves.toEqual({
+    await expect(scheduleAllUnscoredActiveJobs(TEST_USER)).resolves.toEqual({
       ok: true,
       eligible: 3,
       queued: 2,
@@ -100,13 +103,17 @@ describe("bulk INITIAL AI Match scheduling", () => {
   it("uses only active jobs without a valid denormalized or canonical score", async () => {
     jobCount.mockResolvedValue(0);
     jobFindMany.mockResolvedValue([]);
-    await scheduleAllUnscoredActiveJobs();
+    await scheduleAllUnscoredActiveJobs(TEST_USER);
 
     expect(jobFindMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
         activeFeed: true,
         AND: expect.arrayContaining([
-          expect.objectContaining({ matchResults: { none: { score: { gte: 0, lte: 100 } } } }),
+          // Scoped to this user: "unscored" is a fact about a person and a
+          // job, not about the shared posting.
+          expect.objectContaining({
+            matchResults: { none: { userId: TEST_USER, score: { gte: 0, lte: 100 } } },
+          }),
         ]),
       }),
     }));
@@ -123,7 +130,7 @@ describe("bulk INITIAL AI Match scheduling", () => {
       .mockResolvedValueOnce(2)
       .mockResolvedValueOnce(3);
 
-    await expect(getBulkInitialMatchStatus()).resolves.toEqual({
+    await expect(getBulkInitialMatchStatus(TEST_USER)).resolves.toEqual({
       totalUnscored: 8,
       queued: 4,
       running: 1,
@@ -136,7 +143,7 @@ describe("bulk INITIAL AI Match scheduling", () => {
     queueCount.mockRejectedValueOnce(Object.assign(new Error("no such table: InitialAiMatchJob"), {
       code: "P2021",
     }));
-    await expect(scheduleAllUnscoredActiveJobs()).rejects.toMatchObject({
+    await expect(scheduleAllUnscoredActiveJobs(TEST_USER)).rejects.toMatchObject({
       code: "AI_MATCH_QUEUE_MIGRATION_REQUIRED",
       operation: "queue migration check",
       status: 503,

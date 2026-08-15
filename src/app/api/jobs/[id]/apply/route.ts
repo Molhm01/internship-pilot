@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 import { ApplicationAgentError, enqueueApplication } from "@/lib/applications/queue";
+import { withUser } from "@/lib/auth/session";
 
-export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+type Params = { params: Promise<{ id: string }> };
+
+/** Starts an application run, for the signed-in user, against a shared job. */
+export const POST = withUser<Params>(async (_req, user, { params }) => {
   const { id } = await params;
   try {
-    const result = await enqueueApplication(id);
+    const result = await enqueueApplication(id, user.id);
     return NextResponse.json(result);
   } catch (err) {
     if (err instanceof ApplicationAgentError) {
@@ -15,4 +19,4 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
       { status: 500 },
     );
   }
-}
+});

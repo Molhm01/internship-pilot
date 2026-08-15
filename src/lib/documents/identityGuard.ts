@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { applicationProfileForUser } from "@/lib/profile/applicationProfile";
 import { extractPdfText } from "@/lib/pdf";
 import { readStoredObject } from "@/lib/storage";
 
@@ -34,12 +35,21 @@ export function validateDocumentIdentity(text: string, profile: IdentityProfile)
   return Array.from(new Set(issues));
 }
 
+/**
+ * Checks that a generated PDF carries the identity of the person it belongs to.
+ *
+ * The profile is loaded from the document's OWN owner rather than from a shared
+ * row. That is what makes the guard meaningful in a multi-user system: its
+ * whole job is to catch a résumé that names somebody other than the applicant,
+ * and comparing every document against one installation-wide profile would
+ * have failed every document except one person's — while passing a document
+ * that had genuinely been generated with the wrong name.
+ */
 export async function verifyGeneratedDocumentIdentity(documentId: string): Promise<{ text: string; issues: string[] }> {
-  const [document, profile] = await Promise.all([
-    prisma.generatedDocument.findUnique({ where: { id: documentId } }),
-    prisma.applicationProfile.findUnique({ where: { id: "default" } }),
-  ]);
+  const document = await prisma.generatedDocument.findUnique({ where: { id: documentId } });
   if (!document) throw new Error("Generated document not found.");
+  if (!document.userId) throw new Error("This generated document has no owner to verify against.");
+  const profile = await applicationProfileForUser(document.userId);
   if (!profile) throw new Error("Candidate Profile not found.");
   // Through the storage layer, not readFile. This runs inside
   // /api/extension/documents/[id] — the one route a hosted deployment depends

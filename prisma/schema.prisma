@@ -26,6 +26,10 @@ datasource db {
 // Nothing in here is ever shown as "true" until the user approves it.
 model ResumeFact {
   id        String   @id @default(cuid())
+  /// Null only until the one-time legacy claim assigns it. See
+  /// scripts/claim-legacy-user-data.ts.
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
   type      String // education | gpa | graduationDate | coursework | skill | project | experience | activity
   content   String // human-readable text of the fact, e.g. "Python (used in 2 projects)"
   detail    String? // optional longer context pulled from the resume (dates, org, description)
@@ -33,6 +37,8 @@ model ResumeFact {
   source    String   @default("ai") // ai | manual
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([userId])
 }
 
 // A resume or cover-letter PDF the user uploaded. The original file lives on
@@ -41,6 +47,10 @@ model ResumeFact {
 // page count/status.
 model ResumeDocument {
   id            String   @id @default(cuid())
+  /// Null only until the one-time legacy claim assigns it. See
+  /// scripts/claim-legacy-user-data.ts.
+  userId        String?
+  user          User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
   kind          String   @default("resume") // resume | coverLetter
   filename      String
   sizeBytes     Int
@@ -49,6 +59,8 @@ model ResumeDocument {
   extractedText String
   status        String // "ok" | "scanned"
   createdAt     DateTime @default(now())
+
+  @@index([userId])
 }
 
 // Milestone 5: a reusable, pre-approved resume bullet. Generated once from
@@ -59,130 +71,142 @@ model ResumeDocument {
 // hopeful instruction to the model.
 model ResumeBullet {
   id        String   @id @default(cuid())
+  /// Null only until the one-time legacy claim assigns it. See
+  /// scripts/claim-legacy-user-data.ts.
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
   category  String // education | skill | project | experience | activity
   text      String
   factIds   String // JSON array of ResumeFact ids this bullet is grounded in
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([userId])
 }
 
 // One row per resume/cover-letter PDF generated for a specific job. Never
 // shared between jobs — storagePath always lives under a per-job folder.
 model GeneratedDocument {
   id                    String   @id @default(cuid())
+  /// Null only until the one-time legacy claim assigns it. See
+  /// scripts/claim-legacy-user-data.ts.
+  userId                String?
+  user                  User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
   jobId                 String
   job                   Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
   type                  String // resume | coverLetter
   version               Int      @default(1)
   storagePath           String // PDF location under data/generated/<jobId>/
-  typstSourcePath        String?
+  typstSourcePath       String?
   qaStatus              String // pass | fail
   qaIssues              String? // JSON array of strings
   keywordClassification String? // JSON: {supported,confirmationRequired,developmentGap,unsupported}
-  tailoringStatus        String? // TAILORED_WITH_SUPPORTED_CHANGES | MASTER_UNCHANGED_NO_SUPPORTED_IMPROVEMENT | NOT_TAILORED_NO_JOB_DESCRIPTION
-  tailoringAudit         String? // JSON audit with scores, changes, evidence, and intentionally omitted requirements
-  identityVerified       Boolean  @default(false)
+  tailoringStatus       String? // TAILORED_WITH_SUPPORTED_CHANGES | MASTER_UNCHANGED_NO_SUPPORTED_IMPROVEMENT | NOT_TAILORED_NO_JOB_DESCRIPTION
+  tailoringAudit        String? // JSON audit with scores, changes, evidence, and intentionally omitted requirements
+  identityVerified      Boolean  @default(false)
   bulletIdsUsed         String? // JSON array of ResumeBullet ids actually included
   matchResultId         String? // which MatchResult this was generated from
   createdAt             DateTime @default(now())
 
   @@index([jobId])
+  @@index([userId])
+  @@index([userId, jobId])
 }
 
 // Locked application profile — the one place identity/contact answers live
 // for resume headers now, and Milestone 6's application-form autofill later.
 // Singleton row (id is always "default").
 model ApplicationProfile {
-  id           String   @id @default("default")
-  fullName     String? // legal name
+  id                         String   @id @default("default")
+  fullName                   String? // legal name
   // Split legal name. `fullName` stays as-is for everything that already reads
   // it; these are what an application form actually asks for, and a form that
   // wants "Legal first name" can never be answered by splitting a display name
   // on whitespace without guessing where a middle name ends.
-  legalFirstName  String?
-  legalMiddleName String?
+  legalFirstName             String?
+  legalMiddleName            String?
   // "I have no middle name" is an answer; a null middle name is not. Forms ask
   // both questions and only this can answer the second.
-  noMiddleName    Boolean?
-  legalLastName   String?
-  suffix          String?
-  preferredName String?
-  pronouns      String?
-  email        String?
-  alternateEmail String?
-  phone        String?
-  phoneCountryCode String?
-  linkedin     String?
-  github       String?
-  website      String?
-  portfolio    String?
-  school       String? // current school (e.g. NJIT)
-  previousSchool String? // e.g. Stevens, if transferred — reference only, not deeply wired into per-field autofill
-  addressStreet String?
+  noMiddleName               Boolean?
+  legalLastName              String?
+  suffix                     String?
+  preferredName              String?
+  pronouns                   String?
+  email                      String?
+  alternateEmail             String?
+  phone                      String?
+  phoneCountryCode           String?
+  linkedin                   String?
+  github                     String?
+  website                    String?
+  portfolio                  String?
+  school                     String? // current school (e.g. NJIT)
+  previousSchool             String? // e.g. Stevens, if transferred — reference only, not deeply wired into per-field autofill
+  addressStreet              String?
   // A real second address line. Without one the agent had nothing to put in an
   // employer's "Address Line 2" box, and copied line 1 into it.
-  addressLine2  String?
-  addressCity   String?
-  addressState  String?
-  addressZip    String?
-  countryOfResidence String? // distinct from citizenship/work authorization
-  willingToRelocate      Boolean?
-  locationPreferences    String? // JSON array of strings
+  addressLine2               String?
+  addressCity                String?
+  addressState               String?
+  addressZip                 String?
+  countryOfResidence         String? // distinct from citizenship/work authorization
+  willingToRelocate          Boolean?
+  locationPreferences        String? // JSON array of strings
   internshipTermAvailability String? // e.g. "Summer 2027"
-  salaryAnswerPreference String? // e.g. "Negotiable", or a specific figure — used verbatim only
+  salaryAnswerPreference     String? // e.g. "Negotiable", or a specific figure — used verbatim only
   // Milestone 6: these are ALL left null until the user explicitly sets
   // them. Null means "unknown" — the application agent must stop for
   // NEEDS_USER_ACTION on any question in that category rather than guess,
   // per the spec's citizenship/clearance/sponsorship/EEO stopping rules.
-  workAuthorization  String? // e.g. "U.S. Citizen", "Green Card", "F-1 OPT/CPT" — free text, used verbatim only
-  requiresSponsorship Boolean?
-  clearanceEligible   Boolean?
-  eeoGender           String?
-  eeoRaceEthnicity    String?
-  eeoVeteranStatus    String?
-  eeoDisabilityStatus String?
+  workAuthorization          String? // e.g. "U.S. Citizen", "Green Card", "F-1 OPT/CPT" — free text, used verbatim only
+  requiresSponsorship        Boolean?
+  clearanceEligible          Boolean?
+  eeoGender                  String?
+  eeoRaceEthnicity           String?
+  eeoVeteranStatus           String?
+  eeoDisabilityStatus        String?
   // Structured education. Previously only `school` existed and everything else
   // lived in ResumeFact free text, which an application form cannot be filled
   // from: "Degree type" needs a degree, not a sentence mentioning one.
-  degreeType        String? // e.g. "Bachelor's Degree"
-  educationLevel    String? // e.g. "Undergraduate"
-  major             String?
-  minor             String?
-  educationStartDate String? // YYYY-MM
-  graduationDate     String? // YYYY-MM
-  gpa                String? // stored verbatim as the user wrote it
-  gpaScale           String?
-  relevantCoursework String? // JSON array of strings
+  degreeType                 String? // e.g. "Bachelor's Degree"
+  educationLevel             String? // e.g. "Undergraduate"
+  major                      String?
+  minor                      String?
+  educationStartDate         String? // YYYY-MM
+  graduationDate             String? // YYYY-MM
+  gpa                        String? // stored verbatim as the user wrote it
+  gpaScale                   String?
+  relevantCoursework         String? // JSON array of strings
   // Remaining application facts a form asks for that the profile could not answer.
-  remotePreference    String? // remote | hybrid | onsite | no_preference
-  earliestStartDate   String? // YYYY-MM-DD
-  hasDriversLicense   Boolean?
-  meetsMinimumAge     Boolean?
-  referralSource      String? // explicit answer to "How did you hear about us?"
+  remotePreference           String? // remote | hybrid | onsite | no_preference
+  earliestStartDate          String? // YYYY-MM-DD
+  hasDriversLicense          Boolean?
+  meetsMinimumAge            Boolean?
+  referralSource             String? // explicit answer to "How did you hear about us?"
   // Account-creation preferences. No password is ever stored here; see the
   // extension's encrypted credential vault.
-  applicationEmail       String? // the address used to register on employer sites
-  preferredUsername      String?
-  wantsAccountCreationHelp Boolean?
+  applicationEmail           String? // the address used to register on employer sites
+  preferredUsername          String?
+  wantsAccountCreationHelp   Boolean?
   // prefer_guest | create_when_required | always_ask. Null means the user has
   // not chosen, and the extension asks rather than assuming.
-  employerPortalStrategy String?
+  employerPortalStrategy     String?
   // The closest metropolitan area, which an ATS often asks for and which is
   // usually not the city of residence.
-  metroRegion            String?
+  metroRegion                String?
   // Which stored link answers a form that offers exactly one "Website" box:
   // linkedin | github | portfolio | website. Chosen, never inferred by order.
-  preferredWebsiteField  String?
+  preferredWebsiteField      String?
   // Distinct from degreeType, which is what the applicant is currently pursuing.
-  highestDegreeAwarded   String?
+  highestDegreeAwarded       String?
   // negotiable | specific | decline — plus the figure, when there is one.
-  salaryStrategy         String?
-  salaryMinimum          String?
+  salaryStrategy             String?
+  salaryMinimum              String?
   // Opt-in only. Null is not consent.
-  marketingTextConsent   Boolean?
+  marketingTextConsent       Boolean?
   // The clearance answer in words; clearanceEligible remains the boolean.
-  securityClearanceStatus String?
-  updatedAt DateTime @updatedAt
+  securityClearanceStatus    String?
+  updatedAt                  DateTime @updatedAt
 }
 
 // What the applicant knows about one employer.
@@ -191,9 +215,14 @@ model ApplicationProfile {
 // a global default would be a fabrication. No row means the user has told us
 // nothing about this company, and the agent must ask rather than answer.
 model CompanyRelationshipFact {
-  id          String @id @default(cuid())
-  /// Lower-cased, whitespace-collapsed company name.
-  companyKey  String @unique
+  id          String  @id @default(cuid())
+  /// Null only until the one-time legacy claim assigns it. See
+  /// scripts/claim-legacy-user-data.ts.
+  userId      String?
+  user        User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Lower-cased, whitespace-collapsed company name. Unique PER USER: what one
+  /// applicant knows about an employer says nothing about what another does.
+  companyKey  String
   /// As the user typed it.
   companyName String
 
@@ -210,6 +239,9 @@ model CompanyRelationshipFact {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@unique([userId, companyKey])
+  @@index([userId])
 }
 
 // The Company Watchlist (Milestone 1 / 2): every employer whose official
@@ -335,32 +367,42 @@ model ApprovedAnswer {
 }
 
 model Job {
-  id             String    @id @default(cuid())
-  title          String
-  company        String
-  location       String?
-  postingDate    DateTime?
-  internshipTerm String? // e.g. Summer 2027, Fall 2026
-  duration       String? // e.g. "10 weeks", "3 months"
-  url            String? // the official application URL once known (manual entries: whatever the user typed)
-  description    String
-  jobDescriptionSourceUrl String?
-  jobDescriptionHash      String?
+  id                       String    @id @default(cuid())
+  title                    String
+  company                  String
+  location                 String?
+  postingDate              DateTime?
+  internshipTerm           String? // e.g. Summer 2027, Fall 2026
+  duration                 String? // e.g. "10 weeks", "3 months"
+  url                      String? // the official application URL once known (manual entries: whatever the user typed)
+  description              String
+  jobDescriptionSourceUrl  String?
+  jobDescriptionHash       String?
   jobDescriptionCapturedAt DateTime?
-  jobResponsibilities     String? // JSON string array captured from the official posting
-  jobQualifications       String? // JSON string array captured from the official posting
-  status         String    @default("DISCOVERED") // tracker / applicationStatus, see TRACKER_STATUSES in src/lib/statuses.ts
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  jobResponsibilities      String? // JSON string array captured from the official posting
+  jobQualifications        String? // JSON string array captured from the official posting
+  /**
+   * DEPRECATED — personal state on a shared row.
+   * One person marking an internship Submitted changed it for everyone who
+   * could see the posting. The tracker status now lives on
+   * `UserJobState.applicationStatus`, and nothing reads this column.
+   * It is still here because it holds the only copy of the original user’s
+   * tracker state until `scripts/claim-legacy-user-data.ts` copies it into
+   * their `UserJobState`. A follow-up migration drops it once that has run
+   * and been verified.
+   */
+  status                   String    @default("DISCOVERED")
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
 
   // --- Phase 2: automatic discovery & verification ---
-  source             String? // "intern-list" | "greenhouse" | "lever" | "ashby" | "smartrecruiters" | "usajobs" | ... | null (manual)
-  sourceJobId         String? // id from the source adapter, for dedup
-  requisitionId       String? // employer-assigned requisition id, when the ATS exposes one
-  sourceUrl           String? // the aggregator listing URL (never auto-visited after ingest)
-  workplaceType       String? // Remote | Hybrid | On Site
-  firstSeenAt         DateTime?
-  lastSeenAt          DateTime?
+  source        String? // "intern-list" | "greenhouse" | "lever" | "ashby" | "smartrecruiters" | "usajobs" | ... | null (manual)
+  sourceJobId   String? // id from the source adapter, for dedup
+  requisitionId String? // employer-assigned requisition id, when the ATS exposes one
+  sourceUrl     String? // the aggregator listing URL (never auto-visited after ingest)
+  workplaceType String? // Remote | Hybrid | On Site
+  firstSeenAt   DateTime?
+  lastSeenAt    DateTime?
 
   // --- Canonical source posting date (freshness ordering) ---
   // sourcePostedAt is THE field the default Jobs feed is ordered by: when the
@@ -368,22 +410,22 @@ model Job {
   // It is written once at ingest and only replaced when a later sync supplies a
   // strictly more reliable date — rediscovering a job never makes it look new.
   // Legacy `postingDate` is kept untouched for filters and back-compatibility.
-  sourcePostedAt       DateTime?
+  sourcePostedAt         DateTime?
   // The source's own words ("38 minutes ago", "Posted Today"), preserved so an
   // uncertain date can be shown honestly instead of rendered as a fake instant.
-  sourcePostedText     String?
+  sourcePostedText       String?
   // EXACT | RELATIVE_PARSED | DATE_ONLY | UNKNOWN — see src/lib/sync/sourceDate.ts.
-  sourceDateConfidence String?
+  sourceDateConfidence   String?
   // When the sync actually read the source. Relative dates are resolved against
   // THIS instant, once, at ingest — never recomputed at page load.
-  sourceCapturedAt     DateTime?
+  sourceCapturedAt       DateTime?
   // Which sync run last saw this row, and where it appeared in that run's list.
   // Lower sourceRowIndex = higher in the source. Only used as a tiebreaker, and
   // only for the newest run, so an older sync can never outrank a newer one.
-  sourceSyncRunId      String?
-  sourceRowIndex       Int?
-  lastVerifiedAt      DateTime? // = "verifiedAt": when verificationStatus was last (re)computed
-  compensation        String? // raw text, e.g. "$20-$23/hr"
+  sourceSyncRunId        String?
+  sourceRowIndex         Int?
+  lastVerifiedAt         DateTime? // = "verifiedAt": when verificationStatus was last (re)computed
+  compensation           String? // raw text, e.g. "$20-$23/hr"
   // Unverified | Pending | VERIFIED_OFFICIAL_AT_LAST_CHECK | NeedsReview |
   // CLOSED_OR_UNVERIFIED | Closed | SecurityQuarantine
   // Only VERIFIED_OFFICIAL_AT_LAST_CHECK jobs appear on the main Jobs page
@@ -399,17 +441,20 @@ model Job {
   verificationMethod     String? // e.g. "greenhouse-board-match" | "lever-board-match" | "manual-entry"
   officialEmployerDomain String? // hostname of the officialApplyUrl (`url` field), once verified
   evidence               String? // JSON: the specific checks that passed/failed during verification
-  matchScore          Int? // denormalized copy of the latest MatchResult.score
-  eligibilityStatus   String? // denormalized copy of the latest MatchResult.eligibility
+  /// DEPRECATED, and for the same reason as `status`: a score is a statement
+  /// about one person against this job. Lives on `UserJobState.matchScore`.
+  matchScore             Int?
+  /// DEPRECATED. Lives on `UserJobState.eligibilityStatus`.
+  eligibilityStatus      String?
 
   // --- Strict source-security verification chain ---
-  discoverySource     String? // "csv" | "intern-list" — which of the two allowed boundary sources this job came from
-  atsType             String? // greenhouse | lever | ashby | workday | icims | smartrecruiters | successfactors | taleo | unknown
-  atsTenant           String? // the specific tenant/board id — only trusted once an ApprovedAtsTenant row confirms the employer's own page links here
-  redirectChain       String? // JSON array of {url, status}[] followed while reaching the official application URL
+  discoverySource          String? // "csv" | "intern-list" — which of the two allowed boundary sources this job came from
+  atsType                  String? // greenhouse | lever | ashby | workday | icims | smartrecruiters | successfactors | taleo | unknown
+  atsTenant                String? // the specific tenant/board id — only trusted once an ApprovedAtsTenant row confirms the employer's own page links here
+  redirectChain            String? // JSON array of {url, status}[] followed while reaching the official application URL
   httpStatusAtVerification Int? // HTTP status of the final official page at last verification
-  officialJobUrl      String? // the official JOB DESCRIPTION page (may differ from the apply URL)
-  officialApplyUrl    String? // normalized HTTPS URL the application worker is allowed to navigate to
+  officialJobUrl           String? // the official JOB DESCRIPTION page (may differ from the apply URL)
+  officialApplyUrl         String? // normalized HTTPS URL the application worker is allowed to navigate to
 
   // --- Canonical official-destination resolution ---
   // Legacy sourceUrl/officialApplyUrl/url remain for compatibility. New code
@@ -430,7 +475,7 @@ model Job {
   // Intern List) are active even while their official destination is still
   // "verification pending" — making a job visible never changes its
   // verificationStatus.
-  activeFeed          Boolean  @default(false)
+  activeFeed Boolean @default(false)
 
   // --- filter-support classification (heuristic, computed at ingest/verify time) ---
   disciplineTags           String? // JSON array, e.g. ["electrical","embedded"]
@@ -443,11 +488,12 @@ model Job {
   season                   String? // Summer | Fall | Spring | Winter | Unknown
   distanceMilesFromClifton Float? // null when the location couldn't be geocoded locally
 
-  matchResults       MatchResult[]
-  generatedDocuments GeneratedDocument[]
-  applicationRuns    ApplicationRun[]
+  userStates           UserJobState[]
+  matchResults         MatchResult[]
+  generatedDocuments   GeneratedDocument[]
+  applicationRuns      ApplicationRun[]
   verificationAttempts VerificationAttempt[]
-  initialAiMatchJobs InitialAiMatchJob[]
+  initialAiMatchJobs   InitialAiMatchJob[]
 
   // --- Automatic AI scoring queue ---
   scoringState       String    @default("NOT_SCORED") // NOT_SCORED | QUEUED | SCORING | RETRYABLE_FAILED | SCORED | FAILED | STALE
@@ -485,27 +531,27 @@ model AtsSyncRun {
   status     String    @default("running") // running | success | error
   vendors    String // JSON array of ATS vendors included in this run
 
-  employersChecked  Int @default(0)
+  employersChecked   Int @default(0)
   employersWithBoard Int @default(0)
-  employersFailed   Int @default(0)
+  employersFailed    Int @default(0)
 
-  rowsDiscovered   Int @default(0)
-  uniqueRows       Int @default(0)
-  qualifying       Int @default(0)
-  notInternship    Int @default(0)
-  uncertain        Int @default(0)
-  closed           Int @default(0)
-  parseFailures    Int @default(0)
+  rowsDiscovered Int @default(0)
+  uniqueRows     Int @default(0)
+  qualifying     Int @default(0)
+  notInternship  Int @default(0)
+  uncertain      Int @default(0)
+  closed         Int @default(0)
+  parseFailures  Int @default(0)
 
-  inserted            Int @default(0)
-  updated             Int @default(0)
-  unchanged           Int @default(0)
-  duplicatesPrevented Int @default(0)
-  persistenceFailures Int @default(0)
+  inserted              Int @default(0)
+  updated               Int @default(0)
+  unchanged             Int @default(0)
+  duplicatesPrevented   Int @default(0)
+  persistenceFailures   Int @default(0)
   officialUrlsConfirmed Int @default(0)
 
-  durationMs   Int     @default(0)
-  errorMessage String?
+  durationMs     Int     @default(0)
+  errorMessage   String?
   // JSON: failure reasons grouped by sanitized code. Never contains full
   // descriptions, tokens, or cookies.
   failureSummary String?
@@ -518,59 +564,73 @@ model AtsSyncRun {
 // clean value; this table is where attempts accumulate — so re-verifying a
 // job many times grows THIS table, never the displayed reason string.
 model VerificationAttempt {
-  id            String   @id @default(cuid())
-  jobId         String
-  job           Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  reasonCode    String // one VerificationReasonCode value
-  status        String // the resulting verificationStatus
-  message       String // one clean human message for this attempt
-  httpStatus    Int?
-  attemptedAt   DateTime @default(now())
+  id          String   @id @default(cuid())
+  jobId       String
+  job         Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  reasonCode  String // one VerificationReasonCode value
+  status      String // the resulting verificationStatus
+  message     String // one clean human message for this attempt
+  httpStatus  Int?
+  attemptedAt DateTime @default(now())
 
   @@index([jobId])
   @@index([attemptedAt])
 }
 
 model MatchResult {
-  id                       String   @id @default(cuid())
-  jobId                    String
-  job                      Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  eligibility              String // Pass | Fail | Unknown
-  eligibilityReason        String
-  score                    Int // 0-100
-  explanation              String
-  recommendation           String  @default("Consider") // Apply | Skip | Consider
-  skillsSupported          String // JSON string array
-  skillsNeedConfirmation   String // JSON string array
-  skillsToLearn            String // JSON string array
-  skillsNeverAdd           String // JSON string array
-  tailoringPreview         String? // JSON string array of grounded resume-bullet suggestions
-  factsUsed                String // JSON string array of ResumeFact ids referenced
-  origin                   String? // MANUAL | INITIAL_AUTO; null preserves legacy records unchanged
-  createdAt                DateTime @default(now())
-  initialAiMatchJob        InitialAiMatchJob?
+  id                     String             @id @default(cuid())
+  /// Null only until the one-time legacy claim assigns it. See
+  /// scripts/claim-legacy-user-data.ts.
+  userId                 String?
+  user                   User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobId                  String
+  job                    Job                @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  eligibility            String // Pass | Fail | Unknown
+  eligibilityReason      String
+  score                  Int // 0-100
+  explanation            String
+  recommendation         String             @default("Consider") // Apply | Skip | Consider
+  skillsSupported        String // JSON string array
+  skillsNeedConfirmation String // JSON string array
+  skillsToLearn          String // JSON string array
+  skillsNeverAdd         String // JSON string array
+  tailoringPreview       String? // JSON string array of grounded resume-bullet suggestions
+  factsUsed              String // JSON string array of ResumeFact ids referenced
+  origin                 String? // MANUAL | INITIAL_AUTO; null preserves legacy records unchanged
+  createdAt              DateTime           @default(now())
+  initialAiMatchJob      InitialAiMatchJob?
+
+  @@index([userId])
+  @@index([userId, jobId])
 }
 
 // Durable, idempotent work record for the one automatic match allowed when a
 // genuinely new internship is persisted. Manual reruns never use this table.
 model InitialAiMatchJob {
-  id              String   @id @default(cuid())
-  jobId           String
-  job             Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  matchType       String   @default("INITIAL")
-  state           String   @default("PENDING") // PENDING | RUNNING | SUCCEEDED | RETRYABLE_FAILED | PERMANENT_FAILED
-  attemptCount    Int      @default(0)
-  nextAttemptAt   DateTime @default(now())
-  lockedAt        DateTime?
-  lastErrorCode   String?
-  matchResultId   String?  @unique
-  matchResult     MatchResult? @relation(fields: [matchResultId], references: [id], onDelete: SetNull)
-  completedAt     DateTime?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id            String       @id @default(cuid())
+  /// Null only until the one-time legacy claim assigns it. See
+  /// scripts/claim-legacy-user-data.ts.
+  userId        String?
+  user          User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobId         String
+  job           Job          @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  matchType     String       @default("INITIAL")
+  state         String       @default("PENDING") // PENDING | RUNNING | SUCCEEDED | RETRYABLE_FAILED | PERMANENT_FAILED
+  attemptCount  Int          @default(0)
+  nextAttemptAt DateTime     @default(now())
+  lockedAt      DateTime?
+  lastErrorCode String?
+  matchResultId String?      @unique
+  matchResult   MatchResult? @relation(fields: [matchResultId], references: [id], onDelete: SetNull)
+  completedAt   DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
 
-  @@unique([jobId, matchType])
+  // Per user: the automatic first score is one per person per job, not one
+  // globally. A second applicant must not find the queue already "done".
+  @@unique([userId, jobId, matchType])
   @@index([state, nextAttemptAt])
+  @@index([userId])
 }
 
 // One row per sync run against a discovery source (e.g. Intern List).
@@ -588,9 +648,16 @@ model SyncLog {
 // Named, reusable filter presets for the Jobs page.
 model SavedFilter {
   id         String   @id @default(cuid())
-  name       String   @unique
+  /// Null only until the one-time legacy claim assigns it. See
+  /// scripts/claim-legacy-user-data.ts.
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
   filterJson String
   createdAt  DateTime @default(now())
+
+  @@unique([userId, name])
+  @@index([userId])
 }
 
 // Generic key/value app settings (search center/radius, scheduler pause
@@ -607,55 +674,61 @@ model AppSetting {
 // the 13-step process, and what a paused/crashed/restarted server resumes
 // from — never re-attempts a requisition that already has a "submitted" row.
 model ApplicationRun {
-  id                  String    @id @default(cuid())
+  id                         String    @id @default(cuid())
+  /// Null only until the one-time legacy claim assigns it. See
+  /// scripts/claim-legacy-user-data.ts.
+  userId                     String?
+  user                       User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
   // Non-null only while this run is queued, running, or paused. The unique
   // constraint is the durable duplicate-click guard: one job can have only
   // one active application run, even across web/worker process races.
-  activeKey           String?   @unique
-  jobId               String
-  job                 Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  mode                String // fill_only | auto_submit
-  atsType             String // greenhouse | lever | ashby | workday | smartrecruiters | icims | taleo | successfactors | unknown
-  status              String    @default("queued") // queued | running | needs_user_action | filled | submitted | failed | cancelled | superseded
-  currentStep         String? // human-readable label of the pipeline step in progress/last attempted
-  stageHistory        String? // JSON array of durable {stage, at, detail} transitions
-  needsUserActionReason String? // one of the documented stop reasons (captcha, mfa, ...)
-  stoppedFieldLabel   String? // the exact form field label that triggered the stop, if any — lets the user supply + save an answer for reuse
-  stoppedFieldType    String?
-  stoppedFieldOptions String? // JSON string array
-  stoppedFieldStep    Int?
-  stoppedFieldContext String? // JSON: aria-label, placeholder, nearby text, page URL
-  resumeDocumentId    String? // GeneratedDocument used for this attempt
-  coverLetterDocumentId String?
+  activeKey                  String?   @unique
+  jobId                      String
+  job                        Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  mode                       String // fill_only | auto_submit
+  atsType                    String // greenhouse | lever | ashby | workday | smartrecruiters | icims | taleo | successfactors | unknown
+  status                     String    @default("queued") // queued | running | needs_user_action | filled | submitted | failed | cancelled | superseded
+  currentStep                String? // human-readable label of the pipeline step in progress/last attempted
+  stageHistory               String? // JSON array of durable {stage, at, detail} transitions
+  needsUserActionReason      String? // one of the documented stop reasons (captcha, mfa, ...)
+  stoppedFieldLabel          String? // the exact form field label that triggered the stop, if any — lets the user supply + save an answer for reuse
+  stoppedFieldType           String?
+  stoppedFieldOptions        String? // JSON string array
+  stoppedFieldStep           Int?
+  stoppedFieldContext        String? // JSON: aria-label, placeholder, nearby text, page URL
+  resumeDocumentId           String? // GeneratedDocument used for this attempt
+  coverLetterDocumentId      String?
   // Document strategy chosen at queue time (see src/lib/documents/strategy.ts):
   // TAILORED | PARTIAL_TAILORING | MASTER_RESUME_FALLBACK |
   // EXISTING_APPROVED_DOCUMENT | NO_APPROVED_DOCUMENT. Separates resume
   // tailoring from autofill eligibility — an incomplete job description picks a
   // fallback strategy instead of blocking the run.
-  documentStrategy       String?
-  documentStrategyReason String?
+  documentStrategy           String?
+  documentStrategyReason     String?
   jobDescriptionCompleteness String? // complete | partial | none
-  matchScoreAtRun     Int? // denormalized MatchResult.score at the time this run started
-  answers             String? // JSON: every form question + answer actually submitted/filled, for the audit trail
-  confirmationNumber  String?
-  confirmationUrl     String?
-  attemptNumber       Int       @default(1)
-  attemptHistory      String?   // JSON array of past attempt records
-  errorCode           String?   // Machine error code (FORM_DESCRIPTION_INVALID, EXTENSION_DISCONNECTED, etc.)
-  validationPath      String?   // Path to invalid field if applicable (e.g. fields[3].options)
-  protocolVersion     Int?      // Protocol version exchanged
-  schemaVersion       Int?      // Form schema version exchanged
-  tabRemainsOpen      Boolean   @default(true)
-  screenshotPath      String? // saved on submit AND on needs_user_action, so the user can see exactly what happened
-  browserLogPath      String?
-  errorLog            String?
-  startedAt           DateTime?
-  finishedAt          DateTime?
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  matchScoreAtRun            Int? // denormalized MatchResult.score at the time this run started
+  answers                    String? // JSON: every form question + answer actually submitted/filled, for the audit trail
+  confirmationNumber         String?
+  confirmationUrl            String?
+  attemptNumber              Int       @default(1)
+  attemptHistory             String? // JSON array of past attempt records
+  errorCode                  String? // Machine error code (FORM_DESCRIPTION_INVALID, EXTENSION_DISCONNECTED, etc.)
+  validationPath             String? // Path to invalid field if applicable (e.g. fields[3].options)
+  protocolVersion            Int? // Protocol version exchanged
+  schemaVersion              Int? // Form schema version exchanged
+  tabRemainsOpen             Boolean   @default(true)
+  screenshotPath             String? // saved on submit AND on needs_user_action, so the user can see exactly what happened
+  browserLogPath             String?
+  errorLog                   String?
+  startedAt                  DateTime?
+  finishedAt                 DateTime?
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
 
   @@index([jobId])
   @@index([status])
+  @@index([userId])
+  @@index([userId, jobId])
 }
 
 // Milestone 8 (built now so Milestone 6's worker has somewhere to write):
@@ -664,6 +737,11 @@ model ApplicationRun {
 // do X" always has a real, timestamped answer.
 model AuditLogEntry {
   id        String   @id @default(cuid())
+  /// Set on entries describing one person’s activity (an application, a
+  /// generated document, a mailbox sync). Null on global discovery and
+  /// verification events, which belong to no one.
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
   jobId     String?
   actor     String // "ai-match" | "verification" | "document-generation" | "application-agent" | "gmail-tracking" | "user"
   action    String // short machine-readable label, e.g. "eligibility-scored" | "verification-passed" | "application-submitted"
@@ -673,6 +751,7 @@ model AuditLogEntry {
 
   @@index([jobId])
   @@index([createdAt])
+  @@index([userId])
 }
 
 // Milestone 7: the connected Gmail account, read-only. Singleton row (id is
@@ -681,14 +760,18 @@ model AuditLogEntry {
 // Scope is always gmail.readonly; this app never sends, deletes, archives,
 // or modifies anything in the mailbox.
 model GmailAccount {
-  id                  String   @id @default("default")
-  emailAddress        String
+  id                    String    @id @default(cuid())
+  /// One connected mailbox per account. This was a singleton row keyed
+  /// "default", which hosted means one person’s inbox answering for everyone.
+  userId                String?   @unique
+  user                  User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailAddress          String
   encryptedRefreshToken String
   encryptedAccessToken  String?
   accessTokenExpiresAt  DateTime?
-  lastSyncAt          DateTime?
-  lastSyncHistoryId   String? // Gmail history id, for incremental sync
-  connectedAt         DateTime @default(now())
+  lastSyncAt            DateTime?
+  lastSyncHistoryId     String? // Gmail history id, for incremental sync
+  connectedAt           DateTime  @default(now())
 }
 
 // One row per Gmail message the tracker has looked at and classified.
@@ -696,40 +779,52 @@ model GmailAccount {
 // body unless it's an assessment (where instructions are genuinely useful),
 // per the "never log complete email bodies unless necessary" constraint.
 model TrackedEmail {
-  id            String   @id @default(cuid())
-  gmailMessageId String  @unique
-  threadId      String
-  subject       String
-  fromAddress   String
-  snippet       String
-  receivedAt    DateTime
-  classification String  // confirmation | assessment | interview | recruiter-message | info-request | rejection | offer | withdrawal | status-update | unknown
-  matchedJobId  String?
-  matchMethod   String? // company-name | job-title | requisition-id | ats-domain | thread-continuity | none
-  processedAt   DateTime @default(now())
+  id             String   @id @default(cuid())
+  /// Null only until the one-time legacy claim assigns it. See
+  /// scripts/claim-legacy-user-data.ts.
+  userId         String?
+  user           User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Unique per user: two people can each receive the same broadcast message.
+  gmailMessageId String
+  threadId       String
+  subject        String
+  fromAddress    String
+  snippet        String
+  receivedAt     DateTime
+  classification String // confirmation | assessment | interview | recruiter-message | info-request | rejection | offer | withdrawal | status-update | unknown
+  matchedJobId   String?
+  matchMethod    String? // company-name | job-title | requisition-id | ats-domain | thread-continuity | none
+  processedAt    DateTime @default(now())
 
+  @@unique([userId, gmailMessageId])
   @@index([classification])
   @@index([matchedJobId])
+  @@index([userId])
 }
 
 // Milestone 7: extracted details for an assessment mentioned in a tracked
 // email. The system NEVER takes, solves, or submits the assessment itself —
 // this is purely a reminder/summary/checklist surface, per spec.
 model AssessmentInboxEntry {
-  id            String   @id @default(cuid())
-  jobId         String?
-  sourceEmailId String?
-  company       String
-  jobTitle      String?
-  provider      String? // e.g. HackerRank, Codility, CodeSignal — null if not stated
-  deadline      DateTime?
-  duration      String? // e.g. "90 minutes" — raw text, never inferred
-  link          String?
-  instructions  String?
+  id              String    @id @default(cuid())
+  /// Null only until the one-time legacy claim assigns it. See
+  /// scripts/claim-legacy-user-data.ts.
+  userId          String?
+  user            User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobId           String?
+  sourceEmailId   String?
+  company         String
+  jobTitle        String?
+  provider        String? // e.g. HackerRank, Codility, CodeSignal — null if not stated
+  deadline        DateTime?
+  duration        String? // e.g. "90 minutes" — raw text, never inferred
+  link            String?
+  instructions    String?
   legitimacyNotes String? // e.g. "Sender domain matches employer's official domain"
-  createdAt     DateTime @default(now())
+  createdAt       DateTime  @default(now())
 
   @@index([jobId])
+  @@index([userId])
 }
 
 // Milestone 2: a business found via Google Places search near the user's
@@ -764,24 +859,131 @@ model NearbyFirm {
 // ---------------------------------------------------------------------------
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  /// scrypt hash. The plaintext password is never stored, logged, or returned.
-  passwordHash String
-  displayName  String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id            String   @id @default(cuid())
+  email         String   @unique
+  /// Better Auth's canonical display name. Required by its user table, so it
+  /// is defaulted rather than nullable; the migration backfills it from
+  /// `displayName`.
+  name          String   @default("")
+  /// Whether the address has been proven. Account linking reads this: an
+  /// unverified local account is never merged into an OAuth identity.
+  emailVerified Boolean  @default(false)
+  image         String?
+  /**
+   * Legacy scrypt hash, kept only so the credential migration is reversible.
+   * Better Auth stores the credential in `Account.password`, and that row is
+   * the one every sign-in reads. Nothing in the application reads this column
+   * any more; it is not dropped because deleting the sole prior copy of a
+   * credential to tidy a schema is not a trade worth making.
+   */
+  passwordHash  String?
+  /// Superseded by `name`. Retained so nothing that still reads it breaks.
+  displayName   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  sessions     UserSession[]
-  profile      UserProfile?
-  educations   Education[]
-  experiences  Experience[]
-  projects     Project[]
-  applicationPreferences  ApplicationPreferences?
-  sensitivePreferences    SensitiveAnswerPreferences?
-  savedAnswers ApprovedAnswer[]
+  /// Better Auth owns these two.
+  authSessions Session[]
+  accounts     Account[]
+
+  /// Superseded by `authSessions`. See the model comment on `UserSession`.
+  sessions UserSession[]
+
+  profile                UserProfile?
+  educations             Education[]
+  experiences            Experience[]
+  projects               Project[]
+  applicationPreferences ApplicationPreferences?
+  sensitivePreferences   SensitiveAnswerPreferences?
+  savedAnswers           ApprovedAnswer[]
+
+  // Everything below is this person's private data. Each relation cascades:
+  // none of these rows means anything without the account that owns it.
+  jobStates          UserJobState[]
+  resumeFacts        ResumeFact[]
+  resumeDocuments    ResumeDocument[]
+  resumeBullets      ResumeBullet[]
+  generatedDocuments GeneratedDocument[]
+  companyFacts       CompanyRelationshipFact[]
+  matchResults       MatchResult[]
+  initialAiMatchJobs InitialAiMatchJob[]
+  applicationRuns    ApplicationRun[]
+  savedFilters       SavedFilter[]
+  gmailAccounts      GmailAccount[]
+  trackedEmails      TrackedEmail[]
+  assessments        AssessmentInboxEntry[]
+  settings           UserSetting[]
+  extensionTokens    ExtensionToken[]
+  auditLogEntries    AuditLogEntry[]
 }
 
+/**
+ * Better Auth's session table.
+ * The cookie carries `token`; this row is the server's copy. Better Auth owns
+ * every write, which is the point of adopting it — session rotation, expiry and
+ * revocation stop being this project's code to get right.
+ */
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+/**
+ * One authentication method belonging to one user.
+ * `providerId = "credential"` is the email/password row, whose `password`
+ * column holds the scrypt hash. `providerId = "google"` is a linked Google
+ * identity. A single human with both has ONE `User` row and two of these —
+ * which is the whole reason linking is explicit rather than implicit.
+ * Tokens here are provider tokens, never logged and never returned to the
+ * browser: Better Auth marks them `returned: false`.
+ */
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+}
+
+/// Short-lived tokens: email verification, password reset. Better Auth owns it.
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+}
+
+/**
+ * The pre-Better-Auth session table.
+ * Nothing writes to it any more. It is kept, empty of meaning rather than
+ * dropped, because dropping a table is the one migration step that cannot be
+ * undone by re-running the migration — and it costs nothing to leave.
+ */
 model UserSession {
   id        String   @id @default(cuid())
   /// SHA-256 of the cookie value. A stolen database row cannot be replayed.
@@ -821,10 +1023,10 @@ model UserProfile {
 }
 
 model Education {
-  id     String @id @default(cuid())
+  id     String  @id @default(cuid())
   /// Null in local single-user mode, where there is no account to own the row.
   userId String?
-  user   User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   school             String
   degree             String?
@@ -844,43 +1046,43 @@ model Education {
 }
 
 model Experience {
-  id     String @id @default(cuid())
+  id     String  @id @default(cuid())
   /// Null in local single-user mode, where there is no account to own the row.
   userId String?
-  user   User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  employer         String
-  title            String?
-  location         String?
-  startDate        String?
-  endDate          String?
-  currentlyEmployed Boolean @default(false)
+  employer          String
+  title             String?
+  location          String?
+  startDate         String?
+  endDate           String?
+  currentlyEmployed Boolean  @default(false)
   /// JSON array of user-approved responsibility lines.
-  responsibilities String?
+  responsibilities  String?
   /// JSON array of user-approved resume bullets.
-  approvedBullets  String?
-  sortOrder        Int      @default(0)
-  updatedAt        DateTime @updatedAt
+  approvedBullets   String?
+  sortOrder         Int      @default(0)
+  updatedAt         DateTime @updatedAt
 
   @@index([userId])
 }
 
 model Project {
-  id     String @id @default(cuid())
+  id     String  @id @default(cuid())
   /// Null in local single-user mode, where there is no account to own the row.
   userId String?
-  user   User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  name         String
-  startDate    String?
-  endDate      String?
+  name           String
+  startDate      String?
+  endDate        String?
   /// JSON array of technologies.
-  technologies String?
-  description  String?
+  technologies   String?
+  description    String?
   /// JSON array of user-approved skills evidenced by this project.
   approvedSkills String?
-  sortOrder    Int      @default(0)
-  updatedAt    DateTime @updatedAt
+  sortOrder      Int      @default(0)
+  updatedAt      DateTime @updatedAt
 
   @@index([userId])
 }
@@ -892,16 +1094,16 @@ model ApplicationPreferences {
 
   // Every field is nullable on purpose. Null means "the user has not told us",
   // which the agent must treat as unanswerable rather than as a default.
-  legallyAuthorizedToWork  Boolean?
-  requiresSponsorshipNow   Boolean?
+  legallyAuthorizedToWork    Boolean?
+  requiresSponsorshipNow     Boolean?
   mayRequireSponsorshipLater Boolean?
-  willingToRelocate        Boolean?
-  remotePreference         String?
-  earliestStartDate        String?
-  salaryPreference         String?
-  hasDriversLicense        Boolean?
-  securityClearanceStatus  String?
-  usualJobSource           String?
+  willingToRelocate          Boolean?
+  remotePreference           String?
+  earliestStartDate          String?
+  salaryPreference           String?
+  hasDriversLicense          Boolean?
+  securityClearanceStatus    String?
+  usualJobSource             String?
 
   updatedAt DateTime @updatedAt
 }
@@ -913,13 +1115,100 @@ model SensitiveAnswerPreferences {
 
   // Stored only when the user explicitly chose. Null means no choice was made,
   // and the agent must leave the question for them rather than answering it.
-  gender          String?
-  raceEthnicity   String?
-  veteranStatus   String?
-  disabilityStatus String?
-  pronouns        String?
+  gender              String?
+  raceEthnicity       String?
+  veteranStatus       String?
+  disabilityStatus    String?
+  pronouns            String?
   /// True when the user asked for demographic questions to be declined.
   declineDemographics Boolean @default(true)
 
   updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Per-user state over shared rows.
+// ---------------------------------------------------------------------------
+
+/**
+ * What one person has done about one internship.
+ * The canonical `Job` is shared by every user — it is the employer's posting,
+ * not anybody's application — so everything that is true of a *person and* a job
+ * lives here instead: whether they saved it, hid it, applied, and what the AI
+ * scored it for them.
+ * The unique constraint is the whole model: exactly one state row per person per
+ * job, so "have I applied to this?" has one answer and it is theirs.
+ */
+model UserJobState {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobId  String
+  job    Job    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  /// One of TRACKER_STATUSES in src/lib/statuses.ts.
+  applicationStatus String  @default("DISCOVERED")
+  saved             Boolean @default(false)
+  hidden            Boolean @default(false)
+  notes             String?
+
+  /// Denormalized copy of this user's latest MatchResult for this job. A
+  /// denormalized score is fine; a denormalized score on the shared Job row is
+  /// not, which is the distinction this model exists to draw.
+  matchScore        Int?
+  eligibilityStatus String?
+  matchedAt         DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, jobId])
+  @@index([userId])
+  @@index([jobId])
+  @@index([userId, applicationStatus])
+}
+
+/**
+ * Per-user settings.
+ * `AppSetting` remains the global key/value table — scheduler pause state, sync
+ * cursors, import status. Anything that is a *preference* rather than a fact
+ * about the installation belongs here: the application mode, the auto-submit
+ * threshold and allowlist, the nearby-search centre and radius.
+ */
+model UserSetting {
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  key       String
+  value     String // JSON-encoded
+  updatedAt DateTime @updatedAt
+
+  @@id([userId, key])
+  @@index([userId])
+}
+
+/**
+ * A browser-extension credential belonging to exactly one account.
+ * The extension used to authenticate with a single installation-wide secret out
+ * of `AppSetting`, which in a hosted deployment means every extension presents
+ * the same token and the server has no way to tell whose profile to answer with.
+ * Only the SHA-256 digest is stored, so a copy of this table cannot be replayed,
+ * and the plaintext is shown to the user exactly once at creation. The token
+ * names its user; the extension never sends a user id, and one would not be
+ * believed if it did.
+ */
+model ExtensionToken {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// SHA-256 of the token value.
+  tokenHash  String    @unique
+  /// First few characters, so the user can tell two tokens apart in the UI.
+  tokenHint  String
+  label      String    @default("Browser extension")
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
 }

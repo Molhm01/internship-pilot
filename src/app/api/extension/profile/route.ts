@@ -1,11 +1,14 @@
-import { prisma } from "@/lib/db";
-import {
-  extensionUnauthorizedResponse,
-  isExtensionRequestAuthorized,
-} from "@/lib/applications/extensionAuth";
+import { applicationProfileForUser } from "@/lib/profile/applicationProfile";
+import { withExtensionUser } from "@/lib/applications/extensionAuth";
 
-export async function GET(request: Request) {
-  if (!(await isExtensionRequestAuthorized(request))) return extensionUnauthorizedResponse();
-  const profile = await prisma.applicationProfile.findUnique({ where: { id: "default" } });
+/**
+ * The profile the local agent fills forms from.
+ *
+ * Answered for the user the extension's token belongs to, and for nobody else.
+ * The previous version returned the singleton `ApplicationProfile` to any
+ * caller holding the one installation-wide token.
+ */
+export const GET = withExtensionUser(async (_request, userId) => {
+  const profile = await applicationProfileForUser(userId);
   return Response.json({ profile }, { headers: { "cache-control": "no-store" } });
-}
+});

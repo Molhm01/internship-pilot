@@ -2,13 +2,8 @@ import Link from "next/link";
 import CanonicalProfileForm from "@/components/CanonicalProfileForm";
 import ProfileEntriesSection from "@/components/ProfileEntriesSection";
 import ResumeFactsSection from "@/components/ResumeFactsSection";
-import { isSingleUserMode } from "@/lib/singleUser";
 
-/**
- * Rendered per request so INTERNSHIP_PILOT_SINGLE_USER is read when the page is
- * asked for rather than baked in at build time. Otherwise switching deployment
- * mode would need a rebuild, and a statically-404'd /login could never return.
- */
+/** Per request: the page renders one signed-in person's own profile. */
 export const dynamic = "force-dynamic";
 
 export const metadata = { title: "Profile — Internship Pilot" };
@@ -16,17 +11,14 @@ export const metadata = { title: "Profile — Internship Pilot" };
 /**
  * The Profile page.
  *
- * In local single-user mode this opens directly. There is deliberately no
- * redirect to a login: this is the user's own data on their own machine, and an
- * account in front of it would only stand between them and their own name.
- *
  * Everything the Application Agent fills an employer form from lives here, and
  * nothing else does. A blank field stays blank on the form — it is never
  * guessed, defaulted, or inferred from a neighbouring value.
+ *
+ * Reaching this page at all requires a session; the data on it is fetched
+ * per-user by the profile APIs, which authenticate independently.
  */
 export default function ProfilePage() {
-  const local = isSingleUserMode();
-
   return (
     <div className="max-w-4xl mx-auto px-8 py-10 space-y-10">
       <header>
@@ -35,12 +27,6 @@ export default function ProfilePage() {
           The Application Agent fills employer forms from this. Anything left blank is left blank on
           the form too — it is never guessed.
         </p>
-        {local ? (
-          <p className="mt-2 text-sm text-tertiary">
-            Running in local single-user mode: this profile is stored on this machine and needs no
-            sign-in.
-          </p>
-        ) : null}
       </header>
 
       <CanonicalProfileForm />

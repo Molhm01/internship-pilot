@@ -34,8 +34,10 @@ vi.mock("@/lib/applications/officialDestination", () => ({
   }),
 }));
 
+// Discovery has no user in scope, so ingest fans the automatic first score
+// out to every eligible account instead of scheduling one globally.
 vi.mock("@/lib/matching/initialAiMatchQueue", () => ({
-  scheduleInitialAiMatch: (...args: unknown[]) => scheduleInitialAiMatch(...args),
+  scheduleInitialAiMatchForAllUsers: (...args: unknown[]) => scheduleInitialAiMatch(...args),
 }));
 
 import { ingestAtsJobs } from "./ingest";

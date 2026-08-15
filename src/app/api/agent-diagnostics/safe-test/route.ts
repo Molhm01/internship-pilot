@@ -1,3 +1,4 @@
+import { withUser } from "@/lib/auth/session";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { NextResponse } from "next/server";
@@ -9,7 +10,7 @@ import { isCloudRuntime, LOCAL_ONLY_FEATURES } from "@/lib/runtime/deployment";
  * development machine, in other words. A hosted deployment has none of them,
  * so the request is declined by name instead of failing on a missing binary.
  */
-export async function POST() {
+export const POST = withUser(async () => {
   if (isCloudRuntime()) {
     return NextResponse.json(
       { pass: false, output: "", error: LOCAL_ONLY_FEATURES.childProcess },
@@ -30,4 +31,4 @@ export async function POST() {
       resolve(NextResponse.json({ pass: false, output: "", error: error instanceof Error ? error.stack ?? error.message : String(error) }, { status: 500 }));
     }
   });
-}
+});

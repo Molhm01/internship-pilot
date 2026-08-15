@@ -1,7 +1,19 @@
 import { prisma } from "@/lib/db";
 import { runMatchForJob } from "@/lib/matching";
 
+/**
+ * The legacy `Job.scoringState` queue.
+ *
+ * Superseded in the product by `initialAiMatchQueue`, which is what discovery
+ * and the Jobs page use; this module survives for the local scoring-queue test
+ * harnesses. It still needs an owner, because the thing it ultimately calls —
+ * `runMatchForJob` — writes a score that belongs to somebody. There is no
+ * default and no "first user" fallback: a queue that guesses whose score it is
+ * producing is exactly the defect this conversion removes.
+ */
 export type QueueMatchOptions = {
+  /** Whose scores these are. Required. */
+  userId: string;
   jobId?: string;
   allUnscored?: boolean;
   rescoreStale?: boolean;
@@ -22,7 +34,7 @@ let currentlyScoringJobId: string | null = null;
 
 // The scorer is injectable so a deterministic test can drive the queue without
 // a live Ollama server. Production always uses runMatchForJob.
-type Scorer = (jobId: string) => Promise<unknown>;
+type Scorer = (jobId: string, options: { userId: string }) => Promise<unknown>;
 let scorer: Scorer = runMatchForJob;
 export function __setScorerForTests(fn: Scorer | null) {
   scorer = fn ?? runMatchForJob;
@@ -60,7 +72,7 @@ export async function queueJobsForMatching(options: QueueMatchOptions): Promise<
         scoringError: null,
       },
     });
-    triggerScoringWorker();
+    triggerScoringWorker(options.userId);
     return {
       requested: 1,
       eligible: 1,
@@ -93,7 +105,7 @@ export async function queueJobsForMatching(options: QueueMatchOptions): Promise<
       });
     }
 
-    triggerScoringWorker();
+    triggerScoringWorker(options.userId);
 
     return {
       requested: activeJobs.length,
@@ -126,7 +138,7 @@ export async function queueJobsForMatching(options: QueueMatchOptions): Promise<
       });
     }
 
-    triggerScoringWorker();
+    triggerScoringWorker(options.userId);
 
     return {
       requested: activeJobs.length,
@@ -141,10 +153,10 @@ export async function queueJobsForMatching(options: QueueMatchOptions): Promise<
   return { requested: 0, eligible: 0, alreadyQueued: 0, newlyQueued: 0, skipped: 0, reasons: ["No option provided"] };
 }
 
-export function triggerScoringWorker() {
+export function triggerScoringWorker(userId: string) {
   if (scoringWorkerTimer) return;
   scoringWorkerTimer = setTimeout(() => {
-    void processScoringQueue();
+    void processScoringQueue(userId);
   }, 100);
 }
 
@@ -163,7 +175,7 @@ async function recoverAbandonedScoringJobs(): Promise<void> {
 // Claim and score exactly ONE queued job. Returns true if a job was processed
 // (so a caller can loop until the queue drains). Deterministic and awaitable —
 // used both by the timer chain and by tests.
-export async function scoreNextQueuedJob(): Promise<boolean> {
+export async function scoreNextQueuedJob(userId: string): Promise<boolean> {
   lastHeartbeat = new Date();
   await recoverAbandonedScoringJobs();
 
@@ -190,7 +202,7 @@ export async function scoreNextQueuedJob(): Promise<boolean> {
   }, 3000);
 
   try {
-    await scorer(nextJob.id);
+    await scorer(nextJob.id, { userId });
     await prisma.job.update({ where: { id: nextJob.id }, data: { scoringState: "SCORED", scoringFinishedAt: new Date(), scoringError: null } });
   } catch (err) {
     await prisma.job.update({ where: { id: nextJob.id }, data: { scoringState: "FAILED", scoringFinishedAt: new Date(), scoringError: err instanceof Error ? err.message : String(err) } });
@@ -201,10 +213,10 @@ export async function scoreNextQueuedJob(): Promise<boolean> {
   return true;
 }
 
-export async function processScoringQueue() {
+export async function processScoringQueue(userId: string) {
   try {
-    const processed = await scoreNextQueuedJob();
-    scoringWorkerTimer = processed ? setTimeout(() => void processScoringQueue(), 100) : null;
+    const processed = await scoreNextQueuedJob(userId);
+    scoringWorkerTimer = processed ? setTimeout(() => void processScoringQueue(userId), 100) : null;
   } catch {
     scoringWorkerTimer = null;
   }
@@ -212,8 +224,8 @@ export async function processScoringQueue() {
 
 // Drain the entire queue to completion. Awaitable — used by tests and safe to
 // call anywhere a synchronous full drain is wanted.
-export async function drainScoringQueue(maxJobs = 10_000): Promise<number> {
+export async function drainScoringQueue(userId: string, maxJobs = 10_000): Promise<number> {
   let processed = 0;
-  while (processed < maxJobs && (await scoreNextQueuedJob())) processed++;
+  while (processed < maxJobs && (await scoreNextQueuedJob(userId))) processed++;
   return processed;
 }

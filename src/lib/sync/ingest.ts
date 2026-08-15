@@ -17,7 +17,7 @@ import {
   isAggregatorUrl,
   resolveOfficialJobDestination,
 } from "@/lib/applications/officialDestination";
-import { scheduleInitialAiMatch } from "@/lib/matching/initialAiMatchQueue";
+import { scheduleInitialAiMatchForAllUsers } from "@/lib/matching/initialAiMatchQueue";
 import type { InternshipClassification } from "@/lib/sync/internshipClassifier";
 import {
   parseFirstSourceDate,
@@ -365,7 +365,7 @@ async function upsertNormalizedJob(
     },
   });
   try {
-    await scheduleInitialAiMatch(created.id);
+    await scheduleInitialAiMatchForAllUsers(created.id);
   } catch (error) {
     // Scheduling is a short database operation, never a model request. A
     // temporary queue-write failure must not roll back successful ingestion.

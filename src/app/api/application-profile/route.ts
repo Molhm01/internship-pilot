@@ -1,105 +1,75 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/db";
-import { missingProfileFields, type ProfileRow } from "@/lib/applications/profileSnapshot";
+import { missingProfileFields } from "@/lib/applications/profileSnapshot";
+import { applicationProfileForUser } from "@/lib/profile/applicationProfile";
+import { savePersonal, saveApplicationPreferences } from "@/lib/profile/service";
+import { withUser } from "@/lib/auth/session";
 
 /**
- * The canonical single-row application profile.
+ * The application profile the agent fills employer forms from.
  *
- * Reachable without a sign-in: in local single-user mode this is the user's own
- * data on their own machine, and an account in front of it would only stand
- * between them and their own name.
+ * There is no longer a row behind this. It used to read `ApplicationProfile`,
+ * a singleton keyed `"default"` — one person's legal name, address, phone and
+ * demographic answers, returned to whoever asked. It is now assembled per user
+ * from the models that own those facts; see
+ * `src/lib/profile/applicationProfile.ts`.
  *
  * `gaps` is returned alongside so the Profile page can show what an employer
  * form will still be unable to answer, before the user reaches one.
  */
-export async function GET() {
-  const profile = await prisma.applicationProfile.findUnique({ where: { id: "default" } });
+export const GET = withUser(async (_request, user) => {
+  const profile = await applicationProfileForUser(user.id);
   return NextResponse.json(
     {
       profile,
-      gaps: profile ? missingProfileFields(profile as unknown as ProfileRow) : [],
+      gaps: profile ? missingProfileFields(profile) : [],
     },
     { headers: { "cache-control": "no-store" } },
   );
-}
+});
 
-export async function POST(req: Request) {
-  const body = await req.json().catch(() => null);
+/**
+ * Saving from the canonical profile form.
+ *
+ * The incoming body is the old flat shape, and it is split across the two
+ * models that own it rather than written to a shared row. Anything the flat
+ * shape carries that has no owned home — a suffix, a preferred username — is
+ * deliberately dropped rather than stored somewhere it would be readable by
+ * another account.
+ */
+export const POST = withUser(async (req, user) => {
+  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
   if (!body) return NextResponse.json({ error: "Invalid body" }, { status: 400 });
 
-  const data = {
-    fullName: body.fullName?.trim() || null,
-    preferredName: body.preferredName?.trim() || null,
-    email: body.email?.trim() || null,
-    phone: body.phone?.trim() || null,
-    linkedin: body.linkedin?.trim() || null,
-    github: body.github?.trim() || null,
-    website: body.website?.trim() || null,
-    school: body.school?.trim() || null,
-    previousSchool: body.previousSchool?.trim() || null,
-    addressStreet: body.addressStreet?.trim() || null,
-    addressCity: body.addressCity?.trim() || null,
-    addressState: body.addressState?.trim() || null,
-    addressZip: body.addressZip?.trim() || null,
-    countryOfResidence: body.countryOfResidence?.trim() || null,
-    willingToRelocate: typeof body.willingToRelocate === "boolean" ? body.willingToRelocate : null,
-    locationPreferences: Array.isArray(body.locationPreferences) ? JSON.stringify(body.locationPreferences) : null,
-    internshipTermAvailability: body.internshipTermAvailability?.trim() || null,
-    salaryAnswerPreference: body.salaryAnswerPreference?.trim() || null,
-    // Milestone 6: left null unless the user explicitly sets them — null
-    // means the application agent must stop and ask rather than guess.
-    workAuthorization: body.workAuthorization?.trim() || null,
-    requiresSponsorship: typeof body.requiresSponsorship === "boolean" ? body.requiresSponsorship : null,
-    clearanceEligible: typeof body.clearanceEligible === "boolean" ? body.clearanceEligible : null,
-    eeoGender: body.eeoGender?.trim() || null,
-    eeoRaceEthnicity: body.eeoRaceEthnicity?.trim() || null,
-    eeoVeteranStatus: body.eeoVeteranStatus?.trim() || null,
-    eeoDisabilityStatus: body.eeoDisabilityStatus?.trim() || null,
-    legalFirstName: body.legalFirstName?.trim() || null,
-    legalMiddleName: body.legalMiddleName?.trim() || null,
-    legalLastName: body.legalLastName?.trim() || null,
-    pronouns: body.pronouns?.trim() || null,
-    alternateEmail: body.alternateEmail?.trim() || null,
-    phoneCountryCode: body.phoneCountryCode?.trim() || null,
-    portfolio: body.portfolio?.trim() || null,
-    degreeType: body.degreeType?.trim() || null,
-    educationLevel: body.educationLevel?.trim() || null,
-    major: body.major?.trim() || null,
-    minor: body.minor?.trim() || null,
-    educationStartDate: body.educationStartDate?.trim() || null,
-    graduationDate: body.graduationDate?.trim() || null,
-    gpa: body.gpa?.trim() || null,
-    gpaScale: body.gpaScale?.trim() || null,
-    remotePreference: body.remotePreference?.trim() || null,
-    earliestStartDate: body.earliestStartDate?.trim() || null,
-    referralSource: body.referralSource?.trim() || null,
-    applicationEmail: body.applicationEmail?.trim() || null,
-    preferredUsername: body.preferredUsername?.trim() || null,
-    hasDriversLicense: typeof body.hasDriversLicense === "boolean" ? body.hasDriversLicense : null,
-    meetsMinimumAge: typeof body.meetsMinimumAge === "boolean" ? body.meetsMinimumAge : null,
-    wantsAccountCreationHelp: typeof body.wantsAccountCreationHelp === "boolean" ? body.wantsAccountCreationHelp : null,
-    relevantCoursework: Array.isArray(body.relevantCoursework) ? JSON.stringify(body.relevantCoursework) : null,
-    // The rest of the canonical profile. Every one of these is null unless the
-    // user set it: an unset field is unanswerable, not a value of "no".
-    addressLine2: body.addressLine2?.trim() || null,
-    noMiddleName: typeof body.noMiddleName === "boolean" ? body.noMiddleName : null,
-    suffix: body.suffix?.trim() || null,
-    metroRegion: body.metroRegion?.trim() || null,
-    preferredWebsiteField: body.preferredWebsiteField?.trim() || null,
-    highestDegreeAwarded: body.highestDegreeAwarded?.trim() || null,
-    salaryStrategy: body.salaryStrategy?.trim() || null,
-    salaryMinimum: body.salaryMinimum?.trim() || null,
-    marketingTextConsent:
-      typeof body.marketingTextConsent === "boolean" ? body.marketingTextConsent : null,
-    employerPortalStrategy: body.employerPortalStrategy?.trim() || null,
-    securityClearanceStatus: body.securityClearanceStatus?.trim() || null,
-  };
-
-  const profile = await prisma.applicationProfile.upsert({
-    where: { id: "default" },
-    update: data,
-    create: { id: "default", ...data },
+  await savePersonal(user.id, {
+    legalFirstName: body.legalFirstName,
+    middleName: body.legalMiddleName,
+    legalLastName: body.legalLastName,
+    preferredName: body.preferredName,
+    applicationEmail: body.email ?? body.applicationEmail,
+    alternateEmail: body.alternateEmail,
+    phone: body.phone,
+    phoneCountryCode: body.phoneCountryCode,
+    addressLine1: body.addressStreet,
+    addressLine2: body.addressLine2,
+    city: body.addressCity,
+    state: body.addressState,
+    postalCode: body.addressZip,
+    country: body.countryOfResidence,
+    linkedinUrl: body.linkedin,
+    githubUrl: body.github,
+    portfolioUrl: body.portfolio ?? body.website,
   });
 
-  return NextResponse.json({ profile });
-}
+  await saveApplicationPreferences(user.id, {
+    willingToRelocate: body.willingToRelocate,
+    remotePreference: body.remotePreference,
+    earliestStartDate: body.earliestStartDate,
+    salaryPreference: body.salaryAnswerPreference,
+    hasDriversLicense: body.hasDriversLicense,
+    securityClearanceStatus: body.securityClearanceStatus,
+    usualJobSource: body.referralSource,
+    requiresSponsorshipNow: body.requiresSponsorship,
+  });
+
+  return NextResponse.json({ profile: await applicationProfileForUser(user.id) });
+});

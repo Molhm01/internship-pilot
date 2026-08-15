@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const findUnique = vi.fn();
+const findFirst = vi.fn();
 const readFile = vi.fn();
 
 vi.mock("@/lib/db", () => ({
   prisma: {
     generatedDocument: {
-      findUnique: (...args: unknown[]) => findUnique(...args),
+      findFirst: (...args: unknown[]) => findFirst(...args),
     },
   },
 }));
@@ -21,7 +21,7 @@ describe("GET /api/documents/[id]/download", () => {
   beforeEach(() => vi.resetAllMocks());
 
   it("serves the PDF created for a persisted document record", async () => {
-    findUnique.mockResolvedValue({
+    findFirst.mockResolvedValue({
       id: "resume-v2",
       type: "resume",
       version: 2,
@@ -40,7 +40,7 @@ describe("GET /api/documents/[id]/download", () => {
   });
 
   it("returns a readable JSON error when the stored PDF is missing", async () => {
-    findUnique.mockResolvedValue({
+    findFirst.mockResolvedValue({
       id: "cover-v1",
       type: "coverLetter",
       version: 1,
@@ -60,4 +60,22 @@ describe("GET /api/documents/[id]/download", () => {
     expect(consoleError).toHaveBeenCalled();
     consoleError.mockRestore();
   });
+});
+
+// Route handlers authenticate through this module. The tests below call them
+// directly, so a session has to exist; who it belongs to is exercised by
+// src/lib/auth/multiUserIsolation.test.ts against a real database.
+vi.mock("@/lib/auth/session", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/auth/session")>("@/lib/auth/session");
+  const user = { id: "test-user", email: "test@example.test", name: "Test", image: null, emailVerified: true };
+  return {
+    ...actual,
+    currentUser: async () => user,
+    requireUser: async () => user,
+    guardSession: async () => null,
+    withUser:
+      <C>(handler: (request: Request, sessionUser: typeof user, context: C) => Promise<Response>) =>
+      async (request: Request, context: C) =>
+        handler(request, user, context),
+  };
 });

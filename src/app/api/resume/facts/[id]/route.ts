@@ -1,10 +1,23 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { FACT_TYPES } from "@/lib/statuses";
+import { notFoundResponse, withUser } from "@/lib/auth/session";
 
-export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
+type Params = { params: Promise<{ id: string }> };
+
+/**
+ * By-id routes check two things, always in this order: the row exists, and it
+ * belongs to the caller. A `findUnique` on the id alone answers "does this
+ * exist" for the whole installation, which is the shape of every by-id
+ * cross-account read — so the owner is part of the query, not a check after it.
+ *
+ * `updateMany`/`deleteMany` with both keys is how the write stays atomic: a
+ * read-then-write leaves a window, and a count of 0 is an unambiguous "not
+ * yours or not there".
+ */
+export const PATCH = withUser<Params>(async (request, user, { params }) => {
   const { id } = await params;
-  const body = await req.json().catch(() => null);
+  const body = await request.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "Invalid body" }, { status: 400 });
 
   const data: Record<string, unknown> = {};
@@ -31,20 +44,16 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     data.status = body.status;
   }
 
-  try {
-    const fact = await prisma.resumeFact.update({ where: { id }, data });
-    return NextResponse.json({ fact });
-  } catch {
-    return NextResponse.json({ error: "Fact not found" }, { status: 404 });
-  }
-}
+  const updated = await prisma.resumeFact.updateMany({ where: { id, userId: user.id }, data });
+  if (updated.count === 0) return notFoundResponse("Fact not found");
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const fact = await prisma.resumeFact.findFirst({ where: { id, userId: user.id } });
+  return NextResponse.json({ fact });
+});
+
+export const DELETE = withUser<Params>(async (_request, user, { params }) => {
   const { id } = await params;
-  try {
-    await prisma.resumeFact.delete({ where: { id } });
-    return NextResponse.json({ ok: true });
-  } catch {
-    return NextResponse.json({ error: "Fact not found" }, { status: 404 });
-  }
-}
+  const deleted = await prisma.resumeFact.deleteMany({ where: { id, userId: user.id } });
+  if (deleted.count === 0) return notFoundResponse("Fact not found");
+  return NextResponse.json({ ok: true });
+});

@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
 import { ApplicationAgentError, retryFailedRun } from "@/lib/applications/queue";
+import { withUser } from "@/lib/auth/session";
 
-export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+type Params = { params: Promise<{ id: string }> };
+
+export const POST = withUser<Params>(async (_request, user, { params }) => {
   const { id } = await params;
   try {
-    return NextResponse.json(await retryFailedRun(id));
+    return NextResponse.json(await retryFailedRun(id, user.id));
   } catch (error) {
     if (error instanceof ApplicationAgentError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
@@ -14,4 +17,4 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
       { status: 500 },
     );
   }
-}
+});

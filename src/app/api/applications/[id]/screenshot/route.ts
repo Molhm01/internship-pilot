@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { isRemoteStorageKey, readStoredObject } from "@/lib/storage";
+import { notFoundResponse, withUser } from "@/lib/auth/session";
+
+type Params = { params: Promise<{ id: string }> };
 
 /**
  * Application-run screenshots are captured by the local Playwright worker, so
@@ -8,10 +11,13 @@ import { isRemoteStorageKey, readStoredObject } from "@/lib/storage";
  * driven from there. The read still goes through the storage abstraction so a
  * self-hosted install that writes to object storage is served correctly.
  */
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export const GET = withUser<Params>(async (_req, user, { params }) => {
   const { id } = await params;
-  const run = await prisma.applicationRun.findUnique({ where: { id } });
-  if (!run?.screenshotPath) return NextResponse.json({ error: "Screenshot not found." }, { status: 404 });
+  // A screenshot is a picture of a filled-in application form — name, address,
+  // work history, whatever the page held. Owner-scoped like the run it belongs
+  // to, and missing rather than forbidden when it is not yours.
+  const run = await prisma.applicationRun.findFirst({ where: { id, userId: user.id } });
+  if (!run?.screenshotPath) return notFoundResponse("Screenshot not found.");
 
   // Local keys stay confined to the run output directory. A row is not a
   // trusted path source just because this application wrote it.
@@ -25,6 +31,6 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       headers: { "Content-Type": "image/png", "Cache-Control": "no-store" },
     });
   } catch {
-    return NextResponse.json({ error: "Screenshot not found." }, { status: 404 });
+    return notFoundResponse("Screenshot not found.");
   }
-}
+});

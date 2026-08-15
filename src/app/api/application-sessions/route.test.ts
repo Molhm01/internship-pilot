@@ -74,7 +74,7 @@ describe("POST /api/application-sessions", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { POST } = await import("./route");
-    const response = await POST(makeRequest(requestBody()));
+    const response = await POST(makeRequest(requestBody()), {});
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -100,7 +100,7 @@ describe("POST /api/application-sessions", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { POST } = await import("./route");
-    const response = await POST(makeRequest(requestBody()));
+    const response = await POST(makeRequest(requestBody()), {});
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -123,7 +123,7 @@ describe("POST /api/application-sessions", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { POST } = await import("./route");
-    const response = await POST(makeRequest(requestBody()));
+    const response = await POST(makeRequest(requestBody()), {});
     const body = await response.json();
 
     expect(response.status).toBe(502);
@@ -140,7 +140,7 @@ describe("POST /api/application-sessions", () => {
     );
 
     const { POST } = await import("./route");
-    const response = await POST(makeRequest(requestBody()));
+    const response = await POST(makeRequest(requestBody()), {});
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -167,7 +167,7 @@ describe("POST /api/application-sessions", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { POST } = await import("./route");
-    await POST(makeRequest(requestBody()));
+    await POST(makeRequest(requestBody()), {});
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -186,7 +186,7 @@ describe("POST /api/application-sessions", () => {
       });
       vi.stubGlobal("fetch", fetchMock);
       const { POST } = await import("./route");
-      expect((await POST(makeRequest(requestBody()))).status).toBe(200);
+      expect((await POST(makeRequest(requestBody()), {})).status).toBe(200);
     },
   );
 
@@ -196,7 +196,7 @@ describe("POST /api/application-sessions", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const { POST } = await import("./route");
-    const response = await POST(makeRequest(requestBody()));
+    const response = await POST(makeRequest(requestBody()), {});
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: "AGENT_BASE_URL_INVALID" });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -207,7 +207,7 @@ describe("POST /api/application-sessions", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const { POST } = await import("./route");
-    const response = await POST(makeRequest(requestBody({ company: "" })));
+    const response = await POST(makeRequest(requestBody({ company: "" })), {});
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "INVALID_PAYLOAD" });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -220,6 +220,7 @@ describe("POST /api/application-sessions", () => {
     const { POST } = await import("./route");
     const response = await POST(
       makeRequest(requestBody({ officialApplyUrl: "https://boards.greenhouse.io/acme/jobs/12345" })),
+      {},
     );
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "INVALID_PAYLOAD" });
@@ -233,7 +234,7 @@ describe("POST /api/application-sessions", () => {
       const fetchMock = vi.fn();
       vi.stubGlobal("fetch", fetchMock);
       const { POST } = await import("./route");
-      const response = await POST(makeRequest(requestBody({ eligibilityScore })));
+      const response = await POST(makeRequest(requestBody({ eligibilityScore })), {});
       expect(response.status).toBe(400);
       expect(await response.json()).toEqual({ error: "INVALID_PAYLOAD" });
       expect(fetchMock).not.toHaveBeenCalled();
@@ -254,8 +255,27 @@ describe("POST /api/application-sessions", () => {
     const { POST } = await import("./route");
     const response = await POST(
       makeRequest(requestBody({ url: "https://jobright.ai/jobs/info/example" })),
+      {},
     );
     expect(response.status).toBe(422);
     expect(await response.json()).toEqual({ error: "OFFICIAL_APPLICATION_URL_UNRESOLVED" });
   });
+});
+
+// Route handlers authenticate through this module. The tests below call them
+// directly, so a session has to exist; who it belongs to is exercised by
+// src/lib/auth/multiUserIsolation.test.ts against a real database.
+vi.mock("@/lib/auth/session", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/auth/session")>("@/lib/auth/session");
+  const user = { id: "test-user", email: "test@example.test", name: "Test", image: null, emailVerified: true };
+  return {
+    ...actual,
+    currentUser: async () => user,
+    requireUser: async () => user,
+    guardSession: async () => null,
+    withUser:
+      <C>(handler: (request: Request, sessionUser: typeof user, context: C) => Promise<Response>) =>
+      async (request: Request, context: C) =>
+        handler(request, user, context),
+  };
 });

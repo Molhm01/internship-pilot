@@ -1,12 +1,8 @@
 import { buildExtensionFillPlan } from "@/lib/applications/extensionApi";
-import {
-  extensionUnauthorizedResponse,
-  isExtensionRequestAuthorized,
-} from "@/lib/applications/extensionAuth";
+import { withExtensionUser } from "@/lib/applications/extensionAuth";
 import { validateFormDescriptionPayload } from "@/lib/applications/formSchema";
 
-export async function POST(request: Request) {
-  if (!(await isExtensionRequestAuthorized(request))) return extensionUnauthorizedResponse();
+export const POST = withExtensionUser(async (request, userId) => {
   const body = await request.json().catch(() => null);
   const validation = validateFormDescriptionPayload(body, request.headers);
   if (!validation.success) {
@@ -22,7 +18,7 @@ export async function POST(request: Request) {
     );
   }
   try {
-    return Response.json(await buildExtensionFillPlan(validation.data), {
+    return Response.json(await buildExtensionFillPlan(validation.data, userId), {
       headers: { "cache-control": "no-store" },
     });
   } catch (error) {
@@ -31,4 +27,4 @@ export async function POST(request: Request) {
       { status: 400, headers: { "cache-control": "no-store" } },
     );
   }
-}
+});

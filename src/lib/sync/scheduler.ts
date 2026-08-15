@@ -3,7 +3,7 @@ import { runQueueBatch } from "@/lib/sync/queue";
 import { runCompanyDiscoveryBatch } from "@/lib/sync/companyDiscovery";
 import { runNearbyFirmSearch } from "@/lib/sync/nearbyDiscovery";
 import { isSchedulerPaused, recordTickResult, scheduleNextTick } from "@/lib/sync/schedulerState";
-import { syncGmailInbox } from "@/lib/gmail/sync";
+import { syncAllConnectedGmailInboxes } from "@/lib/gmail/sync";
 import { isGmailConfigured } from "@/lib/gmail/oauth";
 import { syncApprovedEmployersFromCsv } from "@/lib/employers/sync";
 import { triggerInitialAiMatchWorker } from "@/lib/matching/initialAiMatchQueue";
@@ -142,7 +142,7 @@ export function startScheduler() {
     () =>
       runIfNotPaused(
         "gmail",
-        () => syncGmailInbox(),
+        () => syncAllConnectedGmailInboxes(),
         (r) =>
           r.skipped === "not_connected"
             ? { summary: "skipped (Gmail not connected)" }
@@ -153,7 +153,7 @@ export function startScheduler() {
   if (isGmailConfigured()) {
     runIfNotPaused(
       "gmail",
-      () => syncGmailInbox(),
+      () => syncAllConnectedGmailInboxes(),
       (r) =>
         r.skipped === "not_connected"
           ? { summary: "skipped (Gmail not connected)" }
