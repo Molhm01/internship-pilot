@@ -1,0 +1,531 @@
+=== PRISMA DATABASE ===
+
+  generator client {
+>   provider = "prisma-client"
+    output   = "../src/generated/prisma"
+  }
+  
+> datasource db {
+>   provider = "sqlite"
+  }
+  
+    website               String?
+>   careersUrl            String?
+    atsType               String? // greenhouse | lever | ashby | smartrecruiters | workday | icims | taleo | successfactors | custom | unknown
+    atsIdentifier         String? // board slug / tenant / company id for the ATS, when known
+  // employer's OWN official careers page and one ATS tenant. A Greenhouse/
+> // Lever/Ashby/etc. URL is never trusted just because it uses a known ATS —
+  // this row only exists once verify.ts has actually confirmed the employer's
+  // own career portal links to this exact tenant.
+    atsIdentifier            String // tenant slug/board id
+>   discoveredFromCareersUrl String
+    evidence                 String? // JSON: what confirmed the link
+    approvedAt               DateTime @default(now())
+    discoveredFrom    String    @default("intern-list")
+>   guessedCareersUrl String?
+    guessedDomain     String?
+    sourceJobTitle    String?
+>   sourceJobUrl      String?
+    status            String    @default("pending") // pending | approved | rejected
+    createdAt         DateTime  @default(now())
+    duration       String? // e.g. "10 weeks", "3 months"
+>   url            String? // the official application URL once known (manual entries: whatever the user typed)
+    description    String
+>   jobDescriptionSourceUrl String?
+    jobDescriptionHash      String?
+    jobDescriptionCapturedAt DateTime?
+    requisitionId       String? // employer-assigned requisition id, when the ATS exposes one
+>   sourceUrl           String? // the aggregator listing URL (never auto-visited after ingest)
+    workplaceType       String? // Remote | Hybrid | On Site
+    firstSeenAt         DateTime?
+    verificationMethod     String? // e.g. "greenhouse-board-match" | "lever-board-match" | "manual-entry"
+>   officialEmployerDomain String? // hostname of the officialApplyUrl (`url` field), once verified
+    evidence               String? // JSON: the specific checks that passed/failed during verification
+    matchScore          Int? // denormalized copy of the latest MatchResult.score
+    atsTenant           String? // the specific tenant/board id — only trusted once an ApprovedAtsTenant row confirms the employer's own page links here
+>   redirectChain       String? // JSON array of {url, status}[] followed while reaching the official application URL
+    httpStatusAtVerification Int? // HTTP status of the final official page at last verification
+>   officialJobUrl      String? // the official JOB DESCRIPTION page (may differ from the apply URL)
+>   officialApplyUrl    String? // normalized HTTPS URL the application worker is allowed to navigate to
+  
+    // --- Canonical official-destination resolution ---
+>   // Legacy sourceUrl/officialApplyUrl/url remain for compatibility. New code
+    // reads and writes these explicit fields so discovery attribution can never
+    // be confused with the employer application destination.
+>   sourceListingUrl       String?
+>   officialApplicationUrl String?
+>   originalJobPostUrl     String?
+>   resolutionStatus       String    @default("OFFICIAL_URL_UNRESOLVED") // RESOLVED | OFFICIAL_URL_UNRESOLVED
+    resolutionMethod       String?
+    resolvedAt             DateTime?
+    citizenshipOrClearance   Boolean? // true if posting text mentions a citizenship/clearance requirement
+>   compMinHourly            Float?
+>   compMaxHourly            Float?
+    season                   String? // Summer | Fall | Spring | Winter | Unknown
+    distanceMilesFromClifton Float? // null when the location couldn't be geocoded locally
+    persistenceFailures Int @default(0)
+>   officialUrlsConfirmed Int @default(0)
+  
+    durationMs   Int     @default(0)
+    stoppedFieldStep    Int?
+>   stoppedFieldContext String? // JSON: aria-label, placeholder, nearby text, page URL
+    resumeDocumentId    String? // GeneratedDocument used for this attempt
+    coverLetterDocumentId String?
+    confirmationNumber  String?
+>   confirmationUrl     String?
+    attemptNumber       Int       @default(1)
+    attemptHistory      String?   // JSON array of past attempt records
+    jobTitle      String?
+>   provider      String? // e.g. HackerRank, Codility, CodeSignal — null if not stated
+    deadline      DateTime?
+    duration      String? // e.g. "90 minutes" — raw text, never inferred
+    website       String?
+>   careersUrl    String?
+    atsType       String?
+    atsIdentifier String?
+    country          String?
+>   linkedinUrl      String?
+>   githubUrl        String?
+>   portfolioUrl     String?
+  
+    updatedAt DateTime @updatedAt
+
+
+
+=== ENV VARIABLE NAMES ONLY ===
+DATABASE_URL
+OLLAMA_BASE_URL
+OLLAMA_MODEL
+OLLAMA_VISION_MODEL
+TYPST_BIN
+GMAIL_TOKEN_ENCRYPTION_KEY
+GMAIL_CLIENT_ID
+GMAIL_CLIENT_SECRET
+GMAIL_REDIRECT_URI
+USAJOBS_API_KEY
+USAJOBS_USER_AGENT
+GOOGLE_PLACES_API_KEY
+INTERNSHIP_AGENT_TOKEN_FILE
+INTERNSHIP_AGENT_TOKEN
+INTERNSHIP_AGENT_BASE_URL
+
+=== LOCALHOST / OLLAMA REFERENCES ===
+
+Path                                                                                        LineNumber Line                                                                        
+----                                                                                        ---------- ----                                                                        
+C:\Users\Molhm\Desktop\Internship-AI\src\app\layout.tsx                                              8   metadataBase: new URL("http://localhost:3000"),                           
+C:\Users\Molhm\Desktop\Internship-AI\src\app\(app)\agent-diagnostics\page.tsx                       12   ollamaVersion?: string | null;                                            
+C:\Users\Molhm\Desktop\Internship-AI\src\app\(app)\agent-diagnostics\page.tsx                       30   ollamaVisionPreflight: VisionPreflight | null;                            
+C:\Users\Molhm\Desktop\Internship-AI\src\app\(app)\agent-diagnostics\page.tsx                       40   visionModelAvailable: "Vision-capable Ollama model",                      
+C:\Users\Molhm\Desktop\Internship-AI\src\app\(app)\agent-diagnostics\page.tsx                       61   const vision = data?.ollamaVisionPreflight;                               
+C:\Users\Molhm\Desktop\Internship-AI\src\app\(app)\agent-diagnostics\page.tsx                       73       <h2 className="font-semibold">Real local Ollama vision preflight</h2> 
+C:\Users\Molhm\Desktop\Internship-AI\src\app\(app)\agent-diagnostics\page.tsx                       75         <p className={vision.pass ? "text-verified" : "text-critical"}>{v...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\(app)\jobs\[id]\page.tsx                                9 import OllamaStatusBadge from "@/components/OllamaStatusBadge";             
+C:\Users\Molhm\Desktop\Internship-AI\src\app\(app)\jobs\[id]\page.tsx                              207   if (/Ollama|Vision model request failed/i.test(error)) {                  
+C:\Users\Molhm\Desktop\Internship-AI\src\app\(app)\jobs\[id]\page.tsx                              208     return "The local vision request failed. You can retry this same run ...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\(app)\jobs\[id]\page.tsx                              863         <OllamaStatusBadge />                                               
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\application-sessions\route.test.ts                 31   return new NextRequest("http://localhost:3000/api/application-sessions", {
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\application-sessions\route.test.ts                 53     process.env.INTERNSHIP_AGENT_BASE_URL = "http://127.0.0.1:4317";        
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\application-sessions\route.test.ts                174   it.each(["http://localhost:4317/", "http://[::1]:4317"])(                 
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\application-sessions\route.test.ts                181         expect(url).toBe("http://127.0.0.1:4317/application-sessions");     
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\application-sessions\route.ts                      43   const configured = process.env.INTERNSHIP_AGENT_BASE_URL?.trim() || "ht...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\application-sessions\route.ts                      52     !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||          
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\application-sessions\route.ts                      60   // The agent deliberately binds IPv4 loopback. Normalizing localhost/::1  
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\application-sessions\route.ts                      62   url.hostname = "127.0.0.1";                                               
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\documents\[id]\download\route.test.ts              32     const response = await GET(new Request("http://localhost/api/document...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\documents\[id]\download\route.test.ts              52     const response = await GET(new Request("http://localhost/api/document...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\health\ollama\route.ts                              2 import { checkOllamaHealth, OLLAMA_MODEL } from "@/lib/ollama";             
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\health\ollama\route.ts                              5   const health = await checkOllamaHealth();                                 
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\health\ollama\route.ts                              6   return NextResponse.json({ ...health, model: OLLAMA_MODEL });             
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.database.test.ts                        46     const { status, body } = await get("http://localhost/api/jobs?feed=al...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.database.test.ts                        92     const { status, body } = await get("http://localhost/api/jobs?feed=al...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.database.test.ts                        98     const { status, body } = await get("http://localhost/api/jobs?feed=al...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.database.test.ts                       123     const all = await get("http://localhost/api/jobs?feed=all");            
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.database.test.ts                       128       const page = await get(`http://localhost/api/jobs?feed=all&limit=${...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.database.test.ts                       141     const { status, body } = await get("http://localhost/api/jobs");        
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.test.ts                                 83     const response = await GET(new Request("http://localhost/api/jobs?fee...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.test.ts                                105       "http://localhost/api/jobs?feed=all&location=Newark&status=DISCOVER...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.test.ts                                140     const response = await GET(new Request("http://localhost/api/jobs"));   
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.test.ts                                164     const response = await GET(new Request("http://localhost/api/jobs?sor...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.test.ts                                183     const response = await POST(new Request("http://localhost/api/jobs", {  
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.test.ts                                297     expect(await orderedIds("http://localhost/api/jobs?feed=all")).toEqual([
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.test.ts                                307     const order = await orderedIds("http://localhost/api/jobs?feed=all");   
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.test.ts                                313     const fallback = await orderedIds("http://localhost/api/jobs?feed=all...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.test.ts                                314     expect(fallback).toEqual(await orderedIds("http://localhost/api/jobs?...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.test.ts                                318     const body = await (await GET(new Request("http://localhost/api/jobs?...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.test.ts                                323     expect((await orderedIds("http://localhost/api/jobs?feed=all&sort=old...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.test.ts                                324     expect((await orderedIds("http://localhost/api/jobs?feed=all&sort=mat...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.test.ts                                325     expect((await orderedIds("http://localhost/api/jobs?feed=all&sort=dis...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.test.ts                                329     const page1 = await orderedIds("http://localhost/api/jobs?feed=all&li...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.test.ts                                330     const page2 = await orderedIds("http://localhost/api/jobs?feed=all&li...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.test.ts                                331     const page3 = await orderedIds("http://localhost/api/jobs?feed=all&li...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.test.ts                                334       await orderedIds("http://localhost/api/jobs?feed=all"),               
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\route.test.ts                                341       "http://localhost/api/jobs?feed=all&sort=oldest&workplaceType=Remote",
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\[id]\route.test.ts                            26       new Request("http://localhost/api/jobs/job-1"),                       
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\[id]\applications\route.test.ts               17     const response = await GET(new Request("http://localhost/api/jobs/job...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\[id]\audit-log\route.test.ts                  17     const response = await GET(new Request("http://localhost/api/jobs/job...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\[id]\documents\route.test.ts                  27     const response = await GET(new Request("http://localhost/api/jobs/job...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\[id]\documents\route.test.ts                  43     const response = await GET(new Request("http://localhost/api/jobs/job...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\[id]\generate-documents\route.test.ts         27       new Request("http://localhost/api/jobs/job-1/generate-documents", {   
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\[id]\generate-documents\route.test.ts         55       new Request("http://localhost/api/jobs/job-1/generate-documents", {...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\jobs\[id]\generate-documents\route.test.ts         70       new Request("http://localhost/api/jobs/job-1/generate-documents", {...
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\match\route.test.ts                                43     const response = await POST(new Request("http://localhost/api/match", { 
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\match\route.test.ts                                77     const response = await POST(new Request("http://localhost/api/match", { 
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\match\route.test.ts                                92     const response = await POST(new Request("http://localhost/api/match", { 
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\resume\analyze\route.ts                             2 import { ollamaGenerateJSON, OllamaError } from "@/lib/ollama";             
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\resume\analyze\route.ts                            23     const raw = await ollamaGenerateJSON(prompt, { timeoutMs: 180_000 });   
+C:\Users\Molhm\Desktop\Internship-AI\src\app\api\resume\analyze\route.ts                            63     if (err instanceof OllamaError) {                                       
+C:\Users\Molhm\Desktop\Internship-AI\src\components\OllamaStatusBadge.tsx                            4 import { getCachedOllamaHealth, type OllamaHealth } from "@/lib/ollamaHea...
+C:\Users\Molhm\Desktop\Internship-AI\src\components\OllamaStatusBadge.tsx                            6 export default function OllamaStatusBadge() {                               
+C:\Users\Molhm\Desktop\Internship-AI\src\components\OllamaStatusBadge.tsx                            7   const [health, setHealth] = useState<OllamaHealth | null>(null);          
+C:\Users\Molhm\Desktop\Internship-AI\src\components\OllamaStatusBadge.tsx                           11     void getCachedOllamaHealth()                                            
+C:\Users\Molhm\Desktop\Internship-AI\src\components\OllamaStatusBadge.tsx                           24         Checking Ollama�                                                    
+C:\Users\Molhm\Desktop\Internship-AI\src\components\OllamaStatusBadge.tsx                           36         Ollama not reachable at localhost:11434                             
+C:\Users\Molhm\Desktop\Internship-AI\src\components\OllamaStatusBadge.tsx                           45         Ollama is running, but model &quot;{health.model}&quot; is not in...
+C:\Users\Molhm\Desktop\Internship-AI\src\components\OllamaStatusBadge.tsx                           53       Ollama connected ({health.model})                                     
+C:\Users\Molhm\Desktop\Internship-AI\src\components\ResumeFactsSection.tsx                           4 import OllamaStatusBadge from "@/components/OllamaStatusBadge";             
+C:\Users\Molhm\Desktop\Internship-AI\src\components\ResumeFactsSection.tsx                         146         <OllamaStatusBadge />                                               
+C:\Users\Molhm\Desktop\Internship-AI\src\components\marketing\ArchitectureDiagram.tsx               47     sub: "localhost",                                                       
+C:\Users\Molhm\Desktop\Internship-AI\src\components\marketing\ArchitectureDiagram.tsx               56     sub: "Ollama",                                                          
+C:\Users\Molhm\Desktop\Internship-AI\src\components\marketing\Footer.tsx                            69           <p className="font-mono">Local-first � Ollama � SQLite</p>        
+C:\Users\Molhm\Desktop\Internship-AI\src\components\shell\CommandPalette.tsx                       107       keywords: "debug trace ollama connection",                            
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.test.ts                                       10 const ollamaGenerateJSON = vi.fn();                                         
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.test.ts                                       29 vi.mock("@/lib/ollama", () => ({                                            
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.test.ts                                       30   OllamaError: class OllamaError extends Error {},                          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.test.ts                                       31   ollamaGenerateJSON: (...args: unknown[]) => ollamaGenerateJSON(...args),  
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.test.ts                                       39 import { OllamaError } from "./ollama";                                     
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.test.ts                                       81     ollamaGenerateJSON.mockResolvedValue(modelResult);                      
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.test.ts                                      105     const prompt = ollamaGenerateJSON.mock.calls[0][0] as string;           
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.test.ts                                      109     expect(ollamaGenerateJSON).toHaveBeenCalledWith(expect.any(String), e...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.test.ts                                      140     expect(ollamaGenerateJSON).not.toHaveBeenCalled();                      
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.test.ts                                      145     ollamaGenerateJSON.mockRejectedValue(new OllamaError("The local model...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.test.ts                                      150       message: "The local AI model is unavailable. Check Ollama, then try...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.test.ts                                      157     ollamaGenerateJSON.mockRejectedValue(new OllamaError("The operation t...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.test.ts                                      177     ollamaGenerateJSON.mockResolvedValue(output);                           
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.test.ts                                      185     expect(ollamaGenerateJSON).toHaveBeenCalledTimes(2);                    
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.ts                                             2 import { ollamaGenerateJSON, OllamaError, type OllamaTiming } from "@/lib...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.ts                                           132     const modelTiming: Partial<OllamaTiming> = {};                          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.ts                                           136       raw = await ollamaGenerateJSON(prompt, {                              
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.ts                                           147       if (err instanceof OllamaError && err.code === "MODEL_OUTPUT_INVALI...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.ts                                           151       if (err instanceof OllamaError) {                                     
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.ts                                           158             : "The local AI model is unavailable. Check Ollama, then try ...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.ts                                           165       timing(jobId, "ollama_request", performance.now() - modelStartedAt, { 
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                               1 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? "http://localhost:...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                               2 export const OLLAMA_CHAT_ENDPOINT = `${OLLAMA_BASE_URL}/api/chat`;          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                               3 export const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "qwen3.5:9b";       
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                               4 export const OLLAMA_VISION_MODEL = process.env.OLLAMA_VISION_MODEL ?? OLL...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                               6 export type OllamaImageMetadata = {                                         
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                              14 export type OllamaRequestMetadata = {                                       
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                              15   ollamaVersion: string | null;                                             
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                              20   screenshot: OllamaImageMetadata | null;                                   
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                              26 export class OllamaError extends Error {                                    
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                              29     public readonly metadata?: OllamaRequestMetadata,                       
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                              30     public readonly code = "OLLAMA_REQUEST_FAILED",                         
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                              33     this.name = "OllamaError";                                              
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                              37 export type OllamaHealth = {                                                
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                              48   imageMetadata?: OllamaImageMetadata;                                      
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                              58 export type OllamaTiming = {                                                
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                              67 export type OllamaChatResult = {                                            
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                              70   metadata: OllamaRequestMetadata;                                          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                              71   timing: Omit<OllamaTiming, "jsonParseMs">;                                
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                              75 let ollamaFetch: typeof fetch = (...args) => fetch(...args);                
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                              81 export async function getOllamaVersion(): Promise<string | null> {          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                              84     const response = await fetch(`${OLLAMA_BASE_URL}/api/version`, { sign...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                              96 function structuredFormat(format: NativeChatOptions["format"]): OllamaReq...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             102  * Native Ollama chat request. Images are raw base64 strings under          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             106 async function performOllamaNativeChat(options: NativeChatOptions): Promi...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             136     response = await ollamaFetch(OLLAMA_CHAT_ENDPOINT, {                    
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             143     const metadata: OllamaRequestMetadata = {                               
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             144       ollamaVersion: version,                                               
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             146       endpoint: OLLAMA_CHAT_ENDPOINT,                                       
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             154     console.error(JSON.stringify({ event: "ollama-request-failed", ...met...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             155     throw new OllamaError(`Could not reach Ollama at ${OLLAMA_CHAT_ENDPOI...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             159   const metadata: OllamaRequestMetadata = {                                 
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             160     ollamaVersion: version,                                                 
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             162     endpoint: OLLAMA_CHAT_ENDPOINT,                                         
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             164     responseBody: response.ok ? "" : `Ollama returned HTTP ${response.sta...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             171     console.error(JSON.stringify({ event: "ollama-http-error", ...metadat...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             172     throw new OllamaError(`Ollama request failed with HTTP ${response.sta...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             185     throw new OllamaError(                                                  
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             186       `Ollama returned HTTP ${response.status}, but its response body was...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             191   if (!content.trim()) throw new OllamaError(`Ollama returned HTTP ${resp...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             209 export class OllamaClient {                                                 
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             210   chat(options: NativeChatOptions): Promise<OllamaChatResult> {             
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             211     return performOllamaNativeChat(options);                                
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             215 const sharedOllamaClient = new OllamaClient();                              
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             217 export function getSharedOllamaClient(): OllamaClient {                     
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             218   return sharedOllamaClient;                                                
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             221 export function ollamaNativeChat(options: NativeChatOptions): Promise<Oll...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             222   return sharedOllamaClient.chat(options);                                  
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             225 export async function checkOllamaVisionHealth(): Promise<OllamaHealth> {    
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             227     const res = await fetch(`${OLLAMA_BASE_URL}/api/tags`, { signal: Abor...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             230       return { reachable: false, modelInstalled: false, models: [], error...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             234     const wanted = OLLAMA_VISION_MODEL.split(":")[0];                       
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             235     const selected = (data.models ?? []).find((model) => model.name === O...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             241       error: modelInstalled ? undefined : `${OLLAMA_VISION_MODEL} is miss...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             248 export async function ollamaVisionRequest(                                  
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             251   imageMetadata?: OllamaImageMetadata,                                      
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             253 ): Promise<OllamaChatResult> {                                              
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             254   // Production uses Ollama's broad JSON mode and validates locally with ...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             255   // This works even when a model/Ollama build rejects a JSON Schema in f...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             256   return ollamaNativeChat({                                                 
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             257     model: OLLAMA_VISION_MODEL,                                             
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             267 export async function ollamaVisionText(                                     
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             272   return (await ollamaVisionRequest(prompt, imageBase64, undefined, timeo...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             275 export async function ollamaVisionJSON<T>(prompt: string, imageBase64: st...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             276   return JSON.parse(extractJson(await ollamaVisionText(prompt, imageBase6...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             279 export async function checkOllamaHealth(): Promise<OllamaHealth> {          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             281     const res = await fetch(`${OLLAMA_BASE_URL}/api/tags`, { signal: Abor...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             284       return { reachable: false, modelInstalled: false, models: [], error...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             289       (name) => name === OLLAMA_MODEL || name.split(":")[0] === OLLAMA_MO...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             305 export async function ollamaGenerateJSON<T = unknown>(                      
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             314     onTiming?: (timing: OllamaTiming) => void;                              
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             317   const result = await ollamaNativeChat({                                   
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             318     model: OLLAMA_MODEL,                                                    
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             337     throw new OllamaError(                                                  
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             345 export function __setOllamaFetchForTests(fetcher: typeof fetch | null) {    
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollama.ts                                             346   ollamaFetch = fetcher ?? ((...args) => fetch(...args));                   
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.test.ts                              3   getCachedOllamaHealth,                                                    
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.test.ts                              4   OLLAMA_HEALTH_CACHE_MS,                                                   
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.test.ts                              5   resetOllamaHealthCacheForTests,                                           
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.test.ts                              6 } from "./ollamaHealthClient";                                              
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.test.ts                             10 describe("Ollama health client", () => {                                    
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.test.ts                             11   beforeEach(() => resetOllamaHealthCacheForTests());                       
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.test.ts                             17     await getCachedOllamaHealth(fetcher, () => now);                        
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.test.ts                             18     now += OLLAMA_HEALTH_CACHE_MS - 1;                                      
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.test.ts                             19     await getCachedOllamaHealth(fetcher, () => now);                        
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.test.ts                             23     await getCachedOllamaHealth(fetcher, () => now);                        
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.test.ts                             31     const first = getCachedOllamaHealth(fetcher);                           
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.test.ts                             32     const second = getCachedOllamaHealth(fetcher);                          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.ts                                   1 export type OllamaHealth = {                                                
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.ts                                   9 export const OLLAMA_HEALTH_CACHE_MS = 15_000;                               
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.ts                                  11 let cached: { value: OllamaHealth; expiresAt: number } | null = null;       
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.ts                                  12 let inFlight: Promise<OllamaHealth> | null = null;                          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.ts                                  14 function isHealth(value: unknown): value is OllamaHealth {                  
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.ts                                  16   const health = value as Partial<OllamaHealth>;                            
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.ts                                  24 export async function getCachedOllamaHealth(                                
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.ts                                  27 ): Promise<OllamaHealth> {                                                  
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.ts                                  34     let value: OllamaHealth;                                                
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.ts                                  36       const response = await fetcher("/api/health/ollama");                 
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.ts                                  38       if (!response.ok || !isHealth(payload)) throw new Error("Invalid Ol...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.ts                                  43     cached = { value, expiresAt: now() + OLLAMA_HEALTH_CACHE_MS };          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.ts                                  50         operation: "ollama-health-fetch",                                   
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaHealthClient.ts                                  58 export function resetOllamaHealthCacheForTests() {                          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaMatchPerformance.test.ts                          3   __setOllamaFetchForTests,                                                 
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaMatchPerformance.test.ts                          4   getSharedOllamaClient,                                                    
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaMatchPerformance.test.ts                          5   ollamaGenerateJSON,                                                       
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaMatchPerformance.test.ts                          6 } from "./ollama";                                                          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaMatchPerformance.test.ts                          8 function ollamaResponse(content: string) {                                  
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaMatchPerformance.test.ts                         18 describe("shared Ollama matching client", () => {                           
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaMatchPerformance.test.ts                         19   afterEach(() => __setOllamaFetchForTests(null));                          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaMatchPerformance.test.ts                         23       .mockResolvedValueOnce(ollamaResponse('{"ok":true}'))                 
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaMatchPerformance.test.ts                         24       .mockResolvedValueOnce(ollamaResponse('{"ok":true}')) as unknown as...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaMatchPerformance.test.ts                         25     __setOllamaFetchForTests(fetcher);                                      
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaMatchPerformance.test.ts                         27     expect(getSharedOllamaClient()).toBe(getSharedOllamaClient());          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaMatchPerformance.test.ts                         28     await ollamaGenerateJSON("fixture one", { numCtx: 8_192, numPredict: ...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaMatchPerformance.test.ts                         29     await ollamaGenerateJSON("fixture two", { numCtx: 8_192, numPredict: ...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaMatchPerformance.test.ts                         32     expect(fetcher.mock.calls.every(([url]) => url === "http://localhost:...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaMatchPerformance.test.ts                         42     const fetcher = vi.fn().mockResolvedValue(ollamaResponse('{"private":...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaMatchPerformance.test.ts                         43     __setOllamaFetchForTests(fetcher);                                      
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\ollamaMatchPerformance.test.ts                         45     await ollamaGenerateJSON("fixture", { onTiming });                      
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\adapters.ts                               41   const isLocalMock = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\/m...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                            8   OllamaError,                                                              
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                            9   ollamaNativeChat,                                                         
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                           10   ollamaVisionRequest,                                                      
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                           11   ollamaVisionText,                                                         
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                           12   OLLAMA_MODEL,                                                             
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                           13   type OllamaImageMetadata,                                                 
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                           14   type OllamaRequestMetadata,                                               
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                           15 } from "@/lib/ollama";                                                      
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                           57   request: (prompt: string, imageBase64: string) => Promise<string> = oll...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                          111   const screenshotMetadata: OllamaImageMetadata | null = screenshot ? {     
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                          139   const visionRequests: OllamaRequestMetadata[] = [];                       
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                          140   let visionError: { message: string; metadata: OllamaRequestMetadata | n...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                          141   const textFallback: { used: boolean; metadata: OllamaRequestMetadata | ...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                          157         const result = await ollamaNativeChat({                             
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                          158           model: OLLAMA_MODEL,                                              
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                          185         textFallback.metadata = error instanceof OllamaError ? error.meta...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                          194           const result = await ollamaVisionRequest(requestPrompt, imageBa...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                          218         metadata: error instanceof OllamaError ? error.metadata ?? null :...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserAgent.ts                          220       if (error instanceof OllamaError && error.metadata) visionRequests....
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserManager.ts                        169     if (!["localhost", "127.0.0.1"].includes(current.hostname) || !curren...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\browserProfile.ts                         28   return process.env.INTERNSHIP_PILOT_BASE_URL ?? `http://127.0.0.1:${por...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\diagnostics.ts                            10 import { checkOllamaVisionHealth, OLLAMA_VISION_MODEL } from "@/lib/ollama";
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\diagnostics.ts                            22   if (/Ollama|Vision model request failed/i.test(technical)) {              
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\diagnostics.ts                            53   const visionInstallation = await checkOllamaVisionHealth();               
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\diagnostics.ts                           103   const [profile, resumeAvailable, resumeDoc, coverDoc, lastRun, settings...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\diagnostics.ts                           115     prisma.appSetting.findUnique({ where: { key: "ollamaVisionPreflight" ...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\diagnostics.ts                           127   let ollamaVisionPreflight: {                                              
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\diagnostics.ts                           130     ollamaVersion?: string | null;                                          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\diagnostics.ts                           147     ollamaVisionPreflight = ollamaVisionPreflightSetting                    
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\diagnostics.ts                           148       ? JSON.parse(ollamaVisionPreflightSetting.value) as typeof ollamaVi...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\diagnostics.ts                           151     ollamaVisionPreflight = { pass: false };                                
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\diagnostics.ts                           153   const imageTest = ollamaVisionPreflight?.tests?.imageJson;                
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\diagnostics.ts                           156     && ollamaVisionPreflight?.model === OLLAMA_VISION_MODEL                 
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\diagnostics.ts                           161     ? `Real JPEG screenshot request passed with Ollama ${ollamaVisionPref...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\diagnostics.ts                           162     : ollamaVisionPreflight                                                 
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\diagnostics.ts                           163       ? `The latest real screenshot preflight did not return HTTP 200 wit...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\diagnostics.ts                           164       : `Run npm run test:ollama-vision to perform a real screenshot requ...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\diagnostics.ts                           190       visionModelAvailable: { pass: visionScreenshotPass, detail: visionI...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\diagnostics.ts                           202     ollamaVisionPreflight,                                                  
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\officialDestination.ts                    81     const localhost =                                                       
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\officialDestination.ts                    82       url.hostname === "localhost" || url.hostname === "127.0.0.1" || url...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\officialDestination.ts                    83     if ((url.protocol !== "https:" && !(localhost && url.protocol === "ht...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\queue.ts                                  74     const localMock = job.source === "application-worker-test" && parsed....
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\validation.ts                             62   officialApplyUrl: z.string().url().refine((value) => value.startsWith("...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\validation.ts                            164     return url.protocol === "https:" || (localMock && url.protocol === "h...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\validation.ts                            211     throw new ApplicationValidationError("VALIDATING_JOB", "ValidatedAppl...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\applications\workerLock.ts                            154     const response = await fetch(`http://127.0.0.1:${lock.port}/health`, ...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\auth\session.ts                                        46     // The app runs on http://localhost, where a Secure cookie would be d...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\agentDelivery.integration.test.ts            76       const url = new URL(request.url ?? "/", "http://127.0.0.1");          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\agentDelivery.integration.test.ts           138   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", reso...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\agentDelivery.integration.test.ts           141   baseUrl = `http://127.0.0.1:${address.port}`;                             
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\agentDelivery.test.ts                        19   process.env.INTERNSHIP_AGENT_BASE_URL = "http://127.0.0.1:4317";          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\agentDelivery.test.ts                        53     expect(url).toBe("http://127.0.0.1:4317/documents/latest");             
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\agentDelivery.test.ts                       109     process.env.INTERNSHIP_AGENT_BASE_URL = "http://192.168.1.20:4317";     
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\agentDelivery.test.ts                       115   it("normalizes localhost to the IPv4 address the agent binds", () => {    
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\agentDelivery.test.ts                       116     process.env.INTERNSHIP_AGENT_BASE_URL = "http://localhost:4317";        
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\agentDelivery.test.ts                       117     expect(agentBaseUrl()).toBe("http://127.0.0.1:4317");                   
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\agentDelivery.ts                             42   const configured = process.env.INTERNSHIP_AGENT_BASE_URL?.trim() || "ht...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\agentDelivery.ts                             46     !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\agentDelivery.ts                             52   // The agent binds IPv4 loopback. Normalizing avoids Node resolving `lo...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\agentDelivery.ts                             54   url.hostname = "127.0.0.1";                                               
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\bulletLibrary.ts                              3 import { ollamaGenerateJSON } from "@/lib/ollama";                          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\bulletLibrary.ts                             51   const raw = await ollamaGenerateJSON(prompt, { timeoutMs: 180_000 });     
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\select.test.ts                                3 const ollamaGenerateJSON = vi.fn();                                         
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\select.test.ts                                5 vi.mock("@/lib/ollama", () => ({                                            
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\select.test.ts                                6   ollamaGenerateJSON: (...args: unknown[]) => ollamaGenerateJSON(...args),  
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\select.test.ts                               13     ollamaGenerateJSON.mockResolvedValue({                                  
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\select.test.ts                               27     expect(ollamaGenerateJSON).toHaveBeenCalledWith(expect.any(String), {...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\select.ts                                     2 import { ollamaGenerateJSON } from "@/lib/ollama";                          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\documents\select.ts                                    59   const raw = await ollamaGenerateJSON(prompt, { timeoutMs: DOCUMENT_SELE...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\gmail\classify.ts                                       2 import { ollamaGenerateJSON } from "@/lib/ollama";                          
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\gmail\classify.ts                                      81   const raw = await ollamaGenerateJSON(buildPrompt(email), { timeoutMs: 1...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\gmail\oauth.ts                                         21   const redirectUri = process.env.GMAIL_REDIRECT_URI || "http://localhost...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\gmail\sync.ts                                          37 // Ollama model. Kept separate from syncGmailInbox() so it's testable       
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\jobs\applyFlow.test.ts                                 28   it("contains no ApplicationSession, legacy queue, localhost, or session...
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\jobs\applyFlow.test.ts                                 31     expect(source).not.toContain("127.0.0.1:4317");                         
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\jobs\applyFlow.test.ts                                 32     expect(source).not.toContain("localhost:4317");                         
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\jobs\captureDescription.ts                            180     && ["localhost", "127.0.0.1"].includes(parsedUrl.hostname);             
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching\scoringQueue.ts                               24 // a live Ollama server. Production always uses runMatchForJob.             
+C:\Users\Molhm\Desktop\Internship-AI\src\lib\sync\ingest.test.ts                                   100     scheduleInitialAiMatch.mockRejectedValue(new Error("Ollama offline or...
+
+
+
+=== deliverLatest.ts ===
+import path from "node:path";
+import { readFile } from "node:fs/promises";
+import { prisma } from "@/lib/db";
+import {
+  deliverDocumentToAgent,
+  tailoredFilename,
+  type AgentDeliveryOutcome,
+  type AgentDocumentType,
+} from "@/lib/documents/agentDelivery";
+
+/**
+ * Resending documents that already exist.
+ *
+ * Generation delivers each PDF as it is produced, but a delivery can fail for
+ * reasons that have nothing to do with the document: the agent was not running,
+ * or the two sides had drifted onto different tokens. Regenerating in that case
+ * would burn a minute of compilation and a new version row to fix a transport
+ * problem, so the stored bytes are re-read from disk and sent again instead.
+ *
+ * The files on disk are the same ones the download route serves, so what the
+ * agent receives here is byte-identical to what the user sees in the browser.
+ */
+
+/** `type` values as stored on GeneratedDocument, mapped to the agent's enum. */
+const AGENT_TYPE: Record<string, AgentDocumentType> = {
+  resume: "resume",
+  coverLetter: "cover_letter",
+};
+
+export type LatestDeliveryReport = {
+  resume: AgentDeliveryOutcome | null;
+  coverLetter: AgentDeliveryOutcome | null;
+};
+
+export class NoStoredDocumentsError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NoStoredDocumentsError";
+  }
+}
+
+function absolute(relativePath: string): string {
+  return path.isAbsolute(relativePath) ? relativePath : path.join(process.cwd(), relativePath);
+}
+
+async function deliverStored(
+  storedType: "resume" | "coverLetter",
+  jobId: string,
+  job: { company: string; title: string },
+  deliver: typeof deliverDocumentToAgent,
+): Promise<AgentDeliveryOutcome | null> {
+  const documentType = AGENT_TYPE[storedType];
+  // Only a document that passed QA is eligible. An archived or failed version is
+  // never attached to an application, so sending it to the agent would put a
+  // file in front of an employer that this system already rejected.
+  const latest = await prisma.generatedDocument.findFirst({
+    where: { jobId, type: storedType, qaStatus: "pass" },
+    orderBy: { version: "desc" },
+  });
+  if (!latest) return null;
+
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(await readFile(absolute(latest.storagePath)));
+  } catch {
+    return {
+      delivered: false,
+      documentType,
+      reason: "The generated PDF is recorded but its file is missing on disk. Generate the document again.",
+    };
+  }
+
+  return deliver({
+    documentType,
+    filename: tailoredFilename(documentType, job.company, job.title),
+    bytes,
+    source: "tailored",
+    company: job.company,
+    jobTitle: job.title,
+    jobId,
+    createdAt: latest.createdAt.toISOString(),
+  });
+}
+
+/**
+ * Re-sends the newest QA-passed résumé and cover letter for one job.
+ *
+ * Each document is reported separately: a cover letter the agent accepted is
+ * still delivered even if the résumé's own send failed, and the caller must be
+ * able to say so rather than collapsing both into one verdict.
+ */
+export async function deliverLatestDocumentsForJob(
+  jobId: string,
+  deliver: typeof deliverDocumentToAgent = deliverDocumentToAgent,
+): Promise<LatestDeliveryReport> {
+  const job = await prisma.job.findUnique({
+    where: { id: jobId },
+    select: { company: true, title: true },
+  });
+  if (!job) throw new NoStoredDocumentsError("That job no longer exists.");
+
+  // Sequential rather than parallel: the agent writes both files into one
+  // directory and updates one "latest" pointer per type, and two concurrent
+  // uploads buy nothing on loopback.
+  const resume = await deliverStored("resume", jobId, job, deliver);
+  const coverLetter = await deliverStored("coverLetter", jobId, job, deliver);
+
+  if (!resume && !coverLetter) {
+    throw new NoStoredDocumentsError(
+      "No generated documents are stored for this job yet. Generate them first.",
+    );
+  }
+
+  return { resume, coverLetter };
+}
+
