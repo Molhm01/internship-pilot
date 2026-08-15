@@ -1,7 +1,6 @@
-import path from "node:path";
-import { readFile } from "node:fs/promises";
 import { prisma } from "@/lib/db";
 import { extractPdfText } from "@/lib/pdf";
+import { readStoredObject } from "@/lib/storage";
 
 const MOCK_IDENTITY_PATTERNS = [
   /\bJordan Test\b/i,
@@ -35,12 +34,6 @@ export function validateDocumentIdentity(text: string, profile: IdentityProfile)
   return Array.from(new Set(issues));
 }
 
-function absolute(storagePath: string): string {
-  return path.isAbsolute(storagePath)
-    ? storagePath
-    : path.join(/* turbopackIgnore: true */ process.cwd(), storagePath);
-}
-
 export async function verifyGeneratedDocumentIdentity(documentId: string): Promise<{ text: string; issues: string[] }> {
   const [document, profile] = await Promise.all([
     prisma.generatedDocument.findUnique({ where: { id: documentId } }),
@@ -48,7 +41,13 @@ export async function verifyGeneratedDocumentIdentity(documentId: string): Promi
   ]);
   if (!document) throw new Error("Generated document not found.");
   if (!profile) throw new Error("Candidate Profile not found.");
-  const extraction = await extractPdfText(new Uint8Array(await readFile(absolute(document.storagePath))));
+  // Through the storage layer, not readFile. This runs inside
+  // /api/extension/documents/[id] — the one route a hosted deployment depends
+  // on most, because the extension is the only bridge to the user's Agent. A
+  // blob-URL storagePath is not a filesystem path, so reading it from disk
+  // would throw here and the guard would report every document as failing the
+  // identity check rather than as missing.
+  const extraction = await extractPdfText(await readStoredObject(document.storagePath));
   const issues = validateDocumentIdentity(extraction.text, profile);
   await prisma.generatedDocument.update({
     where: { id: document.id },
