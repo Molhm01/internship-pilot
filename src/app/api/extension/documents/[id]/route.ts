@@ -1,17 +1,10 @@
-import path from "node:path";
-import { readFile } from "node:fs/promises";
 import { prisma } from "@/lib/db";
+import { readStoredObject } from "@/lib/storage";
 import { assertGeneratedDocumentUploadable } from "@/lib/documents/identityGuard";
 import {
   extensionUnauthorizedResponse,
   isExtensionRequestAuthorized,
 } from "@/lib/applications/extensionAuth";
-
-function absolutePath(storagePath: string): string {
-  return path.isAbsolute(storagePath)
-    ? storagePath
-    : path.join(/* turbopackIgnore: true */ process.cwd(), storagePath);
-}
 
 export async function GET(
   request: Request,
@@ -47,7 +40,7 @@ export async function GET(
   }
   try {
     await assertGeneratedDocumentUploadable(document.id);
-    const bytes = await readFile(absolutePath(document.storagePath));
+    const bytes = await readStoredObject(document.storagePath);
     return new Response(bytes, {
       headers: {
         "content-type": "application/pdf",

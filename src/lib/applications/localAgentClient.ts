@@ -20,7 +20,9 @@ const createApplicationSessionResponse = z.object({
   sourceListingUrl: z.string().url().nullable(),
 });
 
-export type CreateApplicationSessionInput = z.infer<typeof createApplicationSessionInput>;
+// `z.input`, not `z.infer`. `startAutofill` has a default, so the OUTPUT type
+// marks it required while callers are supposed to be able to omit it.
+export type CreateApplicationSessionInput = z.input<typeof createApplicationSessionInput>;
 export type CreateApplicationSessionResponse = z.infer<typeof createApplicationSessionResponse>;
 
 // Error types

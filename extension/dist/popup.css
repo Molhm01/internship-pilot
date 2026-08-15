@@ -131,3 +131,11 @@ button {
   margin-top: 5px;
   line-height: 1.45;
 }
+
+/* Address-field hint. The backend may be a local install or a hosted site, and
+   the field has to say so without a second line of chrome around it. */
+.hint {
+  margin: 0.25rem 0 0.75rem;
+  font-size: 0.75rem;
+  opacity: 0.75;
+}

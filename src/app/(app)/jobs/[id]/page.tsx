@@ -32,6 +32,8 @@ import {
   applyWithApplicationAgent,
 } from "@/lib/applications/applyWithAgent";
 import { isExtensionBridgeAvailable } from "@/lib/applications/extensionBridge";
+import { useRuntimeCapabilities } from "@/lib/runtime/capabilitiesClient";
+import LocalAiOfflineNotice from "@/components/LocalAiOfflineNotice";
 
 type MatchResultRaw = {
   id: string;
@@ -380,6 +382,10 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
   // Handing the tailored documents to the extension. `null` means the probe has
   // not run yet, which is distinct from "the extension is not there".
   const [bridgeAvailable, setBridgeAvailable] = useState<boolean | null>(null);
+  // Typst compiles these PDFs with a native binary on whatever machine is
+  // serving this page, so on a hosted install the button would post a request
+  // that cannot succeed.
+  const { serverSideDocumentGeneration: canGenerateDocuments } = useRuntimeCapabilities();
   const [handoffState, setHandoffState] = useState<"idle" | "sending" | "sent">("idle");
   const [handoffError, setHandoffError] = useState<string | null>(null);
   const initialLoadJobId = useRef<string | null>(null);
@@ -949,13 +955,17 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
               )}
               <button
                 onClick={generateDocuments}
-                disabled={generatingDocs || sendingDocs}
+                disabled={generatingDocs || sendingDocs || !canGenerateDocuments}
+                title={canGenerateDocuments ? undefined : "Tailored documents are compiled on your own computer."}
                 className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-dark transition-colors"
               >
                 {generatingDocs ? "Generating… (can take a minute)" : documents.length > 0 ? "Regenerate documents" : "Generate tailored documents"}
               </button>
             </div>
           </div>
+          {/* Shown only on a hosted install, where compilation and delivery
+              both happen on the user's machine rather than on this server. */}
+          <LocalAiOfflineNotice feature="Tailored document generation" />
           {deliveryError && (
             <div className="rounded-lg bg-critical-quiet border border-critical-line text-critical text-sm px-4 py-3">{deliveryError}</div>
           )}

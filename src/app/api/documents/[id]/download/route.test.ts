@@ -55,7 +55,7 @@ describe("GET /api/documents/[id]/download", () => {
 
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({
-      error: "The generated file could not be read from disk.",
+      error: "The generated file could not be read from storage.",
     });
     expect(consoleError).toHaveBeenCalled();
     consoleError.mockRestore();

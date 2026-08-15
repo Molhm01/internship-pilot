@@ -5,13 +5,18 @@ import { FRESHNESS_FIELDS } from "@/lib/jobs/jobsQueryError";
 import { jobOrderBy, JOB_SORT_OPTIONS } from "@/lib/jobs/jobSort";
 import { GET } from "./route";
 
-// These tests run against the real dev.db through the real Prisma Client, with
-// no mocks. They are the regression net for the Jobs page failing with "The
-// Jobs API reached the database, but its query failed": the query is executed
-// exactly as the route builds it, so a stale client or an unapplied migration
-// fails here instead of on the page.
+// These tests run against a real PostgreSQL database through the real Prisma
+// Client, with no mocks. They are the regression net for the Jobs page failing
+// with "The Jobs API reached the database, but its query failed": the query is
+// executed exactly as the route builds it, so a stale client or an unapplied
+// migration fails here instead of on the page.
 //
 // Every query below is read-only. Nothing is created, updated or deleted.
+//
+// Skipped when DATABASE_URL is unset. This used to fall back to a local
+// dev.db file, which is no longer what this application runs on; a suite that
+// silently invents its own database is worse than one that says it needs one.
+const DATABASE_AVAILABLE = Boolean(process.env.DATABASE_URL?.trim());
 
 type ApiJob = {
   id: string;
@@ -34,7 +39,7 @@ async function get(url: string): Promise<{ status: number; body: JobsBody }> {
 
 const ms = (value: string | null): number | null => (value ? new Date(value).getTime() : null);
 
-describe("GET /api/jobs with the current SQLite database", () => {
+describe.skipIf(!DATABASE_AVAILABLE)("GET /api/jobs against the live database", () => {
   afterAll(async () => {
     await prisma.$disconnect();
   });

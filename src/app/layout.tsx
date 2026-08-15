@@ -3,9 +3,16 @@ import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import "./globals.css";
 import { ToastHost } from "@/components/ui/Toast";
+import { resolveAppUrl } from "@/lib/runtime/appUrl";
+
+// Every relative Open Graph/Twitter asset is resolved against this. Hard-coded
+// to localhost it pointed crawlers and link unfurlers at the visitor's own
+// machine, so it follows NEXT_PUBLIC_APP_URL (or the Vercel-provided hostname)
+// and only falls back to localhost in development.
+const metadataBase = new URL(resolveAppUrl() ?? "http://localhost:3000");
 
 export const metadata: Metadata = {
-  metadataBase: new URL("http://localhost:3000"),
+  metadataBase,
   title: {
     default: "Internship Pilot — From internship search to application, one intelligent system",
     template: "%s — Internship Pilot",

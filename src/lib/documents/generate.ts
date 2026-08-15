@@ -16,6 +16,8 @@ import {
   type UnsupportedClaimDetail,
 } from "@/lib/documents/claimValidation";
 import { hasUsableJobDescription, matchJobDescriptionText } from "@/lib/matchWorkflow";
+import { assertLocalRuntime } from "@/lib/runtime/deployment";
+import { writeStoredObject } from "@/lib/storage";
 import {
   deliverDocumentToAgent,
   tailoredFilename,
@@ -241,6 +243,11 @@ function unsupportedClaimFailure(
 }
 
 export async function generateDocumentsForJob(jobId: string, options: { includeCoverLetter?: boolean } = {}) {
+  // Typst is a native binary invoked with child_process, and it reads and
+  // writes real files under the repository root. Neither exists on a
+  // serverless host, so this is stated up front rather than discovered as a
+  // spawn ENOENT halfway through a two-minute generation.
+  assertLocalRuntime("typst");
   let currentStage: DocumentGenerationStage = "job_load";
   try {
   const job = await prisma.job.findUnique({ where: { id: jobId }, include: { matchResults: { orderBy: { createdAt: "desc" }, take: 1 } } });
@@ -425,8 +432,13 @@ export async function generateDocumentsForJob(jobId: string, options: { includeC
   const storedTailoringStatus = tailoring.audit.status;
   progress(jobId, "resume_generated");
   currentStage = "resume_persistence";
-  const resumeDoc = await prisma.generatedDocument.create({ data: { jobId, type: "resume", version: resumeVersion, storagePath: resumePdfRel, typstSourcePath: resumeSourceRel, qaStatus: resumeQaStatus, qaIssues: JSON.stringify(resumeQa.issues), keywordClassification: JSON.stringify(resumeKeywordClassification), tailoringStatus: storedTailoringStatus, tailoringAudit: JSON.stringify(tailoring.audit), identityVerified: resumeIdentityIssues.length === 0, bulletIdsUsed: JSON.stringify(selectedBulletIds), matchResultId: latestMatch?.id ?? null } });
-  const result: { resume: GeneratedDocSummary; coverLetter?: GeneratedDocSummary; agentDelivery?: AgentDeliverySummary } = { resume: { id: resumeDoc.id, type: "resume", version: resumeVersion, storagePath: resumePdfRel, qaStatus: resumeQaStatus, qaIssues: resumeQa.issues } };
+  // The compiled PDF is handed to the storage abstraction and the identifier
+  // it returns is what the row keeps. Locally that is the same relative path
+  // Typst just wrote; with object storage configured it is a durable URL, and
+  // the download route resolves either without knowing which it received.
+  const resumeStorageKey = await writeStoredObject(resumePdfRel, resumeBytes, { contentType: "application/pdf" });
+  const resumeDoc = await prisma.generatedDocument.create({ data: { jobId, type: "resume", version: resumeVersion, storagePath: resumeStorageKey, typstSourcePath: resumeSourceRel, qaStatus: resumeQaStatus, qaIssues: JSON.stringify(resumeQa.issues), keywordClassification: JSON.stringify(resumeKeywordClassification), tailoringStatus: storedTailoringStatus, tailoringAudit: JSON.stringify(tailoring.audit), identityVerified: resumeIdentityIssues.length === 0, bulletIdsUsed: JSON.stringify(selectedBulletIds), matchResultId: latestMatch?.id ?? null } });
+  const result: { resume: GeneratedDocSummary; coverLetter?: GeneratedDocSummary; agentDelivery?: AgentDeliverySummary } = { resume: { id: resumeDoc.id, type: "resume", version: resumeVersion, storagePath: resumeStorageKey, qaStatus: resumeQaStatus, qaIssues: resumeQa.issues } };
   if (resumeQaStatus !== "pass") {
     throw new DocumentGenerationError(`Resume generation failed QA: ${resumeQa.issues.join(" ")}`);
   }
@@ -488,8 +500,9 @@ export async function generateDocumentsForJob(jobId: string, options: { includeC
     const coverQaStatus = coverIdentityIssues.length ? "INVALID_TEST_DATA" : coverQa.status;
     progress(jobId, "cover_letter_generated");
     currentStage = "cover_letter_persistence";
-    const coverDoc = await prisma.generatedDocument.create({ data: { jobId, type: "coverLetter", version: coverVersion, storagePath: coverPdfRel, typstSourcePath: coverSourceRel, qaStatus: coverQaStatus, qaIssues: JSON.stringify(coverQa.issues), keywordClassification: JSON.stringify(coverKeywordClassification), tailoringStatus: storedTailoringStatus, tailoringAudit: JSON.stringify(tailoring.audit), identityVerified: coverIdentityIssues.length === 0, bulletIdsUsed: JSON.stringify(selectedBulletIds), matchResultId: latestMatch?.id ?? null } });
-    result.coverLetter = { id: coverDoc.id, type: "coverLetter", version: coverVersion, storagePath: coverPdfRel, qaStatus: coverQaStatus, qaIssues: coverQa.issues };
+    const coverStorageKey = await writeStoredObject(coverPdfRel, coverBytes, { contentType: "application/pdf" });
+    const coverDoc = await prisma.generatedDocument.create({ data: { jobId, type: "coverLetter", version: coverVersion, storagePath: coverStorageKey, typstSourcePath: coverSourceRel, qaStatus: coverQaStatus, qaIssues: JSON.stringify(coverQa.issues), keywordClassification: JSON.stringify(coverKeywordClassification), tailoringStatus: storedTailoringStatus, tailoringAudit: JSON.stringify(tailoring.audit), identityVerified: coverIdentityIssues.length === 0, bulletIdsUsed: JSON.stringify(selectedBulletIds), matchResultId: latestMatch?.id ?? null } });
+    result.coverLetter = { id: coverDoc.id, type: "coverLetter", version: coverVersion, storagePath: coverStorageKey, qaStatus: coverQaStatus, qaIssues: coverQa.issues };
     if (coverQaStatus !== "pass") {
       throw new DocumentGenerationError(`Cover letter generation failed QA: ${coverQa.issues.join(" ")}`);
     }

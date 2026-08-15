@@ -4,6 +4,14 @@ export type OllamaHealth = {
   models: string[];
   model: string;
   error?: string;
+  /**
+   * True when the server answering this probe is not the user's computer, so
+   * no amount of restarting Ollama would make it reachable from there. The UI
+   * uses it to distinguish "your local AI is not running" from "this website
+   * cannot see your local AI, and never could".
+   */
+  localAiOffline?: boolean;
+  runtime?: "local" | "cloud";
 };
 
 export const OLLAMA_HEALTH_CACHE_MS = 15_000;

@@ -31,6 +31,10 @@ let coverPath: string;
 
 beforeAll(async () => {
   directory = await mkdtemp(path.join(tmpdir(), "deliver-latest-"));
+  // Local storage confines every key inside one root, so a stored path that
+  // escapes it reads as "missing" rather than being opened. The fixtures live
+  // outside the repository, so the root is pointed at them for this suite.
+  process.env.LOCAL_DOCUMENT_STORAGE_ROOT = directory;
   resumePath = path.join(directory, "resume-v3.pdf");
   coverPath = path.join(directory, "cover-letter-v3.pdf");
   await writeFile(resumePath, RESUME_BYTES);
@@ -38,6 +42,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  delete process.env.LOCAL_DOCUMENT_STORAGE_ROOT;
   await rm(directory, { recursive: true, force: true });
 });
 

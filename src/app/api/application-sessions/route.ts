@@ -1,8 +1,8 @@
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { isCloudRuntime } from "@/lib/runtime/deployment";
+import { readStoredObject } from "@/lib/storage";
 import {
   OfficialApplicationUrlUnresolvedError,
   resolveOfficialApplicationDestination,
@@ -102,15 +102,6 @@ async function agentRequest(
   return parsed.data.data;
 }
 
-function absoluteDocumentPath(storagePath: string): string {
-  const root = path.resolve(/* turbopackIgnore: true */ process.cwd());
-  const resolved = path.resolve(/* turbopackIgnore: true */ root, storagePath);
-  if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
-    throw new RouteError("INVALID_PAYLOAD", 400);
-  }
-  return resolved;
-}
-
 async function transferDocuments(
   input: z.infer<typeof inputSchema>,
   baseUrl: string,
@@ -150,7 +141,7 @@ async function transferDocuments(
     const marker = `internship-ai:${document.id}`;
     let agentId = listed.documents.find((candidate) => candidate.tags.includes(marker))?.id;
     if (!agentId) {
-      const bytes = await readFile(absoluteDocumentPath(document.storagePath));
+      const bytes = Buffer.from(await readStoredObject(document.storagePath));
       const type = document.type === "coverLetter" ? "cover_letter" : "resume";
       const uploaded = documentSchema.parse(
         await agentRequest(baseUrl, token, "/documents", {
@@ -192,6 +183,13 @@ export async function POST(request: NextRequest) {
       }
       throw new RouteError("INVALID_PAYLOAD", 400);
     }
+    // The agent listens on the user's own loopback interface. On a hosted
+    // deployment `127.0.0.1` is this function's own container, so the request
+    // would either hang or be refused, and the user would be told their agent
+    // is broken when it is simply somewhere this server cannot reach. The
+    // browser extension is the supported route from a deployed website.
+    if (isCloudRuntime()) throw new RouteError("LOCAL_AGENT_NOT_REACHABLE_FROM_SERVER", 501);
+
     const input = parsed.data;
     const token = process.env.INTERNSHIP_AGENT_TOKEN?.trim();
     if (!token) throw new RouteError("AGENT_TOKEN_NOT_CONFIGURED", 503);

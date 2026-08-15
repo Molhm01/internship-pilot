@@ -10,10 +10,24 @@ never kills unrelated processes.
 
 ### FIRST-TIME SETUP
 
+Internship Pilot runs on PostgreSQL. `npx prisma dev` starts one locally with
+no Docker and no install, and prints a connection string.
+
 ```
 npm.cmd install
+npx prisma dev                 # leave running; copy the URL it prints
+                               # into .env as DATABASE_URL
+npm.cmd run db:migrate         # create the schema
 npm.cmd run local
 ```
+
+Coming from the old SQLite build? `prisma/README.md` explains the move and
+`npm run db:import-sqlite` copies an existing `dev.db` across. Nothing is
+deleted — `dev.db` is opened read-only.
+
+Everything else is unchanged: the local Internship Agent, Ollama, and Typst
+still run on this machine and are still where the AI and the tailored documents
+come from.
 
 ### NORMAL DAILY STARTUP
 
@@ -84,8 +98,12 @@ To learn more about Next.js, take a look at the following resources:
 
 You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
-## Deploy on Vercel
+## Deploying
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The website deploys to Vercel; the Agent and Ollama stay on the user's own
+computer, reached through the browser extension. See:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `PRODUCTION_DEPLOYMENT_AUDIT.md` — what assumed a shared machine, and why.
+- `DEPLOYMENT_ENVIRONMENT.md` — every environment variable, where it belongs,
+  and whether it is a secret.
+- `prisma/README.md` — the SQLite → PostgreSQL move and the data import.

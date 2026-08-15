@@ -1,5 +1,14 @@
 // Internship Pilot Autofill — Manifest V3 background service worker.
-// All sensitive requests are authenticated to a loopback-only backend.
+//
+// The backend is the Internship Pilot WEBSITE, which may be running on this
+// computer (http://localhost:3000) or hosted (https://…). Both are accepted:
+// loopback over http, because that is where a local install lives, and any
+// origin over https, because that is the only way a deployed website can be
+// reached at all. Plain http to a non-loopback host is refused — the API token
+// travels on every request and must never cross a network in the clear.
+//
+// The local Internship Agent is a separate thing entirely and is never
+// contacted from here.
 
 "use strict";
 
@@ -25,6 +34,21 @@ function isLoopbackBase(value) {
   }
 }
 
+/** An https origin, i.e. a deployed Internship Pilot. */
+function isSecureRemoteBase(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname.length > 0 && url.pathname === "/";
+  } catch {
+    return false;
+  }
+}
+
+/** Every backend this extension is willing to send the API token to. */
+function isAllowedBase(value) {
+  return isLoopbackBase(value) || isSecureRemoteBase(value);
+}
+
 function allowedSender(sender, popupAllowed) {
   if (sender.tab && /^https?:\/\//i.test(sender.tab.url || sender.url || "")) return true;
   return Boolean(
@@ -44,8 +68,10 @@ async function backendCandidates() {
   const custom = typeof stored.backendBaseUrl === "string"
     ? stored.backendBaseUrl.trim().replace(/\/+$/, "")
     : "";
+  // A configured backend wins. The localhost defaults stay as a fallback so a
+  // purely local install still works with nothing entered in the popup.
   return [
-    ...(isLoopbackBase(`${custom}/`) ? [custom] : []),
+    ...(isAllowedBase(`${custom}/`) ? [custom] : []),
     ...DEFAULT_BACKENDS,
   ].filter((value, index, values) => values.indexOf(value) === index);
 }
@@ -204,8 +230,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const backendBaseUrl = typeof message.backendBaseUrl === "string"
         ? message.backendBaseUrl.trim().replace(/\/+$/, "")
         : DEFAULT_BACKENDS[0];
-      if (token.length < 32 || !isLoopbackBase(`${backendBaseUrl}/`)) {
-        sendResponse({ ok: false, error: "Enter the API token and a localhost Internship Pilot address." });
+      if (token.length < 32 || !isAllowedBase(`${backendBaseUrl}/`)) {
+        sendResponse({ ok: false, error: "Enter the API token and an Internship Pilot address — either http://localhost:3000 or your hosted https:// site." });
         return;
       }
       await chrome.storage.local.set({ apiToken: token, backendBaseUrl });

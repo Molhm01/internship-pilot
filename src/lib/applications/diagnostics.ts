@@ -1,11 +1,11 @@
 import path from "node:path";
 import { access, mkdir } from "node:fs/promises";
 import { constants } from "node:fs";
-import { chromium } from "playwright";
 import { prisma } from "@/lib/db";
+import { isCloudRuntime, LOCAL_ONLY_FEATURES } from "@/lib/runtime/deployment";
 import { getApplicationSettings } from "./settings";
 import { ATS_CAPABILITIES } from "./adapters";
-import { applicationExtensionPath, applicationProfilePath } from "./browserProfile";
+import { applicationExtensionPath, applicationProfilePath } from "./browserPaths";
 import { fetchWorkerHealth, isProcessRunning, readWorkerLock } from "./workerLock";
 import { checkOllamaVisionHealth, OLLAMA_VISION_MODEL } from "@/lib/ollama";
 
@@ -49,17 +49,31 @@ function detailedAgentError(technical: string | null): string | null {
   return readable ? `Readable field-level validation errors:\n${readable}\n\nComplete technical details:\n${technical}` : technical;
 }
 
+/**
+ * Playwright is a ~300 MB local dependency whose only purpose here is to name
+ * the Chromium binary on this machine. Importing it lazily keeps it out of a
+ * deployed function bundle entirely, and in a cloud runtime the question is
+ * already answered: the browser that fills applications is the user's, not
+ * this server's.
+ */
+async function chromiumExecutablePath(): Promise<string> {
+  const { chromium } = await import("playwright");
+  return chromium.executablePath();
+}
+
 export async function getAgentDiagnostics() {
+  const cloud = isCloudRuntime();
   const visionInstallation = await checkOllamaVisionHealth();
   let chromiumInstalled = false;
   let profileWritable = false;
   let extensionPackageBuilt = false;
-  let browserError: string | null = null;
+  let browserError: string | null = cloud ? LOCAL_ONLY_FEATURES.playwright : null;
   try {
-    await access(chromium.executablePath(), constants.R_OK);
+    if (cloud) throw new Error(LOCAL_ONLY_FEATURES.playwright);
+    await access(await chromiumExecutablePath(), constants.R_OK);
     chromiumInstalled = true;
   } catch (error) {
-    browserError = error instanceof Error ? error.stack ?? error.message : String(error);
+    browserError ??= error instanceof Error ? error.stack ?? error.message : String(error);
   }
   try {
     await mkdir(applicationProfilePath(), { recursive: true });

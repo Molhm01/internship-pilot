@@ -1,13 +1,25 @@
-// Prisma schema for Internship Pilot (Phase 1)
-// Local-only SQLite database. No cloud services.
+// Prisma schema for Internship Pilot.
+//
+// PostgreSQL in every environment. Prisma cannot take its provider from an
+// environment variable, so "SQLite locally, Postgres in production" would mean
+// two schema files and two migration histories drifting apart — the exact hack
+// this project would rather not carry. Local development instead runs a real
+// Postgres (`npx prisma dev` starts one with no Docker and no install), so the
+// database a feature is written against is the database it ships on.
+//
+// The original SQLite migration history is preserved under
+// prisma/migrations-sqlite-archive/ and prisma/README.md documents how to move
+// an existing dev.db across.
 
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
 }
 
+// Prisma 7 takes the connection URL from prisma.config.ts, which reads
+// DATABASE_URL from the environment. Nothing here is a credential.
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
 }
 
 // One row per fact extracted from the user's resume by the local AI model.

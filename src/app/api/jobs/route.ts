@@ -48,10 +48,13 @@ async function getJobsResponse(req: Request) {
   const sort = parseJobSort(searchParams.get("sort"));
 
   const where: Prisma.JobWhereInput = {};
-  if (location) where.location = { contains: location };
+  // Case-insensitive by request. SQLite's LIKE ignored ASCII case for free;
+  // PostgreSQL's does not, and a filter for "remote" that stops matching
+  // "Remote" reads as a broken feed rather than a changed database.
+  if (location) where.location = { contains: location, mode: "insensitive" };
   if (status) where.status = status;
-  if (internshipTerm) where.internshipTerm = { contains: internshipTerm };
-  if (duration) where.duration = { contains: duration };
+  if (internshipTerm) where.internshipTerm = { contains: internshipTerm, mode: "insensitive" };
+  if (duration) where.duration = { contains: duration, mode: "insensitive" };
   if (postingDateFrom || postingDateTo) {
     where.postingDate = {
       ...(postingDateFrom ? { gte: new Date(postingDateFrom) } : {}),

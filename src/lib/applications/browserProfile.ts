@@ -2,6 +2,9 @@ import path from "node:path";
 import { access, mkdir } from "node:fs/promises";
 import { chromium, type BrowserContext, type Page } from "playwright";
 import { getOrCreateExtensionApiToken } from "./extensionAuth";
+import { applicationExtensionPath, applicationProfilePath } from "./browserPaths";
+
+export { applicationExtensionPath, applicationProfilePath };
 
 let workerContext: BrowserContext | null = null;
 let workerPage: Page | null = null;
@@ -11,17 +14,6 @@ export type WorkerExtensionStatus = {
   id: string | null;
   path: string;
 };
-
-export function applicationProfilePath(): string {
-  const configured = process.env.APPLICATION_BROWSER_PROFILE_DIR ?? "data/browser-profile";
-  return path.resolve(process.cwd(), configured);
-}
-
-/** Absolute path of the unpacked Manifest V3 extension the worker loads. */
-export function applicationExtensionPath(): string {
-  const configured = process.env.INTERNSHIP_PILOT_EXTENSION_DIR ?? path.join("extension", "dist");
-  return path.resolve(process.cwd(), configured);
-}
 
 function workerBackendBaseUrl(): string {
   const port = process.env.PORT ?? process.env.INTERNSHIP_PILOT_PORT ?? "3000";

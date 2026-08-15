@@ -1,6 +1,5 @@
-import path from "node:path";
-import { readFile } from "node:fs/promises";
 import { prisma } from "@/lib/db";
+import { readStoredObject } from "@/lib/storage";
 import {
   deliverDocumentToAgent,
   tailoredFilename,
@@ -15,9 +14,9 @@ import {
  * reasons that have nothing to do with the document: the agent was not running,
  * or the two sides had drifted onto different tokens. Regenerating in that case
  * would burn a minute of compilation and a new version row to fix a transport
- * problem, so the stored bytes are re-read from disk and sent again instead.
+ * problem, so the stored bytes are re-read from storage and sent again instead.
  *
- * The files on disk are the same ones the download route serves, so what the
+ * The stored bytes are the same ones the download route serves, so what the
  * agent receives here is byte-identical to what the user sees in the browser.
  */
 
@@ -39,10 +38,6 @@ export class NoStoredDocumentsError extends Error {
   }
 }
 
-function absolute(relativePath: string): string {
-  return path.isAbsolute(relativePath) ? relativePath : path.join(process.cwd(), relativePath);
-}
-
 async function deliverStored(
   storedType: "resume" | "coverLetter",
   jobId: string,
@@ -61,12 +56,12 @@ async function deliverStored(
 
   let bytes: Uint8Array;
   try {
-    bytes = new Uint8Array(await readFile(absolute(latest.storagePath)));
+    bytes = await readStoredObject(latest.storagePath);
   } catch {
     return {
       delivered: false,
       documentType,
-      reason: "The generated PDF is recorded but its file is missing on disk. Generate the document again.",
+      reason: "The generated PDF is recorded but its stored file is missing. Generate the document again.",
     };
   }
 

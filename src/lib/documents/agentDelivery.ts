@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { isCloudRuntime, LOCAL_ONLY_FEATURES } from "@/lib/runtime/deployment";
 
 /**
  * Delivering a freshly generated document to the local Internship Agent.
@@ -39,6 +40,10 @@ export type AgentDeliveryOutcome =
   | { delivered: false; documentType: AgentDocumentType; reason: string };
 
 export function agentBaseUrl(): string {
+  // Loopback from a deployed server is this container, not the user's PC.
+  // Refusing here means the caller reports "use the extension" instead of
+  // spending the delivery timeout on a connection that cannot succeed.
+  if (isCloudRuntime()) throw new Error(LOCAL_ONLY_FEATURES.localAgent);
   const configured = process.env.INTERNSHIP_AGENT_BASE_URL?.trim() || "http://127.0.0.1:4317";
   const url = new URL(configured);
   if (

@@ -61,15 +61,17 @@ async function runIfNotPaused<T>(name: keyof typeof SCHEDULES, task: () => Promi
 }
 
 // Runs entirely inside the Next.js server process — there is no separate
-// cron/worker. Started once from instrumentation.ts when the server boots.
-// All scheduling state (Company.nextCheckAt, Job rows, AppSetting ticks)
-// lives in SQLite, so a restart just resumes from where the database says
-// things are due — nothing is lost, and nothing gets double-processed.
+// cron/worker. Started once from instrumentation.ts when the server boots, and
+// only on a local install: see the note there on why a serverless runtime does
+// not get these timers. All scheduling state (Company.nextCheckAt, Job rows,
+// AppSetting ticks) lives in the database, so a restart just resumes from where
+// the database says things are due — nothing is lost, and nothing gets
+// double-processed.
 export function startScheduler() {
   if (globalThis.__internshipPilotSchedulerStarted) return;
   globalThis.__internshipPilotSchedulerStarted = true;
 
-  log("starting persistent scheduler (survives restarts — all state is in SQLite)");
+  log("starting persistent scheduler (survives restarts — all state is in the database)");
 
   // Resume only durable INITIAL work created at new-job ingestion. The worker
   // rechecks for an existing valid MatchResult before calling the model, so

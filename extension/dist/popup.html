@@ -24,8 +24,9 @@
       </section>
       <p id="versions" class="versions"></p>
       <form id="connection-form">
-        <label for="backend">Local app address</label>
-        <input id="backend" name="backend" type="url" value="http://localhost:3000" required>
+        <label for="backend">Internship Pilot address</label>
+        <input id="backend" name="backend" type="url" value="http://localhost:3000" placeholder="http://localhost:3000 or https://your-site.example" required>
+        <p class="hint">Use http://localhost:3000 for a local install, or your hosted https:// address.</p>
         <label for="token">Local extension API token</label>
         <input id="token" name="token" type="password" autocomplete="off" minlength="32" required>
         <button type="submit">Connect securely</button>

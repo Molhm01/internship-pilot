@@ -21,8 +21,8 @@ describe("shared Ollama matching client", () => {
   it("reuses one client and performs no per-job health/version request", async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(ollamaResponse('{"ok":true}'))
-      .mockResolvedValueOnce(ollamaResponse('{"ok":true}')) as unknown as typeof fetch;
-    __setOllamaFetchForTests(fetcher);
+      .mockResolvedValueOnce(ollamaResponse('{"ok":true}'));
+    __setOllamaFetchForTests(fetcher as unknown as typeof fetch);
 
     expect(getSharedOllamaClient()).toBe(getSharedOllamaClient());
     await ollamaGenerateJSON("fixture one", { numCtx: 8_192, numPredict: 1_200, keepAlive: "10m" });
@@ -39,8 +39,8 @@ describe("shared Ollama matching client", () => {
   });
 
   it("reports model timing without exposing model output in metadata", async () => {
-    const fetcher = vi.fn().mockResolvedValue(ollamaResponse('{"private":"output"}')) as unknown as typeof fetch;
-    __setOllamaFetchForTests(fetcher);
+    const fetcher = vi.fn().mockResolvedValue(ollamaResponse('{"private":"output"}'));
+    __setOllamaFetchForTests(fetcher as unknown as typeof fetch);
     const onTiming = vi.fn();
     await ollamaGenerateJSON("fixture", { onTiming });
     expect(onTiming).toHaveBeenCalledWith(expect.objectContaining({

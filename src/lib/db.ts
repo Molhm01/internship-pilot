@@ -1,18 +1,20 @@
-import { PrismaLibSql } from "@prisma/adapter-libsql";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient, Prisma } from "@/generated/prisma/client";
 
-// Outside production the client is cached on globalThis so hot reload does not
-// open a new SQLite connection on every edit. That cache is also how the Jobs
-// feed broke after the source-posted-date change: the web process had been
-// running since before `prisma generate`, hot reload re-executed the route with
-// the NEW query but kept the OLD cached client, and Prisma Client validation
-// rejected `orderBy: { sourcePostedAt: "desc" }` with "Unknown argument
-// `sourcePostedAt`" before any SQL was sent.
-//
-// So the cache is keyed by the generated client's own field list. Regenerating
-// the client changes the key, the stale instance is dropped, and the next
-// request builds a client that matches prisma/schema.prisma. Same connection
-// reuse as before for every edit that does NOT touch the schema.
+/**
+ * The Prisma client, over PostgreSQL.
+ *
+ * This used to be SQLite through libsql, which is the right database for one
+ * user on one laptop and the wrong one for a deployment: Vercel's filesystem is
+ * ephemeral, so a `file:./dev.db` would be recreated empty on every cold start
+ * and silently lose every row written by the previous invocation.
+ *
+ * Connection handling is the other half of that move. A serverless function is
+ * one short-lived process among many, and each one opening a pool would exhaust
+ * the database's connection limit long before it exhausts anything else. The
+ * pool is therefore small by default and configurable, and the client is cached
+ * on globalThis so warm invocations reuse the connections they already hold.
+ */
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
   prismaSchemaFingerprint: string | undefined;
@@ -22,6 +24,12 @@ const globalForPrisma = globalThis as unknown as {
  * Identity of the Prisma Client currently loaded, derived from the generated
  * `*ScalarFieldEnum` objects — i.e. every model and every field this client
  * knows about. Cheap, and it changes exactly when a regenerate matters.
+ *
+ * This exists because of a real failure: the dev server had been running since
+ * before `prisma generate`, hot reload re-executed a route with a NEW query
+ * against the OLD cached client, and Prisma rejected `orderBy: sourcePostedAt`
+ * with "Unknown argument" before any SQL was sent. Keying the cache on the
+ * generated field list drops the stale instance instead.
  */
 function generatedClientFingerprint(): string {
   const namespace = Prisma as unknown as Record<string, unknown>;
@@ -36,32 +44,92 @@ function generatedClientFingerprint(): string {
     .join("|");
 }
 
+export class DatabaseUrlMissingError extends Error {
+  readonly code = "DATABASE_URL_MISSING";
+
+  constructor() {
+    super(
+      "DATABASE_URL is not set. Point it at a PostgreSQL database — `npx prisma dev` starts one locally, and Vercel injects it when a Prisma Postgres store is connected.",
+    );
+    this.name = "DatabaseUrlMissingError";
+  }
+}
+
+function connectionString(): string {
+  const url = process.env.DATABASE_URL?.trim();
+  if (!url) throw new DatabaseUrlMissingError();
+  if (url.startsWith("file:")) {
+    throw new Error(
+      "DATABASE_URL still points at a SQLite file. Internship Pilot now runs on PostgreSQL — see prisma/README.md for the one-command migration of an existing dev.db.",
+    );
+  }
+  return url;
+}
+
 function createPrismaClient() {
-  const adapter = new PrismaLibSql({
-    url: process.env.DATABASE_URL ?? "file:./dev.db",
-    // Web routes, scheduler, and the single application worker are separate
-    // local processes. Wait for short SQLite write locks instead of failing
-    // immediately while another service commits its transaction.
-    timeout: 15_000,
+  const adapter = new PrismaPg({
+    connectionString: connectionString(),
+    // Serverless invocations are numerous and short. A large pool per instance
+    // is how a project runs out of Postgres connections while barely under
+    // load; the pooled connection string handles concurrency instead.
+    max: Number(process.env.DATABASE_POOL_MAX ?? 5),
+    // The old libsql timeout existed because the web app, scheduler, and
+    // application worker are separate local processes contending for one
+    // SQLite write lock. Postgres has row-level locking, but the same three
+    // processes still want a bounded wait rather than an instant failure.
+    connectionTimeoutMillis: Number(process.env.DATABASE_CONNECT_TIMEOUT_MS ?? 15_000),
   });
   return new PrismaClient({ adapter });
 }
 
-const fingerprint = generatedClientFingerprint();
-const cachedIsCurrent =
-  globalForPrisma.prisma !== undefined && globalForPrisma.prismaSchemaFingerprint === fingerprint;
+/**
+ * Builds (or reuses) the real client. Called on first property access, never
+ * at import time.
+ */
+function resolveClient(): PrismaClient {
+  const fingerprint = generatedClientFingerprint();
+  const cachedIsCurrent =
+    globalForPrisma.prisma !== undefined && globalForPrisma.prismaSchemaFingerprint === fingerprint;
+  if (cachedIsCurrent) return globalForPrisma.prisma!;
 
-export const prisma = cachedIsCurrent ? globalForPrisma.prisma! : createPrismaClient();
-
-if (process.env.NODE_ENV !== "production") {
-  if (!cachedIsCurrent && globalForPrisma.prisma) {
-    console.warn(
-      "[db] Prisma Client was regenerated since this process started — rebuilding the cached client.",
-    );
+  if (globalForPrisma.prisma) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn(
+        "[db] Prisma Client was regenerated since this process started — rebuilding the cached client.",
+      );
+    }
     // Fire-and-forget: the old instance is unreachable from here on, and a
     // failure to close it must never take down the request that replaced it.
     void globalForPrisma.prisma.$disconnect().catch(() => undefined);
   }
-  globalForPrisma.prisma = prisma;
+
+  const client = createPrismaClient();
+  // Cached in every environment, not just development. On Vercel a warm
+  // function re-executes module scope rarely but not never, and reusing the
+  // pool across invocations of the same instance is the difference between a
+  // handful of connections and one per request.
+  globalForPrisma.prisma = client;
   globalForPrisma.prismaSchemaFingerprint = fingerprint;
+  return client;
 }
+
+/**
+ * The client, constructed on first use.
+ *
+ * Laziness is load-bearing, not a micro-optimization. `next build` imports
+ * every route module to collect page data, and a client built at import time
+ * would demand DATABASE_URL during the build — turning a missing environment
+ * variable into a failed deployment instead of a failed request. It also lets
+ * unit tests import a module that happens to `import { prisma }` without
+ * standing up a database.
+ */
+export const prisma: PrismaClient = new Proxy({} as PrismaClient, {
+  get(_target, property, receiver) {
+    const value = Reflect.get(resolveClient(), property, receiver);
+    return typeof value === "function" ? value.bind(resolveClient()) : value;
+  },
+  has: (_target, property) => property in resolveClient(),
+  ownKeys: () => Reflect.ownKeys(resolveClient()),
+  getOwnPropertyDescriptor: (_target, property) =>
+    Reflect.getOwnPropertyDescriptor(resolveClient(), property),
+});

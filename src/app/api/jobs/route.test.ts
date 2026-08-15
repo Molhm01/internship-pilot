@@ -109,7 +109,9 @@ describe("GET /api/jobs", () => {
     expect(response.status).toBe(200);
     expect(findMany).toHaveBeenCalledWith({
       where: {
-        location: { contains: "Newark" },
+        // `mode` is required on PostgreSQL to keep the case-insensitive
+        // matching SQLite gave this filter for free.
+        location: { contains: "Newark", mode: "insensitive" },
         status: "DISCOVERED",
         workplaceType: "Remote",
         matchScore: { gte: 70 },

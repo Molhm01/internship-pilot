@@ -3,6 +3,8 @@
 // GMAIL_CLIENT_SECRET in .env) — see SETUP.md. This app never requests any
 // scope beyond gmail.readonly, and never sends/deletes/archives/modifies
 // anything in the mailbox with these credentials.
+import { absoluteAppUrl } from "@/lib/runtime/appUrl";
+
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
@@ -18,7 +20,13 @@ export class GmailNotConfiguredError extends Error {
 function getConfig() {
   const clientId = process.env.GMAIL_CLIENT_ID;
   const clientSecret = process.env.GMAIL_CLIENT_SECRET;
-  const redirectUri = process.env.GMAIL_REDIRECT_URI || "http://localhost:3000/api/gmail/auth/callback";
+  // Google matches the redirect URI exactly against the one registered on the
+  // OAuth client, so a deployment must send its own HTTPS callback rather than
+  // a localhost address that only ever resolved on the developer's machine.
+  // GMAIL_REDIRECT_URI still wins when set, because some OAuth clients are
+  // registered against a custom domain that this app has no other way to know.
+  const redirectUri = process.env.GMAIL_REDIRECT_URI?.trim()
+    || absoluteAppUrl("/api/gmail/auth/callback");
   if (!clientId || !clientSecret) throw new GmailNotConfiguredError();
   return { clientId, clientSecret, redirectUri };
 }

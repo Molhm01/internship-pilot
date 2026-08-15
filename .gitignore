@@ -32,6 +32,9 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...except the template. It holds names and placeholders only, and it is how
+# anyone configures a deployment, so it has to be in the repository.
+!.env.example
 
 # vercel
 .vercel
@@ -53,6 +56,9 @@ next-env.d.ts
 
 # local supervisor lockfile (npm run local)
 /.internship-pilot/
+
+# local Prisma Postgres data directory created by `npx prisma dev`
+/.prisma/
 
 
 # Graphify knowledge graph — rebuildable, not source

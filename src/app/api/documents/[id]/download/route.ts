@@ -1,13 +1,6 @@
 import { NextResponse } from "next/server";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import { prisma } from "@/lib/db";
-
-function absolute(relativePath: string): string {
-  return path.isAbsolute(relativePath)
-    ? relativePath
-    : path.join(/* turbopackIgnore: true */ process.cwd(), relativePath);
-}
+import { readStoredObject } from "@/lib/storage";
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -15,15 +8,17 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   if (!doc) return NextResponse.json({ error: "Document not found" }, { status: 404 });
 
   try {
-    const bytes = await readFile(absolute(doc.storagePath));
-    return new NextResponse(new Uint8Array(bytes), {
+    const bytes = await readStoredObject(doc.storagePath);
+    return new NextResponse(bytes, {
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": `inline; filename="${doc.type}-v${doc.version}.pdf"`,
       },
     });
   } catch (error) {
+    // The storage key is logged, never the bytes; the key is a path or a blob
+    // URL and both are needed to tell a missing file from a misrouted one.
     console.error("Generated PDF could not be read.", { documentId: id, storagePath: doc.storagePath, error });
-    return NextResponse.json({ error: "The generated file could not be read from disk." }, { status: 404 });
+    return NextResponse.json({ error: "The generated file could not be read from storage." }, { status: 404 });
   }
 }

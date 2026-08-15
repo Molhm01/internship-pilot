@@ -1,10 +1,17 @@
 import { NextResponse } from "next/server";
 import { DocumentGenerationError, generateDocumentsForJob } from "@/lib/documents/generate";
+import { LocalOnlyFeatureError } from "@/lib/runtime/deployment";
 import type { AgentDeliveryOutcome } from "@/lib/documents/agentDelivery";
 
 type GenerationResponse = {
   ok: boolean;
   error?: string;
+  /**
+   * Set when generation cannot run here at all, as opposed to having failed.
+   * The page shows "Local AI offline" and an action, rather than a retry
+   * button for something no number of retries will change.
+   */
+  localOnly?: boolean;
   resumeDocumentId?: string;
   coverLetterDocumentId?: string;
   /**
@@ -54,6 +61,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     });
     return NextResponse.json(payload);
   } catch (err) {
+    // Typst compiles these PDFs with a native binary on the machine running
+    // Internship Pilot. A deployed server has no Typst and no writable disk, so
+    // this is reported as "runs on your computer" and not as a failure.
+    if (err instanceof LocalOnlyFeatureError) {
+      const payload: GenerationResponse = { ok: false, localOnly: true, error: safeError(err.message) };
+      progress(id, "response_returned", { ok: false, stage: "local_runtime_required" });
+      return NextResponse.json(payload, { status: 501 });
+    }
     if (err instanceof DocumentGenerationError) {
       const payload: GenerationResponse = { ok: false, error: safeError(err.message) };
       progress(id, "response_returned", { ok: false, stage: err.stage });

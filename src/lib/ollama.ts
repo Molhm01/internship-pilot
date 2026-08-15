@@ -1,4 +1,42 @@
+import { isCloudRuntime, LOCAL_ONLY_FEATURES } from "@/lib/runtime/deployment";
+
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? "http://localhost:11434";
+
+/**
+ * Ollama runs on the user's own computer. `localhost:11434` therefore means
+ * "the user's machine" only while the web server is that machine.
+ *
+ * Deployed, the same URL points at the serverless container the request
+ * happens to have landed in — where nothing is listening. Every AI feature
+ * would fail with a connection error that reads like Ollama crashed, and the
+ * honest answer (local AI cannot be reached from a website) would never be
+ * shown. So the boundary is checked here, once, at the only place that talks
+ * to Ollama, rather than at each of the seven callers.
+ *
+ * A self-hosted deployment that genuinely can reach an Ollama server sets
+ * OLLAMA_BASE_URL to a non-loopback address, and is allowed through.
+ */
+export const LOCAL_AI_OFFLINE_CODE = "LOCAL_AI_OFFLINE";
+
+function isLoopbackUrl(value: string): boolean {
+  try {
+    const { hostname } = new URL(value);
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]" || hostname === "::1";
+  } catch {
+    return false;
+  }
+}
+
+/** True when this process cannot reach the user's Ollama, and knows it. */
+export function isLocalAiUnreachable(): boolean {
+  return isCloudRuntime() && isLoopbackUrl(OLLAMA_BASE_URL);
+}
+
+function assertLocalAiReachable(): void {
+  if (isLocalAiUnreachable()) {
+    throw new OllamaError(LOCAL_ONLY_FEATURES.ollama, undefined, LOCAL_AI_OFFLINE_CODE);
+  }
+}
 export const OLLAMA_CHAT_ENDPOINT = `${OLLAMA_BASE_URL}/api/chat`;
 export const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "qwen3.5:9b";
 export const OLLAMA_VISION_MODEL = process.env.OLLAMA_VISION_MODEL ?? OLLAMA_MODEL;
@@ -79,6 +117,7 @@ export function stripImageDataUrlPrefix(value: string): string {
 }
 
 export async function getOllamaVersion(): Promise<string | null> {
+  if (isLocalAiUnreachable()) return null;
   if (cachedVersion && cachedVersion.expiresAt > Date.now()) return cachedVersion.value;
   try {
     const response = await fetch(`${OLLAMA_BASE_URL}/api/version`, { signal: AbortSignal.timeout(5_000) });
@@ -104,6 +143,7 @@ function structuredFormat(format: NativeChatOptions["format"]): OllamaRequestMet
  * objects and never records the base64 payload in logs or errors.
  */
 async function performOllamaNativeChat(options: NativeChatOptions): Promise<OllamaChatResult> {
+  assertLocalAiReachable();
   // Version/health checks are intentionally absent from this hot path. The
   // UI health cache owns those probes; inference uses the shared client and
   // whatever version metadata is already cached.
@@ -223,6 +263,9 @@ export function ollamaNativeChat(options: NativeChatOptions): Promise<OllamaChat
 }
 
 export async function checkOllamaVisionHealth(): Promise<OllamaHealth> {
+  if (isLocalAiUnreachable()) {
+    return { reachable: false, modelInstalled: false, models: [], error: LOCAL_ONLY_FEATURES.ollama };
+  }
   try {
     const res = await fetch(`${OLLAMA_BASE_URL}/api/tags`, { signal: AbortSignal.timeout(5_000) });
     if (!res.ok) {
@@ -277,6 +320,9 @@ export async function ollamaVisionJSON<T>(prompt: string, imageBase64: string, t
 }
 
 export async function checkOllamaHealth(): Promise<OllamaHealth> {
+  if (isLocalAiUnreachable()) {
+    return { reachable: false, modelInstalled: false, models: [], error: LOCAL_ONLY_FEATURES.ollama };
+  }
   try {
     const res = await fetch(`${OLLAMA_BASE_URL}/api/tags`, { signal: AbortSignal.timeout(5_000) });
     if (!res.ok) {

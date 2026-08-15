@@ -10,12 +10,15 @@ export async function GET(req: Request) {
   const fit = params.get("fit")?.trim() ?? "";
   const page = Math.max(1, Number(params.get("page")) || 1);
   const pageSize = Math.min(100, Math.max(10, Number(params.get("pageSize")) || 25));
+  // `mode: "insensitive"` is not cosmetic. SQLite's LIKE ignores ASCII case,
+  // PostgreSQL's does not, so without it a search for "boeing" would stop
+  // finding "Boeing" the moment the database changed underneath this query.
   const where = {
     source: "csv",
     allowlisted: true,
-    ...(search ? { name: { contains: search } } : {}),
+    ...(search ? { name: { contains: search, mode: "insensitive" as const } } : {}),
     ...(sector ? { csvSector: sector } : {}),
-    ...(fit ? { csvEeCpeFit: { contains: fit } } : {}),
+    ...(fit ? { csvEeCpeFit: { contains: fit, mode: "insensitive" as const } } : {}),
   };
   const [companies, total, sectors, importStatus, fileExists, liveJobs] = await Promise.all([
     prisma.company.findMany({ where, orderBy: { name: "asc" }, skip: (page - 1) * pageSize, take: pageSize }),
