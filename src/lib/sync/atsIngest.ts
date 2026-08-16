@@ -1,20 +1,11 @@
-// Direct-from-employer ATS ingestion (Greenhouse / Lever / Ashby).
+// Direct-from-employer ATS ingestion.
 //
-// This replaces Intern List / Jobright as the PRIMARY discovery path. Those
-// records are preserved in the database and keep working; they are simply no
-// longer where new jobs come from. See ATS_MIGRATION_PLAN.md.
-//
-// Two properties this module exists to guarantee:
-//   1. One bad record never ends a run. Every posting is normalized,
-//      classified, and persisted inside its own try/catch, and there is no
-//      run-wide transaction that could roll back thousands of good rows.
-//   2. Nothing is dropped silently. Every discovered row lands in exactly one
-//      metric bucket, and every rejection carries a sanitized reason code.
+// This is the PRIMARY growth path for new jobs. It now uses the same universal
+// ATS dispatcher as company discovery, so Greenhouse, Lever, Ashby,
+// SmartRecruiters, and Workday all flow through one normalization path.
 
 import { prisma } from "@/lib/db";
-import { listGreenhouseJobs } from "@/lib/ats/greenhouse";
-import { listLeverJobs } from "@/lib/ats/lever";
-import { listAshbyJobs } from "@/lib/ats/ashby";
+import { listJobsForCompany } from "@/lib/ats";
 import type { AtsJob } from "@/lib/ats/types";
 import type { ResolvableAts } from "@/lib/ats/resolve";
 import { classifyInternship, type InternshipClassification } from "@/lib/sync/internshipClassifier";
@@ -24,6 +15,7 @@ export type AtsEmployer = {
   name: string;
   atsType: ResolvableAts;
   atsIdentifier: string;
+  careersUrl?: string | null;
 };
 
 export type AtsIngestMetrics = {
@@ -81,26 +73,12 @@ function recordFailure(metrics: AtsIngestMetrics, reason: string) {
   metrics.failuresByReason[reason] = (metrics.failuresByReason[reason] ?? 0) + 1;
 }
 
-/**
- * Reduce an unknown thrown value to a short, non-sensitive label. Never
- * includes job descriptions, tokens, cookies, or raw response bodies.
- */
-/**
- * Upgrade an `http://` board URL to `https://`, leaving host and path alone.
- *
- * A few boards still advertise `http` in their absolute_url (CannonDesign
- * does). The destination policy accepts https only — correctly, since the
- * application worker navigates these URLs — so without this the posting would
- * be imported with no usable destination. Only the scheme is touched; unlike
- * the dedup canonicalizer this keeps `www.` and the exact path, because this
- * value is what a human actually opens.
- */
 export function secureAtsUrl(raw: string | null | undefined): string | null {
   if (!raw?.trim()) return null;
   try {
     const url = new URL(raw.trim());
     if (url.protocol === "http:") url.protocol = "https:";
-    if (url.protocol !== "https:") return null; // ftp:, mailto:, ... are not destinations
+    if (url.protocol !== "https:") return null;
     return url.toString();
   } catch {
     return null;
@@ -123,42 +101,33 @@ export function sanitizeErrorCode(error: unknown): string {
 }
 
 async function listFor(employer: AtsEmployer): Promise<AtsJob[]> {
-  switch (employer.atsType) {
-    case "greenhouse":
-      return listGreenhouseJobs(employer.atsIdentifier, employer.name);
-    case "lever":
-      return listLeverJobs(employer.atsIdentifier, employer.name);
-    case "ashby":
-      return listAshbyJobs(employer.atsIdentifier, employer.name);
+  const result = await listJobsForCompany({
+    name: employer.name,
+    atsType: employer.atsType,
+    atsIdentifier: employer.atsIdentifier,
+    careersUrl: employer.careersUrl ?? null,
+  });
+  if (!result.supported) {
+    throw Object.assign(new Error(`Unsupported ATS adapter: ${employer.atsType}`), {
+      code: "UNSUPPORTED_ATS",
+    });
   }
+  return result.jobs;
 }
 
 export type RunOptions = {
-  /** Politeness delay between employer board requests. */
   throttleMs?: number;
-  /** Cap the number of employers processed (used by --limit). */
   limit?: number;
-  /** Persist nothing; only classify and count. */
   dryRun?: boolean;
   sleep?: (ms: number) => Promise<void>;
-  /** Injected for tests so no network or database is required. */
   listJobs?: (employer: AtsEmployer) => Promise<AtsJob[]>;
   persist?: typeof upsertClassifiedAtsJob;
   onProgress?: (message: string) => void;
-  /**
-   * Identity of this run, stamped onto every persisted row together with its
-   * position in the run. Only the newest run's positions are ever used as a
-   * sort tiebreaker, so this must be unique per run.
-   */
   syncRunId?: string;
 };
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/**
- * Ingest every qualifying internship from the given employers' official ATS
- * boards. Pure orchestration — network and persistence are injectable.
- */
 export async function runAtsIngestion(
   employers: AtsEmployer[],
   options: RunOptions = {},
@@ -174,8 +143,6 @@ export async function runAtsIngestion(
   const capturedAt = new Date(startedAt);
   let rowIndex = 0;
 
-  // Cross-employer duplicate guard: the same canonical application URL
-  // reached through two different board slugs is one posting.
   const seenUrls = new Set<string>();
 
   for (const employer of targets) {
@@ -199,10 +166,6 @@ export async function runAtsIngestion(
       bump(metrics, employer.atsType, "discovered");
 
       try {
-        // --- Requirement: every imported job must carry a direct official
-        // employer/ATS URL. No URL means we cannot send the user anywhere,
-        // so the record is rejected with an explicit reason rather than
-        // stored as an unusable stub.
         const secureUrl = secureAtsUrl(job.applyUrl);
         const canonical = secureUrl ? canonicalizeJobUrl(secureUrl) : null;
         if (!secureUrl || !canonical) {
@@ -226,9 +189,6 @@ export async function runAtsIngestion(
 
         countClassification(metrics, classification);
 
-        // Only qualifying internships are persisted as active jobs.
-        // UNCERTAIN rows are counted and reported so they stay reviewable
-        // rather than vanishing, but they are not silently published.
         if (classification !== "QUALIFYING_INTERNSHIP") {
           if (classification === "NOT_AN_INTERNSHIP") recordFailure(metrics, "EXCLUDED_NOT_AN_INTERNSHIP");
           else if (classification === "UNCERTAIN_CLASSIFICATION") recordFailure(metrics, "REVIEW_UNCERTAIN");
@@ -243,7 +203,6 @@ export async function runAtsIngestion(
         if (options.dryRun) continue;
 
         const result = await persist({
-          // Persist the https-normalized destination, not the raw board value.
           job: { ...job, applyUrl: secureUrl },
           source: employer.atsType,
           atsType: employer.atsType,
@@ -265,7 +224,6 @@ export async function runAtsIngestion(
           metrics.unchanged += 1;
         }
       } catch (error) {
-        // One malformed or unpersistable posting must not end the run.
         metrics.persistenceFailures += 1;
         recordFailure(metrics, sanitizeErrorCode(error));
       }
@@ -301,7 +259,7 @@ function countClassification(metrics: AtsIngestMetrics, classification: Internsh
   }
 }
 
-/** Load the allowlisted employers that already have a resolved GLA board. */
+/** Load allowlisted employers that already have a resolved supported board. */
 export async function loadResolvedEmployers(vendors: ResolvableAts[]): Promise<AtsEmployer[]> {
   const rows = await prisma.company.findMany({
     where: {
@@ -310,17 +268,17 @@ export async function loadResolvedEmployers(vendors: ResolvableAts[]): Promise<A
       atsType: { in: vendors },
       atsIdentifier: { not: null },
     },
-    select: { name: true, atsType: true, atsIdentifier: true },
+    select: { name: true, atsType: true, atsIdentifier: true, careersUrl: true },
     orderBy: { name: "asc" },
   });
   return rows.map((r) => ({
     name: r.name,
     atsType: r.atsType as ResolvableAts,
     atsIdentifier: r.atsIdentifier as string,
+    careersUrl: r.careersUrl,
   }));
 }
 
-/** Persist a completed run's metrics as an auditable AtsSyncRun row. */
 export async function recordSyncRun(
   metrics: AtsIngestMetrics,
   vendors: ResolvableAts[],
