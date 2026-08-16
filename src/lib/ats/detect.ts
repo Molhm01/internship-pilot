@@ -9,7 +9,10 @@ const PATTERNS: Pattern[] = [
   { atsType: "smartrecruiters", regex: /jobs\.smartrecruiters\.com\/([a-zA-Z0-9-]+)/i, extractId: (m) => m[1] },
   {
     atsType: "workday",
-    regex: /([a-z0-9-]+)\.wd\d\.myworkdayjobs\.com\/([a-zA-Z0-9-]+)/i,
+    // Keep the Workday shard in the identifier. Older rows stored
+    // `tenant/site`; newer detections store `tenant.wdN/site`. The adapter
+    // supports both, which avoids silently routing a wd5/wd12 tenant to wd1.
+    regex: /([a-z0-9-]+\.wd\d+)\.myworkdayjobs\.com\/([a-zA-Z0-9-]+)/i,
     extractId: (m) => `${m[1]}/${m[2]}`,
   },
   { atsType: "icims", regex: /([a-z0-9-]+)\.icims\.com/i, extractId: (m) => m[1] },
