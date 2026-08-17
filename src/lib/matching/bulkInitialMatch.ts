@@ -108,6 +108,7 @@ function logQueueFailure(jobId: string, error: unknown) {
 
 export async function scheduleAllUnscoredActiveJobs(
   userId: string,
+  options: { retryFailed?: boolean } = {},
 ): Promise<BulkInitialMatchScheduleResult> {
   await assertInitialAiMatchQueueReady();
   let activeCount: number;
@@ -132,7 +133,7 @@ export async function scheduleAllUnscoredActiveJobs(
   for (const job of jobs) {
     try {
       const result = await scheduleInitialAiMatch(job.id, userId, {
-        retryFailed: true,
+        retryFailed: options.retryFailed ?? true,
         startWorker: false,
       });
       if (result.scheduled) queued += 1;
