@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/db";
+import type { AtsJob } from "@/lib/ats/types";
+import { canonicalizeJobUrl } from "@/lib/sync/ingest";
 import {
   canonicalizeSource,
   computeActiveFeed,
@@ -18,6 +20,70 @@ export async function recomputeJobActiveFeed(jobId: string): Promise<boolean> {
     await prisma.job.update({ where: { id: jobId }, data: { activeFeed: next } });
   }
   return next;
+}
+
+/**
+ * If a direct ATS sighting matched a legacy aggregator row by URL/requisition,
+ * promote that row so the canonical provenance and click target are the direct
+ * employer/public-authority source rather than Jobright/Simplify/Intern List.
+ */
+export async function promoteCanonicalDirectJob(
+  job: AtsJob,
+  atsType: string,
+  atsIdentifier: string,
+): Promise<void> {
+  const canonical = canonicalizeJobUrl(job.applyUrl);
+  if (!canonical) return;
+
+  const candidates = await prisma.job.findMany({
+    where: { company: { equals: job.company } },
+    select: {
+      id: true,
+      sourceUrl: true,
+      officialApplicationUrl: true,
+      officialApplyUrl: true,
+      officialJobUrl: true,
+      url: true,
+    },
+  });
+
+  const match = candidates.find((candidate) =>
+    [
+      candidate.officialApplicationUrl,
+      candidate.officialApplyUrl,
+      candidate.officialJobUrl,
+      candidate.sourceUrl,
+      candidate.url,
+    ]
+      .map(canonicalizeJobUrl)
+      .some((value) => value !== null && value === canonical),
+  );
+  if (!match) return;
+
+  const now = new Date();
+  await prisma.job.update({
+    where: { id: match.id },
+    data: {
+      source: atsType,
+      sourceJobId: job.sourceJobId,
+      requisitionId: job.requisitionId ?? undefined,
+      sourceUrl: job.applyUrl,
+      sourceListingUrl: null,
+      officialApplicationUrl: job.applyUrl,
+      originalJobPostUrl: job.applyUrl,
+      verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
+      reasonCode: "OFFICIAL_ATS_BOARD",
+      verificationReason: `Read directly from the official ${atsType} job source.`,
+      verificationMethod: `${atsType}-board-api`,
+      lastVerifiedAt: now,
+      atsType,
+      atsTenant: atsIdentifier,
+      classification: "QUALIFYING_INTERNSHIP",
+      classificationReason:
+        "Read from an official source and matched the engineering internship/co-op role filter.",
+      activeFeed: true,
+    },
+  });
 }
 
 /**
