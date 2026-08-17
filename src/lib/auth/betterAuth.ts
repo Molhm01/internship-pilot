@@ -65,15 +65,23 @@ function normalizeOrigin(value: string | undefined): string | null {
 /**
  * Where this deployment lives.
  *
- * Vercel sets `VERCEL_URL` per deployment, which is right for previews and
- * wrong for production (it is the deployment-specific hostname, not the stable
- * one), so an explicit `BETTER_AUTH_URL` always wins.
+ * On a production Vercel deployment, the stable project production URL is the
+ * source of truth. This prevents a stale `BETTER_AUTH_URL` from sending login or
+ * OAuth callbacks to an old immutable deployment hostname. Outside production,
+ * an explicit `BETTER_AUTH_URL` still wins so previews and local/self-hosted
+ * installs can opt into their own origin.
  */
 function baseUrl(): string {
+  if (process.env.VERCEL_ENV === "production") {
+    const production = optional("VERCEL_PROJECT_PRODUCTION_URL");
+    if (production) return `https://${production.replace(/^https?:\/\//i, "").replace(/\/+$/, "")}`;
+  }
+
   const explicit = optional("BETTER_AUTH_URL");
   if (explicit) return explicit.replace(/\/+$/, "");
+
   const vercel = optional("VERCEL_PROJECT_PRODUCTION_URL") ?? optional("VERCEL_URL");
-  if (vercel) return `https://${vercel}`;
+  if (vercel) return `https://${vercel.replace(/^https?:\/\//i, "")}`;
   return "http://localhost:3000";
 }
 
