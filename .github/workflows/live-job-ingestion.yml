@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Trigger Internship Pilot employer sweep
+      - name: Trigger Internship Pilot live maintenance
         env:
           CRON_SECRET: ${{ secrets.INTERNSHIP_PILOT_CRON_SECRET }}
         run: |
@@ -28,10 +28,20 @@ jobs:
             exit 1
           fi
 
+          echo "Triggering employer ingestion..."
           curl --fail-with-body --silent --show-error \
             --max-time 20 \
             --request POST \
             --header "Authorization: Bearer $CRON_SECRET" \
             --header "Content-Type: application/json" \
             https://internship-pilot.vercel.app/api/cron/job-ingestion/trigger
+          echo
+
+          echo "Triggering automatic AI scoring..."
+          curl --fail-with-body --silent --show-error \
+            --max-time 20 \
+            --request POST \
+            --header "Authorization: Bearer $CRON_SECRET" \
+            --header "Content-Type: application/json" \
+            https://internship-pilot.vercel.app/api/cron/ai-scoring/trigger
           echo
