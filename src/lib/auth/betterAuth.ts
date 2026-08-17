@@ -52,6 +52,16 @@ function optional(name: string): string | undefined {
   return value ? value : undefined;
 }
 
+function normalizeOrigin(value: string | undefined): string | null {
+  if (!value) return null;
+  const candidate = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+  try {
+    return new URL(candidate).origin;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Where this deployment lives.
  *
@@ -65,6 +75,32 @@ function baseUrl(): string {
   const vercel = optional("VERCEL_PROJECT_PRODUCTION_URL") ?? optional("VERCEL_URL");
   if (vercel) return `https://${vercel}`;
   return "http://localhost:3000";
+}
+
+/**
+ * Better Auth validates every browser Origin header. Vercel can legitimately
+ * serve the same app from the stable project URL, the production alias, and a
+ * deployment-specific URL. Trust those exact hosts only; do not disable origin
+ * checks and do not trust every *.vercel.app deployment globally.
+ */
+function trustedOrigins(): string[] {
+  const candidates = [
+    baseUrl(),
+    optional("BETTER_AUTH_URL"),
+    optional("VERCEL_PROJECT_PRODUCTION_URL"),
+    optional("VERCEL_BRANCH_URL"),
+    optional("VERCEL_URL"),
+  ];
+
+  const origins = candidates
+    .map(normalizeOrigin)
+    .filter((origin): origin is string => Boolean(origin));
+
+  if (process.env.NODE_ENV !== "production") {
+    origins.push("http://localhost:3000");
+  }
+
+  return [...new Set(origins)];
 }
 
 const googleClientId = optional("GOOGLE_CLIENT_ID");
@@ -84,6 +120,7 @@ const buildAuth = () =>
     // would be a session-forgery kit.
     secret: required("BETTER_AUTH_SECRET"),
     baseURL: baseUrl(),
+    trustedOrigins: trustedOrigins(),
     database: prismaAdapter(prisma, { provider: "postgresql" }),
 
     emailAndPassword: {
