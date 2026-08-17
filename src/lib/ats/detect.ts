@@ -17,7 +17,15 @@ const PATTERNS: Pattern[] = [
   },
   { atsType: "icims", regex: /([a-z0-9-]+)\.icims\.com/i, extractId: (m) => m[1] },
   { atsType: "taleo", regex: /([a-z0-9-]+)\.taleo\.net/i, extractId: (m) => m[1] },
-  { atsType: "successfactors", regex: /([a-z0-9-]+)\.(?:career\.)?successfactors\.com/i, extractId: (m) => m[1] },
+  {
+    atsType: "successfactors",
+    // SuccessFactors public career hosts are deployed across .com and .eu
+    // shards (for example career5.successfactors.eu). The structured adapter
+    // uses the actual careersUrl, so this identifier is evidence/tenant context
+    // rather than a URL-construction token.
+    regex: /([a-z0-9-]+)\.(?:career\.)?successfactors\.(?:com|eu)/i,
+    extractId: (m) => m[1],
+  },
 ];
 
 export function detectAtsFromText(text: string): AtsDetectionResult {
