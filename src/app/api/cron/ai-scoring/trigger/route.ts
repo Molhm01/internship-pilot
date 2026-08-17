@@ -20,14 +20,17 @@ export async function POST(request: Request) {
   }
 
   if (!hasGeminiApiKey()) {
+    // This is an intentionally inactive feature, not a scheduler failure. Keep
+    // the shared GitHub maintenance workflow green until the deployment owner
+    // has explicitly configured a cloud model key.
     return NextResponse.json(
       {
-        ok: false,
+        ok: true,
+        configured: false,
         accepted: false,
-        error: "GEMINI_API_KEY_MISSING",
-        message: "Add GEMINI_API_KEY to the Vercel Production environment to enable automatic scoring.",
+        skipped: "gemini_not_configured",
       },
-      { status: 503, headers: { "cache-control": "no-store" } },
+      { status: 202, headers: { "cache-control": "no-store" } },
     );
   }
 
@@ -44,6 +47,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         ok: true,
+        configured: true,
         accepted: false,
         skipped: "already_running",
         runningSince: recentRunning.lockedAt?.toISOString() ?? null,
@@ -71,7 +75,7 @@ export async function POST(request: Request) {
   });
 
   return NextResponse.json(
-    { ok: true, accepted: true },
+    { ok: true, configured: true, accepted: true },
     { status: 202, headers: { "cache-control": "no-store" } },
   );
 }
