@@ -352,8 +352,11 @@ export async function processNextInitialAiMatch(now = new Date()): Promise<boole
     return true;
   }
 
-  const profileRefreshHash = profileHashFromRefreshMatchType(item.matchType);
-  if (item.matchType !== INITIAL_MATCH_TYPE) {
+  // Queue rows created before matchType became explicit — and old unit-test
+  // fixtures that model those rows — are INITIAL work by definition.
+  const matchType = item.matchType ?? INITIAL_MATCH_TYPE;
+  const profileRefreshHash = profileHashFromRefreshMatchType(matchType);
+  if (matchType !== INITIAL_MATCH_TYPE) {
     const revision = await approvedProfileRevision(item.userId);
     if (!profileRefreshHash || !revision || revision.hash !== profileRefreshHash) {
       await retireSupersededProfileRefresh(item.id, now);
@@ -387,7 +390,7 @@ export async function processNextInitialAiMatch(now = new Date()): Promise<boole
       scoringError: null,
     },
   });
-  progress("started", { jobId: item.jobId, userId: item.userId, matchType: item.matchType, attempt: attemptNumber });
+  progress("started", { jobId: item.jobId, userId: item.userId, matchType, attempt: attemptNumber });
 
   try {
     const scoreStartedAt = performance.now();
@@ -406,7 +409,7 @@ export async function processNextInitialAiMatch(now = new Date()): Promise<boole
 
     // INITIAL means "score once". PROFILE_REFRESH intentionally ignores the
     // old MatchResult and creates a new version grounded in the new fact set.
-    if (item.matchType === INITIAL_MATCH_TYPE && existingMatch) {
+    if (matchType === INITIAL_MATCH_TYPE && existingMatch) {
       await prisma.$transaction([
         prisma.initialAiMatchJob.update({
           where: { id: item.id },
@@ -427,7 +430,7 @@ export async function processNextInitialAiMatch(now = new Date()): Promise<boole
       return true;
     }
 
-    const matchOrigin = item.matchType === INITIAL_MATCH_TYPE
+    const matchOrigin = matchType === INITIAL_MATCH_TYPE
       ? INITIAL_MATCH_ORIGIN
       : PROFILE_REFRESH_ORIGIN;
     const match = await scorer(item.jobId, { userId: item.userId, origin: matchOrigin });
@@ -459,7 +462,7 @@ export async function processNextInitialAiMatch(now = new Date()): Promise<boole
       scoringMs: Math.round(performance.now() - scoreStartedAt),
       attempt: attemptNumber,
     });
-    progress("succeeded", { jobId: item.jobId, userId: item.userId, matchType: item.matchType, attempt: attemptNumber });
+    progress("succeeded", { jobId: item.jobId, userId: item.userId, matchType, attempt: attemptNumber });
   } catch (error) {
     const errorCode = safeErrorCode(error);
     const retryable = isTransient(error, errorCode) && attemptNumber < INITIAL_MATCH_MAX_ATTEMPTS;
@@ -490,7 +493,7 @@ export async function processNextInitialAiMatch(now = new Date()): Promise<boole
     progress(retryable ? "retry_scheduled" : "permanent_failure", {
       jobId: item.jobId,
       userId: item.userId,
-      matchType: item.matchType,
+      matchType,
       attempt: attemptNumber,
       errorCode,
       ...(retryable ? { retryAt: nextAttemptAt.toISOString() } : {}),
