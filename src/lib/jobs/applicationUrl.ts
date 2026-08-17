@@ -38,10 +38,17 @@ export function selectStoredApplicationLinks(job: StoredJobUrls): StoredApplicat
 
 export function openStoredApplicationUrl(
   job: StoredJobUrls,
-  openWindow: (url: string, target: string, features: string) => unknown = window.open,
+  openWindow?: (url: string, target: string, features: string) => unknown,
 ): boolean {
   const { applicationUrl } = selectStoredApplicationLinks(job);
   if (!applicationUrl) return false;
-  openWindow(applicationUrl, "_blank", "noopener,noreferrer");
+
+  // Do not detach `window.open` from `window`. Some browsers reject the
+  // unbound native method with an "Illegal invocation", which made both the
+  // Discover-card Apply button and the job-detail "Open without agent" button
+  // appear to do nothing. Keep an injectable opener for tests, but call the
+  // real browser API as a method of window in production.
+  const opener = openWindow ?? ((url: string, target: string, features: string) => window.open(url, target, features));
+  opener(applicationUrl, "_blank", "noopener,noreferrer");
   return true;
 }
