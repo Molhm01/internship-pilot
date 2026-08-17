@@ -39,8 +39,47 @@ function isPublic(pathname: string): boolean {
   return false;
 }
 
+function normalizeOrigin(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    return new URL(candidate).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A Better Auth session cookie belongs to one hostname. Vercel also gives every
+ * production deployment its own immutable hostname, so opening those generated
+ * URLs creates a second browser cookie jar and makes a valid login look "lost".
+ *
+ * Browser pages in production therefore converge on the one stable origin used
+ * by Better Auth (`BETTER_AUTH_URL`, or Vercel's production-project URL as a
+ * fallback). API routes are deliberately excluded: cron/webhook callers should
+ * never be redirected and OAuth already constructs callbacks from baseURL.
+ */
+function canonicalProductionOrigin(): string | null {
+  if (process.env.VERCEL_ENV !== "production") return null;
+  return (
+    normalizeOrigin(process.env.BETTER_AUTH_URL)
+    ?? normalizeOrigin(process.env.VERCEL_PROJECT_PRODUCTION_URL)
+  );
+}
+
 export function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
+
+  const canonicalOrigin = canonicalProductionOrigin();
+  if (
+    canonicalOrigin
+    && !pathname.startsWith("/api/")
+    && request.nextUrl.origin !== canonicalOrigin
+  ) {
+    return NextResponse.redirect(new URL(`${pathname}${search}`, canonicalOrigin), 308);
+  }
+
   if (isPublic(pathname)) return NextResponse.next();
 
   const cookie = getSessionCookie(request);

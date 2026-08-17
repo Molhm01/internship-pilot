@@ -11,7 +11,8 @@ import { signIn, signUp } from "@/lib/auth/client";
  *
  * The password is held in component state for exactly as long as the form is
  * open and is sent over one request. It is never put in the URL, never logged,
- * and never stored in localStorage.
+ * and never stored in localStorage. The browser's password manager owns any
+ * optional credential saving/autofill.
  *
  * Google sits above the divider rather than below it because for a new user it
  * is the shorter path, and because burying it under a password form is how you
@@ -78,7 +79,14 @@ export default function AuthForm({
             // the address is better than storing an empty heading.
             name: name.trim() || email.split("@")[0]!,
           })
-        : await signIn.email({ email, password });
+        : await signIn.email({
+            email,
+            password,
+            // Keep the session cookie after the browser closes. Better Auth
+            // defaults this to true, but making it explicit protects this UX
+            // from a future default/config change.
+            rememberMe: true,
+          });
 
       if (result.error) {
         setError(result.error.message ?? "That did not work. Check your details and try again.");
@@ -136,11 +144,17 @@ export default function AuthForm({
         </>
       )}
 
-      <form onSubmit={submit} className={`space-y-4 ${googleEnabled ? "" : "mt-8"}`}>
+      <form
+        onSubmit={submit}
+        autoComplete="on"
+        className={`space-y-4 ${googleEnabled ? "" : "mt-8"}`}
+      >
         {signingUp && (
-          <label className="block">
+          <label className="block" htmlFor="auth-name">
             <span className="text-sm font-medium text-secondary">Your name</span>
             <input
+              id="auth-name"
+              name="name"
               value={name}
               onChange={(event) => setName(event.target.value)}
               className="input mt-1 w-full"
@@ -149,9 +163,11 @@ export default function AuthForm({
           </label>
         )}
 
-        <label className="block">
+        <label className="block" htmlFor="auth-email">
           <span className="text-sm font-medium text-secondary">Email address</span>
           <input
+            id="auth-email"
+            name="email"
             type="email"
             required
             value={email}
@@ -161,9 +177,11 @@ export default function AuthForm({
           />
         </label>
 
-        <label className="block">
+        <label className="block" htmlFor="auth-password">
           <span className="text-sm font-medium text-secondary">Password</span>
           <input
+            id="auth-password"
+            name="password"
             type="password"
             required
             value={password}
@@ -174,9 +192,11 @@ export default function AuthForm({
         </label>
 
         {signingUp && (
-          <label className="block">
+          <label className="block" htmlFor="auth-confirm-password">
             <span className="text-sm font-medium text-secondary">Confirm password</span>
             <input
+              id="auth-confirm-password"
+              name="confirm-password"
               type="password"
               required
               value={confirmPassword}
@@ -204,6 +224,12 @@ export default function AuthForm({
           {busy ? "Working…" : signingUp ? "Create account" : "Sign in"}
         </button>
       </form>
+
+      {!signingUp && (
+        <p className="mt-3 text-xs text-tertiary">
+          You&rsquo;ll stay signed in on this device for up to 30 days unless you sign out.
+        </p>
+      )}
 
       <p className="mt-6 text-sm text-secondary">
         {signingUp ? (
