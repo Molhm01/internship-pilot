@@ -2,9 +2,12 @@ import { prisma } from "@/lib/db";
 import { listJobsForCompany } from "@/lib/ats";
 import { detectAtsForCareersPage } from "@/lib/ats/detect";
 import { getUsaJobsConfig, searchUsaJobs } from "@/lib/ats/usajobs";
-import { ingestAtsJobs } from "@/lib/sync/ingest";
+import { ingestAtsJobs, upsertClassifiedAtsJob } from "@/lib/sync/ingest";
 import { isTargetEngineeringRole } from "@/lib/sync/classify";
 import { logAudit } from "@/lib/applications/audit";
+import { canonicalizeSource, isDirectOfficialSource } from "@/lib/jobs/sourcePolicy";
+import { promoteCanonicalDirectJob } from "@/lib/jobs/activeFeed";
+import type { AtsJob } from "@/lib/ats/types";
 
 export type CompanyCheckResult = {
   companyId: string;
@@ -17,22 +20,57 @@ export type CompanyCheckResult = {
 
 const MAX_BACKOFF_MINUTES = 24 * 60;
 
-// Priority: every 5 min. Standard: staggered 15-30 min (randomized each time,
-// so a batch of standard companies doesn't all line up on the same tick).
-// Low (includes nearby-discovered firms): once a day.
 function baseIntervalMinutes(priority: string): number {
   if (priority === "priority") return 5;
   if (priority === "low") return 24 * 60;
-  return 15 + Math.floor(Math.random() * 15); // standard: 15-30
+  return 15 + Math.floor(Math.random() * 15);
 }
 
-// Failed-source retry uses exponential backoff on top of the base interval,
-// capped at 24h, and resets the moment a check succeeds (or is merely
-// "unsupported", which isn't a transient failure).
 export function nextCheckTimeFor(priority: string, consecutiveFailures: number): Date {
   const base = baseIntervalMinutes(priority);
   const minutes = consecutiveFailures > 0 ? Math.min(MAX_BACKOFF_MINUTES, base * 2 ** consecutiveFailures) : base;
   return new Date(Date.now() + minutes * 60 * 1000);
+}
+
+/**
+ * Direct employer/public-authority sources are written through the verified
+ * direct-source path. Generic/custom scans keep the lower-trust path.
+ */
+async function ingestDiscoveredJobs(
+  jobs: AtsJob[],
+  atsType: string | null | undefined,
+  atsIdentifier: string | null | undefined,
+): Promise<{ newCount: number; updatedCount: number }> {
+  const canonical = canonicalizeSource(atsType);
+  if (!canonical || !isDirectOfficialSource(canonical)) {
+    return ingestAtsJobs(jobs, atsType ? `ats:${atsType}` : "unknown");
+  }
+
+  let newCount = 0;
+  let updatedCount = 0;
+  const tenant = atsIdentifier ?? canonical;
+
+  for (const [rowIndex, job] of jobs.entries()) {
+    const result = await upsertClassifiedAtsJob({
+      job,
+      source: canonical,
+      atsType: canonical,
+      atsTenant: tenant,
+      classification: "QUALIFYING_INTERNSHIP",
+      classificationReason:
+        "Read from an official source and matched the engineering internship/co-op role filter.",
+      rowIndex,
+    });
+
+    // If this posting already existed only as an aggregator row, make the
+    // direct employer/public-authority sighting the canonical provenance.
+    await promoteCanonicalDirectJob(job, canonical, tenant);
+
+    if (result === "new") newCount += 1;
+    else if (result === "updated") updatedCount += 1;
+  }
+
+  return { newCount, updatedCount };
 }
 
 export async function checkCompany(companyId: string): Promise<CompanyCheckResult> {
@@ -51,10 +89,6 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
     }
   }
 
-  // Never trust an ATS-hosted job just because a Company row happens to
-  // have an atsType/atsIdentifier set (e.g. hand-entered in seed data) —
-  // require (and persist) actual evidence that THIS employer's OWN careers
-  // page links to THIS specific tenant before any job from it is ingested.
   if (atsType && atsType !== "unknown" && atsType !== "custom" && atsIdentifier && company.careersUrl) {
     const existingApproval = await prisma.approvedAtsTenant.findUnique({
       where: { companyId_atsType_atsIdentifier: { companyId, atsType, atsIdentifier } },
@@ -97,12 +131,10 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
       contentHash: company.contentHash,
     });
 
-    // Conditional-request hit: the careers page hasn't changed since we last
-    // checked it, so there's nothing new to ingest this cycle.
     const relevant = notModified ? [] : jobs.filter((j) => isTargetEngineeringRole(j.title, j.description));
     const summary = notModified
       ? { newCount: 0, updatedCount: 0 }
-      : await ingestAtsJobs(relevant, atsType ? `ats:${atsType}` : "unknown");
+      : await ingestDiscoveredJobs(relevant, atsType, atsIdentifier);
 
     await prisma.company.update({
       where: { id: companyId },
@@ -116,7 +148,7 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
         lastCheckError: null,
         consecutiveFailures: 0,
         ...(etag !== undefined ? { lastETag: etag } : {}),
-        ...(lastModified !== undefined ? { lastModified: lastModified } : {}),
+        ...(lastModified !== undefined ? { lastModified } : {}),
         ...(contentHash !== undefined ? { contentHash } : {}),
       },
     });
@@ -145,18 +177,12 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
   }
 }
 
-// ATS API calls all go to a small number of FIXED shared hosts regardless of
-// which employer's board it is (every Greenhouse-hosted company's requests
-// land on the same boards-api.greenhouse.io, for instance) — rate limiting
-// per employer alone wouldn't actually protect that shared host once there
-// are hundreds of CSV-listed companies on the same ATS. Rate limiting is
-// tracked per ACTUAL destination domain instead.
 const ATS_API_DOMAINS: Record<string, string> = {
   greenhouse: "boards-api.greenhouse.io",
   lever: "api.lever.co",
   ashby: "api.ashbyhq.com",
   smartrecruiters: "api.smartrecruiters.com",
-  workday: "myworkdayjobs.com", // per-tenant subdomains, grouped together for rate-limiting purposes
+  workday: "myworkdayjobs.com",
 };
 const MIN_MS_BETWEEN_SAME_DOMAIN_REQUESTS = 1500;
 const lastHitAtByDomain = new Map<string, number>();
@@ -184,13 +210,6 @@ async function waitForDomainSlot(domain: string): Promise<void> {
   lastHitAtByDomain.set(domain, Date.now());
 }
 
-// Priority companies first, then standard, then low — a due company (never
-// checked, or nextCheckAt in the past) from each tier in turn until `limit`.
-// Requests are made strictly one at a time (never concurrently), with both a
-// short global pause AND a per-destination-domain minimum interval — a
-// rate-limited queue, not hundreds of simultaneous requests, and safe to run
-// against a CSV allowlist of hundreds of employers sharing a handful of
-// actual ATS hosts.
 export async function runCompanyDiscoveryBatch(limit = 5): Promise<{ checked: number; results: CompanyCheckResult[] }> {
   const due: { id: string; atsType: string | null; careersUrl: string | null }[] = [];
   for (const priority of ["priority", "standard", "low"]) {
@@ -199,9 +218,6 @@ export async function runCompanyDiscoveryBatch(limit = 5): Promise<{ checked: nu
       where: {
         priority,
         monitoringStatus: "active",
-        // Strict discovery boundary: only ever actively check employers
-        // sourced from the CSV allowlist, manual entries, or Intern-List
-        // employers the user has explicitly approved.
         allowlisted: true,
         OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: new Date() } }],
       },
@@ -243,7 +259,7 @@ export async function runUsaJobsDiscovery(): Promise<{
   for (const keyword of USAJOBS_KEYWORDS) {
     const jobs = await searchUsaJobs(keyword, config);
     const relevant = jobs.filter((j) => isTargetEngineeringRole(j.title, j.description));
-    const summary = await ingestAtsJobs(relevant, "usajobs");
+    const summary = await ingestDiscoveredJobs(relevant, "usajobs", "usajobs");
     newCount += summary.newCount;
     updatedCount += summary.updatedCount;
     await new Promise((resolve) => setTimeout(resolve, 300));
