@@ -43,12 +43,16 @@ export function openStoredApplicationUrl(
   const { applicationUrl } = selectStoredApplicationLinks(job);
   if (!applicationUrl) return false;
 
-  // Do not detach `window.open` from `window`. Some browsers reject the
-  // unbound native method with an "Illegal invocation", which made both the
-  // Discover-card Apply button and the job-detail "Open without agent" button
-  // appear to do nothing. Keep an injectable opener for tests, but call the
-  // real browser API as a method of window in production.
-  const opener = openWindow ?? ((url: string, target: string, features: string) => window.open(url, target, features));
-  opener(applicationUrl, "_blank", "noopener,noreferrer");
+  // Tests can still inject a window opener. In the real browser, use a normal
+  // same-tab navigation instead of window.open(). Popup blockers (including
+  // Opera's) can silently suppress scripted new tabs, which made both Apply on
+  // Discover and "Open without agent" appear to do nothing even though the
+  // stored employer URL was valid.
+  if (openWindow) {
+    openWindow(applicationUrl, "_blank", "noopener,noreferrer");
+    return true;
+  }
+
+  window.location.assign(applicationUrl);
   return true;
 }
