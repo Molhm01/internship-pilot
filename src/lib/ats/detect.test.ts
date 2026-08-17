@@ -1,0 +1,46 @@
+import { describe, expect, it } from "vitest";
+import { detectAtsFromText } from "@/lib/ats/detect";
+
+describe("detectAtsFromText", () => {
+  it("detects the structured ATS vendors used by direct ingestion", () => {
+    expect(detectAtsFromText("https://job-boards.greenhouse.io/acme/jobs/123")).toEqual({
+      atsType: "greenhouse",
+      atsIdentifier: "acme",
+    });
+    expect(detectAtsFromText("https://jobs.lever.co/acme/123")).toEqual({
+      atsType: "lever",
+      atsIdentifier: "acme",
+    });
+    expect(detectAtsFromText("https://jobs.ashbyhq.com/acme/123")).toEqual({
+      atsType: "ashby",
+      atsIdentifier: "acme",
+    });
+    expect(detectAtsFromText("https://jobs.smartrecruiters.com/Acme/123-example")).toEqual({
+      atsType: "smartrecruiters",
+      atsIdentifier: "Acme",
+    });
+  });
+
+  it("preserves the Workday shard and site in the identifier", () => {
+    expect(
+      detectAtsFromText("https://micron.wd1.myworkdayjobs.com/External/job/Boise/Intern_R123"),
+    ).toEqual({
+      atsType: "workday",
+      atsIdentifier: "micron.wd1/External",
+    });
+
+    expect(
+      detectAtsFromText("https://example.wd12.myworkdayjobs.com/University/job/Test/Intern_R456"),
+    ).toEqual({
+      atsType: "workday",
+      atsIdentifier: "example.wd12/University",
+    });
+  });
+
+  it("returns unknown when no supported ATS signature is present", () => {
+    expect(detectAtsFromText("https://example.com/careers")).toEqual({
+      atsType: "unknown",
+      atsIdentifier: null,
+    });
+  });
+});

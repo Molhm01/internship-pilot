@@ -1,16 +1,22 @@
-// Primary ingestion: pull internships directly from employers' official
-// Greenhouse / Lever / Ashby job boards.
+// Primary ingestion: pull internships directly from employers' official ATS
+// boards through the universal dispatcher.
 //
 //   npm run ats:sync -- --dry-run
 //   npm run ats:sync -- --apply
 //   npm run ats:sync -- --apply --limit=25
-//   npm run ats:sync -- --apply --vendors=greenhouse,lever
+//   npm run ats:sync -- --apply --vendors=greenhouse,lever,workday
 
 import { prisma } from "@/lib/db";
 import type { ResolvableAts } from "@/lib/ats/resolve";
 import { loadResolvedEmployers, recordSyncRun, runAtsIngestion } from "@/lib/sync/atsIngest";
 
-const ALL_VENDORS: ResolvableAts[] = ["greenhouse", "lever", "ashby"];
+const ALL_VENDORS: ResolvableAts[] = [
+  "greenhouse",
+  "lever",
+  "ashby",
+  "smartrecruiters",
+  "workday",
+];
 
 function parseArgs(argv: string[]) {
   const vendorArg = argv.find((a) => a.startsWith("--vendors="));
@@ -74,7 +80,7 @@ async function main() {
   console.log(`\n  by source:`);
   for (const [source, s] of Object.entries(metrics.bySource)) {
     console.log(
-      `    ${source.padEnd(12)} discovered=${s.discovered} qualifying=${s.qualifying} inserted=${s.inserted} updated=${s.updated}`,
+      `    ${source.padEnd(18)} discovered=${s.discovered} qualifying=${s.qualifying} inserted=${s.inserted} updated=${s.updated}`,
     );
   }
 

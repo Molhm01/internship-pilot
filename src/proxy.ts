@@ -32,6 +32,10 @@ function isPublic(pathname: string): boolean {
   // Better Auth's own endpoints, including the OAuth callback the browser is
   // redirected to by Google before any session exists.
   if (pathname.startsWith("/api/auth")) return true;
+  // Vercel invokes cron routes without a user session cookie. These handlers
+  // authenticate themselves with CRON_SECRET, so the proxy must let the
+  // request reach the route instead of replacing it with the normal API 401.
+  if (pathname.startsWith("/api/cron/")) return true;
   return false;
 }
 
