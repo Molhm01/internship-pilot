@@ -29,11 +29,19 @@ type CoverageDiagnostics = {
   topMissingCompanies: Array<{ company: string; count: number }>;
 };
 
+type EmployerSweepSummary = {
+  checked: number;
+  totalEligible: number;
+  remaining: number;
+  stoppedForTimeBudget: boolean;
+};
+
 export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) {
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [coverage, setCoverage] = useState<CoverageDiagnostics | null>(null);
   const [coverageError, setCoverageError] = useState<string | null>(null);
+  const [employerSweep, setEmployerSweep] = useState<EmployerSweepSummary | null>(null);
 
   const load = useCallback(async () => {
     const res = await fetch("/api/sync/status");
@@ -65,13 +73,24 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
     setSyncing(true);
     setCoverage(null);
     setCoverageError(null);
+    setEmployerSweep(null);
     try {
       const res = await fetch("/api/sync/run", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
         setCoverageError(data.error ?? "Sync failed.");
         return;
       }
+
+      if (data.companies) {
+        setEmployerSweep({
+          checked: Number(data.companies.checked ?? 0),
+          totalEligible: Number(data.companies.totalEligible ?? 0),
+          remaining: Number(data.companySweepRemaining ?? 0),
+          stoppedForTimeBudget: Boolean(data.companies.stoppedForTimeBudget),
+        });
+      }
+
       await Promise.all([load(), loadCoverageDiagnostics()]);
       onSynced();
     } finally {
@@ -120,8 +139,18 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
         disabled={syncing}
         className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2 disabled:opacity-40 hover:bg-accent-dark transition-colors shrink-0"
       >
-        {syncing ? "Syncing…" : "Sync Now"}
+        {syncing ? "Sweeping employers…" : "Sync Now"}
       </button>
+
+      {employerSweep && (
+        <div className="basis-full rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs leading-5 text-secondary">
+          <span className="font-semibold text-primary">Employer sweep:</span>{" "}
+          {employerSweep.checked} / {employerSweep.totalEligible} companies checked · {employerSweep.remaining} remaining
+          {employerSweep.stoppedForTimeBudget && employerSweep.remaining > 0
+            ? " · time budget reached; the next run resumes with the oldest remaining companies"
+            : ""}
+        </div>
+      )}
 
       {coverage && (
         <div className="basis-full rounded-md border border-hairline bg-surface-raised px-3 py-2 text-xs leading-5 text-secondary">
