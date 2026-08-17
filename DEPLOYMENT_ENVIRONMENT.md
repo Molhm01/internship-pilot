@@ -32,6 +32,8 @@ declines the loopback call rather than attempting it.
 | `INTERNSHIP_PILOT_RUNTIME` | Optional, either side | No | `local` or `cloud`, overriding detection. Only needed for a self-hosted server that genuinely shares a machine with the user's Agent and Ollama. | No |
 | `DATABASE_POOL_MAX` | Optional, either side | No | Postgres connections per instance. Default 5. | No |
 | `DATABASE_CONNECT_TIMEOUT_MS` | Optional, either side | No | Connection acquisition timeout in ms. Default 15000. | No |
+| `CRON_SECRET` | Vercel production | **Yes** for hosted job ingestion | Authorizes Vercel requests to `/api/cron/job-ingestion`. Vercel sends it as a Bearer token. | **Yes** |
+| `CRON_JOB_BATCH_SIZE` | Vercel production, optional | No | Number of due companies checked per hosted cron invocation. Defaults to 8 and is capped at 25. | No |
 | `OLLAMA_BASE_URL` | Local development only | No | Local model server. Default `http://localhost:11434`. On a cloud runtime a loopback value is recognised as unreachable and reported as **Local AI offline**; a non-loopback value the deployment can actually reach is used normally. | No |
 | `OLLAMA_MODEL` | Local development only | No | Chat model name. Default `qwen3.5:9b`. | No |
 | `OLLAMA_VISION_MODEL` | Local development only | No | Vision model for the application agent. Defaults to `OLLAMA_MODEL`. | No |
@@ -69,10 +71,13 @@ BLOB_READ_WRITE_TOKEN    (injected by the Blob store integration)
 NEXT_PUBLIC_APP_URL      (set by hand, per environment)
 BETTER_AUTH_SECRET       (generate one per environment; never reuse)
 BETTER_AUTH_URL          (the stable production origin)
+CRON_SECRET              (long random secret for hosted job ingestion)
 ```
 
 Add `GMAIL_*`, `USAJOBS_*`, and `GOOGLE_PLACES_API_KEY` only if those features
 are wanted, and `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` for Google sign-in.
+`CRON_JOB_BATCH_SIZE` is optional; the hosted job-ingestion route defaults to 8
+companies per invocation and caps the value at 25.
 
 There is no longer a single-user switch. Every private route authenticates the
 session and filters by its user id; accounts are the only mode.
@@ -88,6 +93,5 @@ site's own address and public by definition.
 
 Never add a `NEXT_PUBLIC_` prefix to `DATABASE_URL`, `BLOB_READ_WRITE_TOKEN`,
 `INTERNSHIP_AGENT_TOKEN`, `BETTER_AUTH_SECRET`, `GOOGLE_CLIENT_SECRET`,
-`GMAIL_CLIENT_SECRET`, `GMAIL_TOKEN_ENCRYPTION_KEY`, `USAJOBS_API_KEY`, or
-`GOOGLE_PLACES_API_KEY`. `src/lib/runtime/environmentContract.test.ts` fails
-if one of them appears with that prefix or is read from a client module.
+`GMAIL_CLIENT_SECRET`, `GMAIL_TOKEN_ENCRYPTION_KEY`, `USAJOBS_API_KEY`,
+`GOOGLE_PLACES_API_KEY`, or `CRON_SECRET`.
