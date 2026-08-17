@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { runCompanyDiscoveryBatch } from "@/lib/sync/companyDiscovery";
+import { runInternListOriginalSourceDiscovery } from "@/lib/sync/discoveryResolution";
+import { runFreshnessVerificationBatch } from "@/lib/sync/freshness";
 import { isSchedulerPaused } from "@/lib/sync/schedulerState";
 import { reconcileDirectOfficialFeed } from "@/lib/jobs/activeFeed";
 
@@ -34,16 +36,23 @@ export async function GET(request: Request) {
   const log = await prisma.syncLog.create({ data: { source: "employer-ats", status: "running" } });
 
   try {
-    // First, perform the idempotent production cutover: legacy Jobright /
-    // Simplify / Intern-List rows leave Discover, while direct ATS rows that
-    // the old path accidentally stored as Pending are promoted to verified.
+    // Keep the direct-source feed repaired first, then add new employer jobs,
+    // resolve fresh aggregator discoveries to their ORIGINAL employer posting,
+    // and finally re-check older visible jobs for confirmed closure.
     const cutover = await reconcileDirectOfficialFeed();
 
     const batchSize = Math.min(25, Math.max(1, Number.parseInt(process.env.CRON_JOB_BATCH_SIZE ?? "8", 10) || 8));
-    const result = await runCompanyDiscoveryBatch(batchSize);
+    const discoveryLimit = Math.min(20, Math.max(1, Number.parseInt(process.env.CRON_DISCOVERY_RESOLVE_LIMIT ?? "6", 10) || 6));
+    const freshnessLimit = Math.min(25, Math.max(1, Number.parseInt(process.env.CRON_FRESHNESS_CHECK_LIMIT ?? "8", 10) || 8));
 
-    const newJobs = result.results.reduce((sum, company) => sum + company.newCount, 0);
-    const updatedJobs = result.results.reduce((sum, company) => sum + company.updatedCount, 0);
+    const result = await runCompanyDiscoveryBatch(batchSize);
+    const discovery = await runInternListOriginalSourceDiscovery(discoveryLimit);
+    const freshness = await runFreshnessVerificationBatch(freshnessLimit);
+
+    const companyNewJobs = result.results.reduce((sum, company) => sum + company.newCount, 0);
+    const companyUpdatedJobs = result.results.reduce((sum, company) => sum + company.updatedCount, 0);
+    const newJobs = companyNewJobs + discovery.newCount;
+    const updatedJobs = companyUpdatedJobs + discovery.updatedCount;
     const errors = result.results.filter((company) => company.status === "error").length;
     const unsupported = result.results.filter((company) => company.status === "unsupported").length;
 
@@ -67,6 +76,8 @@ export async function GET(request: Request) {
         updatedJobs,
         errors,
         unsupported,
+        discovery,
+        freshness,
         durationMs: Date.now() - startedAt,
         companies: result.results.map((company) => ({
           name: company.name,
