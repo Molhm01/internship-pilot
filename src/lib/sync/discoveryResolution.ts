@@ -1,9 +1,11 @@
 import { prisma } from "@/lib/db";
+import { type CompanyForListing } from "@/lib/ats";
 import type { AtsJob } from "@/lib/ats/types";
 import {
   destinationPersistenceData,
   isAggregatorUrl,
   resolveOfficialJobDestination,
+  type DestinationResolution,
 } from "@/lib/applications/officialDestination";
 import { promoteCanonicalDirectJob } from "@/lib/jobs/activeFeed";
 import { isTrustedAggregatorSource } from "@/lib/jobs/sourcePolicy";
@@ -14,6 +16,7 @@ import {
 } from "@/lib/sync/internListAdapter";
 import { isTargetEngineeringRole } from "@/lib/sync/classify";
 import { probeOfficialJobAvailability } from "@/lib/sync/freshness";
+import { findOfficialBoardMatch } from "@/lib/sync/officialBoardMatch";
 
 export type ResolvedSource = {
   source: string;
@@ -112,6 +115,35 @@ function liveCandidate(raw: RawInternListJob): DiscoveryCandidate {
   };
 }
 
+function companyKey(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/\b(inc|incorporated|llc|ltd|limited|corp|corporation|company|co|holdings|group)\b/g, " ")
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
+}
+
+function findCompanyConfig(
+  companyName: string,
+  companies: CompanyForListing[],
+  exactMap: Map<string, CompanyForListing>,
+): CompanyForListing | null {
+  const key = companyKey(companyName);
+  const exact = exactMap.get(key);
+  if (exact) return exact;
+  if (key.length < 5) return null;
+
+  // Accept a close registry alias only when one normalized company name fully
+  // contains the other. The job-title/location matcher still has to pass next.
+  return (
+    companies.find((company) => {
+      const candidate = companyKey(company.name);
+      return candidate.length >= 5 && (candidate.includes(key) || key.includes(candidate));
+    }) ?? null
+  );
+}
+
 async function findCanonicalJobId(company: string, officialUrl: string): Promise<string | null> {
   const canonical = canonicalizeJobUrl(officialUrl);
   if (!canonical) return null;
@@ -134,22 +166,54 @@ async function findCanonicalJobId(company: string, officialUrl: string): Promise
   return match?.id ?? null;
 }
 
+function destinationFromOfficialBoard(
+  candidate: DiscoveryCandidate,
+  boardJob: AtsJob,
+  now: Date,
+): DestinationResolution {
+  return {
+    sourceListingUrl: candidate.sourceListingUrl,
+    officialApplicationUrl: boardJob.applyUrl,
+    originalJobPostUrl: boardJob.applyUrl,
+    resolutionStatus: "RESOLVED",
+    resolutionMethod: "supported_ats",
+    resolvedAt: now.toISOString(),
+    resolutionError: null,
+    redirectChain: [boardJob.applyUrl],
+  };
+}
+
 async function processCandidate(
   candidate: DiscoveryCandidate,
-  careersUrl: string | null,
+  company: CompanyForListing | null,
 ): Promise<"new" | "updated" | "unchanged" | "unresolved" | "closed" | "unknown"> {
   const now = new Date();
-  const destination = await resolveOfficialJobDestination(
-    {
-      sourceListingUrl: candidate.sourceListingUrl,
-      officialApplicationUrl: candidate.officialApplicationUrl,
-      originalJobPostUrl: candidate.originalJobPostUrl,
-      employerCareerUrl: careersUrl,
-    },
-    fetch,
-    now,
-    { followSourceListings: true },
-  );
+
+  // Highest-value path: use Intern List only as the discovery signal, then ask
+  // the employer's own known ATS board for the matching title/location. This
+  // does not depend on Jobright/Intern List exposing an "Original Job Post".
+  let boardMatch: AtsJob | null = null;
+  if (company) {
+    try {
+      boardMatch = await findOfficialBoardMatch(candidate, company);
+    } catch {
+      boardMatch = null;
+    }
+  }
+
+  const destination: DestinationResolution = boardMatch
+    ? destinationFromOfficialBoard(candidate, boardMatch, now)
+    : await resolveOfficialJobDestination(
+        {
+          sourceListingUrl: candidate.sourceListingUrl,
+          officialApplicationUrl: candidate.officialApplicationUrl,
+          originalJobPostUrl: candidate.originalJobPostUrl,
+          employerCareerUrl: company?.careersUrl ?? null,
+        },
+        fetch,
+        now,
+        { followSourceListings: true },
+      );
 
   if (destination.resolutionStatus !== "RESOLVED" || !destination.officialApplicationUrl) {
     if (candidate.storedJobId) {
@@ -171,9 +235,10 @@ async function processCandidate(
           ...(availability.state === "closed"
             ? {
                 verificationStatus: "Closed",
-                reasonCode: availability.status === 404 || availability.status === 410
-                  ? "CLOSED_NOT_FOUND"
-                  : "CLOSED_EXPIRED",
+                reasonCode:
+                  availability.status === 404 || availability.status === 410
+                    ? "CLOSED_NOT_FOUND"
+                    : "CLOSED_EXPIRED",
                 verificationReason: availability.reason,
                 classification: "CONFIRMED_CLOSED",
                 classificationReason: availability.reason,
@@ -189,18 +254,25 @@ async function processCandidate(
   }
 
   const resolved = inferResolvedSource(destination.officialApplicationUrl);
-  const atsJob: AtsJob = {
-    sourceJobId: candidate.sourceJobId,
-    requisitionId: null,
-    title: candidate.title,
-    company: candidate.company,
-    location: candidate.location,
-    workplaceType: candidate.workplaceType,
-    applyUrl: destination.officialApplicationUrl,
-    description: candidate.description,
-    postedAt: candidate.postedAt,
-    postedAtText: candidate.postedAtText,
-  };
+  const atsJob: AtsJob = boardMatch
+    ? {
+        ...boardMatch,
+        company: candidate.company,
+        postedAt: boardMatch.postedAt ?? candidate.postedAt,
+        postedAtText: boardMatch.postedAtText ?? candidate.postedAtText,
+      }
+    : {
+        sourceJobId: candidate.sourceJobId,
+        requisitionId: null,
+        title: candidate.title,
+        company: candidate.company,
+        location: candidate.location,
+        workplaceType: candidate.workplaceType,
+        applyUrl: destination.officialApplicationUrl,
+        description: candidate.description,
+        postedAt: candidate.postedAt,
+        postedAtText: candidate.postedAtText,
+      };
 
   const upsertResult = await upsertClassifiedAtsJob({
     job: atsJob,
@@ -209,7 +281,7 @@ async function processCandidate(
     atsTenant: resolved.atsTenant,
     classification: "QUALIFYING_INTERNSHIP",
     classificationReason:
-      "Discovered through Intern List and independently resolved to a live original employer/ATS posting.",
+      "Discovered through Intern List and independently matched to a live original employer/ATS posting.",
     now,
   });
 
@@ -260,7 +332,9 @@ export async function runInternListOriginalSourceDiscovery(
   const relevantLive = liveJobs.filter((job) => isTargetEngineeringRole(job.title, job.qualifications));
 
   const sourceUrls = relevantLive
-    .map((job) => job.sourceListingUrl ?? (job.applyUrl && isAggregatorUrl(job.applyUrl) ? job.applyUrl : null))
+    .map((job) =>
+      job.sourceListingUrl ?? (job.applyUrl && isAggregatorUrl(job.applyUrl) ? job.applyUrl : null),
+    )
     .filter((value): value is string => Boolean(value));
   const alreadyPromoted = sourceUrls.length
     ? await prisma.job.findMany({
@@ -272,7 +346,8 @@ export async function runInternListOriginalSourceDiscovery(
 
   const liveCandidates = relevantLive
     .filter((job) => {
-      const sourceUrl = job.sourceListingUrl ?? (job.applyUrl && isAggregatorUrl(job.applyUrl) ? job.applyUrl : null);
+      const sourceUrl =
+        job.sourceListingUrl ?? (job.applyUrl && isAggregatorUrl(job.applyUrl) ? job.applyUrl : null);
       return !sourceUrl || !promotedUrls.has(sourceUrl);
     })
     .map(liveCandidate);
@@ -322,17 +397,31 @@ export async function runInternListOriginalSourceDiscovery(
   const candidates: DiscoveryCandidate[] = [];
   const seen = new Set<string>();
   for (const candidate of [...liveCandidates, ...backlogCandidates]) {
-    const key = candidate.sourceListingUrl ?? `${candidate.company}|${candidate.title}|${candidate.location ?? ""}`;
+    const key =
+      candidate.sourceListingUrl ?? `${candidate.company}|${candidate.title}|${candidate.location ?? ""}`;
     if (seen.has(key)) continue;
     seen.add(key);
     candidates.push(candidate);
     if (candidates.length >= boundedLimit) break;
   }
 
-  const companies = await prisma.company.findMany({ select: { name: true, careersUrl: true } });
-  const careersByCompany = new Map(
-    companies.map((company) => [company.name.trim().toLowerCase(), company.careersUrl]),
-  );
+  const companies: CompanyForListing[] = await prisma.company.findMany({
+    where: { allowlisted: true, monitoringStatus: "active" },
+    select: {
+      name: true,
+      atsType: true,
+      atsIdentifier: true,
+      careersUrl: true,
+      lastETag: true,
+      lastModified: true,
+      contentHash: true,
+    },
+  });
+  const companyMap = new Map<string, CompanyForListing>();
+  for (const company of companies) {
+    const key = companyKey(company.name);
+    if (key && !companyMap.has(key)) companyMap.set(key, company);
+  }
 
   const outcomes: Array<Awaited<ReturnType<typeof processCandidate>>> = [];
   let cursor = 0;
@@ -340,11 +429,8 @@ export async function runInternListOriginalSourceDiscovery(
     while (cursor < candidates.length) {
       const index = cursor++;
       const candidate = candidates[index]!;
-      const outcome = await processCandidate(
-        candidate,
-        careersByCompany.get(candidate.company.trim().toLowerCase()) ?? null,
-      );
-      outcomes[index] = outcome;
+      const company = findCompanyConfig(candidate.company, companies, companyMap);
+      outcomes[index] = await processCandidate(candidate, company);
     }
   });
   await Promise.all(workers);
