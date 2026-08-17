@@ -2,13 +2,10 @@ import { describe, expect, it } from "vitest";
 import { computeActiveFeed } from "@/lib/jobs/sourcePolicy";
 import { directAtsProfile } from "@/lib/sync/ingest";
 
-const VENDORS = ["greenhouse", "lever", "ashby"] as const;
+const VENDORS = ["greenhouse", "lever", "ashby", "smartrecruiters", "workday"] as const;
 
-describe("direct-ATS jobs are visible in the active feed", () => {
-  it("REGRESSION: an ATS job is active — it used to be written as Pending and vanish", () => {
-    // ingestAtsJobs previously wrote every ATS job with verificationStatus
-    // "Pending". ATS sources are not "trusted aggregators", so
-    // computeActiveFeed returned false and ATS-ingested jobs were invisible.
+describe("direct official jobs are visible in the active feed", () => {
+  it("shows verified direct ATS jobs", () => {
     for (const vendor of VENDORS) {
       const profile = directAtsProfile(vendor);
       expect(
@@ -21,7 +18,7 @@ describe("direct-ATS jobs are visible in the active feed", () => {
     }
   });
 
-  it("the old Pending profile would NOT have been visible for an ATS source", () => {
+  it("keeps Pending ATS rows hidden until the direct-source repair promotes them", () => {
     for (const vendor of VENDORS) {
       expect(
         computeActiveFeed({ source: vendor, verificationStatus: "Pending", company: "Acme Robotics" }),
@@ -36,19 +33,18 @@ describe("direct-ATS jobs are visible in the active feed", () => {
     expect(profile.verificationMethod).toBe("greenhouse-board-api");
   });
 
-  it("visibility never depends on an AI score or a tailored document", () => {
-    // computeActiveFeed takes only source, verificationStatus, and company —
-    // there is structurally no way for a missing score to hide a job.
+  it("visibility never depends on an AI score or tailored document", () => {
     const profile = directAtsProfile("lever");
-    const visible = computeActiveFeed({
-      source: "lever",
-      verificationStatus: profile.verificationStatus,
-      company: "Unscored Employer",
-    });
-    expect(visible).toBe(true);
+    expect(
+      computeActiveFeed({
+        source: "lever",
+        verificationStatus: profile.verificationStatus,
+        company: "Unscored Employer",
+      }),
+    ).toBe(true);
   });
 
-  it("still keeps demo/fixture employers out of the feed", () => {
+  it("keeps demo/fixture employers out of the feed", () => {
     const profile = directAtsProfile("greenhouse");
     expect(
       computeActiveFeed({
@@ -59,17 +55,18 @@ describe("direct-ATS jobs are visible in the active feed", () => {
     ).toBe(false);
   });
 
-  it("legacy intern-list records stay visible after the migration", () => {
-    // The migration must not evict anything already in the feed.
-    expect(
-      computeActiveFeed({ source: "intern-list", verificationStatus: "Pending", company: "Legacy Employer" }),
-    ).toBe(true);
-    expect(
-      computeActiveFeed({
-        source: "intern-list",
-        verificationStatus: "ACTIVE_SOURCE_LISTED",
-        company: "Legacy Employer",
-      }),
-    ).toBe(true);
+  it("hides aggregator rows even when legacy records were previously active", () => {
+    for (const source of ["jobright", "simplify", "intern-list"]) {
+      expect(
+        computeActiveFeed({ source, verificationStatus: "Pending", company: "Legacy Employer" }),
+      ).toBe(false);
+      expect(
+        computeActiveFeed({
+          source,
+          verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
+          company: "Legacy Employer",
+        }),
+      ).toBe(false);
+    }
   });
 });
