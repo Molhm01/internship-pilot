@@ -1,14 +1,37 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import {
   BulkInitialMatchError,
   scheduleAllUnscoredActiveJobs,
 } from "@/lib/matching/bulkInitialMatch";
+import { runAutomaticScoringSweep } from "@/lib/matching/automaticScoring";
+import { hasGeminiApiKey } from "@/lib/gemini";
+import { isCloudRuntime } from "@/lib/runtime/deployment";
 import { withUser } from "@/lib/auth/session";
 
-/** Queues every job this user has no score for. Never anybody else's queue. */
+/**
+ * Emergency/manual fallback. Normal production operation is scheduled, but if
+ * the user presses the button this route now starts real processing instead of
+ * merely leaving rows in PENDING.
+ */
 export const POST = withUser(async (_request, user) => {
   try {
     const result = await scheduleAllUnscoredActiveJobs(user.id);
+
+    if (isCloudRuntime() && hasGeminiApiKey()) {
+      after(async () => {
+        try {
+          await runAutomaticScoringSweep({ maxItems: 12, maxRuntimeMs: 120_000, concurrency: 2 });
+        } catch (error) {
+          console.error("[api/jobs/score-unscored] background worker failed", {
+            errorCode:
+              error && typeof error === "object" && "code" in error
+                ? String((error as { code: unknown }).code)
+                : "AUTOMATIC_SCORING_FAILED",
+          });
+        }
+      });
+    }
+
     return NextResponse.json(result, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     const known = error instanceof BulkInitialMatchError ? error : null;
