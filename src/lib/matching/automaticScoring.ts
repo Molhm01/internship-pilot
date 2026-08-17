@@ -37,6 +37,7 @@ function validCurrentScore(value: number | null | undefined): boolean {
  */
 export async function scheduleProfileRefreshesForUser(
   userId: string,
+  options: { retryFailed?: boolean } = {},
 ): Promise<ProfileRefreshScheduleResult> {
   const revision = await approvedProfileRevision(userId);
   if (!revision) {
@@ -123,18 +124,24 @@ export async function scheduleProfileRefreshesForUser(
     }
 
     const existing = job.initialAiMatchJobs[0];
-    // Pending/running/retryable/terminal failures already describe this exact
-    // profile revision. Do not resurrect terminal failures every maintenance
-    // cycle. A manual retry remains available after the root cause is fixed.
     if (existing && existing.state !== "SUCCEEDED") {
-      alreadyQueued += 1;
-      continue;
+      const retryableByUser = Boolean(
+        options.retryFailed
+        && ["RETRYABLE_FAILED", "PERMANENT_FAILED"].includes(existing.state),
+      );
+      if (!retryableByUser) {
+        // Automatic maintenance never resurrects terminal work. PENDING and
+        // RUNNING are also already represented by the durable row.
+        alreadyQueued += 1;
+        continue;
+      }
     }
 
     try {
       // A SUCCEEDED row can be safely reused only when its persisted current
       // state is still current (handled above). If that display copy was later
-      // cleared, recycle the durable row to rebuild it from the same evidence.
+      // cleared — or the user explicitly retries a failed revision — recycle
+      // the durable row to rebuild the current score.
       const queueWrite = existing
         ? prisma.initialAiMatchJob.update({
           where: { id: existing.id },
@@ -208,9 +215,8 @@ export async function scheduleAutomaticScoresForUser(
 ): Promise<AutomaticUserScheduleResult> {
   const [initial, refresh] = await Promise.all([
     // Automatic maintenance does not revive terminal failures every 30 min.
-    // The manual fallback intentionally keeps retryFailed=true by default.
     scheduleAllUnscoredActiveJobs(userId, { retryFailed: false }),
-    scheduleProfileRefreshesForUser(userId),
+    scheduleProfileRefreshesForUser(userId, { retryFailed: false }),
   ]);
   return { initialQueued: initial.queued, refreshQueued: refresh.queued };
 }
