@@ -18,6 +18,13 @@ export type CompanyCheckResult = {
   error?: string;
 };
 
+export type CompanySweepResult = {
+  checked: number;
+  totalEligible: number;
+  stoppedForTimeBudget: boolean;
+  results: CompanyCheckResult[];
+};
+
 const MAX_BACKOFF_MINUTES = 24 * 60;
 
 function baseIntervalMinutes(priority: string): number {
@@ -185,7 +192,7 @@ const ATS_API_DOMAINS: Record<string, string> = {
   workday: "myworkdayjobs.com",
 };
 const MIN_MS_BETWEEN_SAME_DOMAIN_REQUESTS = 1500;
-const lastHitAtByDomain = new Map<string, number>();
+const nextSlotAtByDomain = new Map<string, number>();
 
 function domainForRateLimit(company: { atsType: string | null; careersUrl: string | null }): string {
   if (company.atsType && ATS_API_DOMAINS[company.atsType]) return ATS_API_DOMAINS[company.atsType];
@@ -199,15 +206,14 @@ function domainForRateLimit(company: { atsType: string | null; careersUrl: strin
   return "unknown";
 }
 
+/** Reserve request start slots synchronously so concurrent workers still honor
+ * the minimum delay for companies already known to share one ATS API domain. */
 async function waitForDomainSlot(domain: string): Promise<void> {
-  const lastHit = lastHitAtByDomain.get(domain);
-  if (lastHit !== undefined) {
-    const elapsed = Date.now() - lastHit;
-    if (elapsed < MIN_MS_BETWEEN_SAME_DOMAIN_REQUESTS) {
-      await new Promise((resolve) => setTimeout(resolve, MIN_MS_BETWEEN_SAME_DOMAIN_REQUESTS - elapsed));
-    }
-  }
-  lastHitAtByDomain.set(domain, Date.now());
+  const now = Date.now();
+  const slotAt = Math.max(now, nextSlotAtByDomain.get(domain) ?? now);
+  nextSlotAtByDomain.set(domain, slotAt + MIN_MS_BETWEEN_SAME_DOMAIN_REQUESTS);
+  const delay = slotAt - now;
+  if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
 }
 
 export async function runCompanyDiscoveryBatch(limit = 5): Promise<{ checked: number; results: CompanyCheckResult[] }> {
@@ -221,7 +227,10 @@ export async function runCompanyDiscoveryBatch(limit = 5): Promise<{ checked: nu
         allowlisted: true,
         OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: new Date() } }],
       },
-      orderBy: { nextCheckAt: "asc" },
+      orderBy: [
+        { nextCheckAt: { sort: "asc", nulls: "first" } },
+        { lastCheckedAt: { sort: "asc", nulls: "first" } },
+      ],
       take: limit - due.length,
       select: { id: true, atsType: true, careersUrl: true },
     });
@@ -235,6 +244,57 @@ export async function runCompanyDiscoveryBatch(limit = 5): Promise<{ checked: nu
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
   return { checked: results.length, results };
+}
+
+/**
+ * Hosted/manual full-registry sweep.
+ *
+ * Unlike the local priority scheduler, this deliberately ignores nextCheckAt
+ * and starts with employers that have never been checked, followed by the
+ * least-recently checked employers. Work is processed in concurrent waves and
+ * stops before the caller's serverless time budget is exhausted. The next run
+ * naturally resumes with the oldest remaining employers because every company
+ * check updates lastCheckedAt.
+ */
+export async function runCompanyDiscoverySweep(options: {
+  limit?: number;
+  concurrency?: number;
+  maxRuntimeMs?: number;
+} = {}): Promise<CompanySweepResult> {
+  const limit = Math.max(1, Math.min(options.limit ?? 1000, 1000));
+  const concurrency = Math.max(1, Math.min(options.concurrency ?? 10, 20));
+  const maxRuntimeMs = Math.max(30_000, Math.min(options.maxRuntimeMs ?? 180_000, 240_000));
+  const startedAt = Date.now();
+
+  const companies = await prisma.company.findMany({
+    where: { monitoringStatus: "active", allowlisted: true },
+    orderBy: [
+      { lastCheckedAt: { sort: "asc", nulls: "first" } },
+      { name: "asc" },
+    ],
+    take: limit,
+    select: { id: true, atsType: true, careersUrl: true },
+  });
+
+  const results: CompanyCheckResult[] = [];
+  for (let start = 0; start < companies.length; start += concurrency) {
+    if (Date.now() - startedAt >= maxRuntimeMs) break;
+    const wave = companies.slice(start, start + concurrency);
+    const waveResults = await Promise.all(
+      wave.map(async (company) => {
+        await waitForDomainSlot(domainForRateLimit(company));
+        return checkCompany(company.id);
+      }),
+    );
+    results.push(...waveResults);
+  }
+
+  return {
+    checked: results.length,
+    totalEligible: companies.length,
+    stoppedForTimeBudget: results.length < companies.length,
+    results,
+  };
 }
 
 const USAJOBS_KEYWORDS = [
