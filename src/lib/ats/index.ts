@@ -4,6 +4,8 @@ import { listLeverJobs } from "@/lib/ats/lever";
 import { listAshbyJobs } from "@/lib/ats/ashby";
 import { listSmartRecruitersJobs } from "@/lib/ats/smartrecruiters";
 import { listWorkdayJobs } from "@/lib/ats/workday";
+import { listIcimsJobs } from "@/lib/ats/icims";
+import { listSuccessFactorsJobs } from "@/lib/ats/successfactors";
 import { scanCareersPageForInternshipLinks } from "@/lib/ats/generic";
 
 export * from "@/lib/ats/types";
@@ -34,10 +36,9 @@ export type ListJobsResult = {
 // Every supported ATS type dispatches here. Returns { jobs, supported } —
 // `supported: false` means we have no working adapter for this company yet
 // (honest signal, not an error) so callers can distinguish "checked, found
-// nothing" from "can't check this one automatically." For the generic scan
-// path, also supports conditional requests (Milestone 4): `notModified: true`
-// means the page hasn't changed since the last check, so ingestion can be
-// skipped entirely for this cycle.
+// nothing" from "can't check this one automatically." For the remaining
+// generic scan path, `notModified: true` means the page did not change and
+// ingestion can be skipped for that cycle.
 export async function listJobsForCompany(company: CompanyForListing): Promise<ListJobsResult> {
   const id = company.atsIdentifier;
   switch (company.atsType) {
@@ -60,12 +61,22 @@ export async function listJobsForCompany(company: CompanyForListing): Promise<Li
         supported: true,
       };
     case "icims":
-    case "taleo":
+      if (!id || !company.careersUrl) return { jobs: [], supported: false };
+      return {
+        jobs: await listIcimsJobs(id, company.careersUrl, company.name),
+        supported: true,
+      };
     case "successfactors":
+      if (!company.careersUrl) return { jobs: [], supported: false };
+      return {
+        jobs: await listSuccessFactorsJobs(company.careersUrl, company.name),
+        supported: true,
+      };
+    case "taleo":
     case "custom": {
       if (!company.careersUrl) return { jobs: [], supported: false };
-      // No reliable structured API for these — a low-confidence generic scan
-      // only, always routed to Quarantine by the ingestion pipeline.
+      // Taleo and fully custom sites still use the low-confidence fallback and
+      // remain quarantined until they get their own structured adapters.
       const result = await scanCareersPageForInternshipLinks(company.careersUrl, company.name, {
         etag: company.lastETag,
         lastModified: company.lastModified,

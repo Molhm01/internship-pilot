@@ -19,6 +19,21 @@ describe("detectAtsFromText", () => {
       atsType: "smartrecruiters",
       atsIdentifier: "Acme",
     });
+    expect(detectAtsFromText("https://careers-acme.icims.com/jobs/search?ss=1")).toEqual({
+      atsType: "icims",
+      atsIdentifier: "careers-acme",
+    });
+  });
+
+  it("detects SuccessFactors public career hosts on .com and .eu", () => {
+    expect(detectAtsFromText("https://tenant.successfactors.com/career")).toEqual({
+      atsType: "successfactors",
+      atsIdentifier: "tenant",
+    });
+    expect(detectAtsFromText("https://career5.successfactors.eu/career?company=acme")).toEqual({
+      atsType: "successfactors",
+      atsIdentifier: "career5",
+    });
   });
 
   it("preserves the Workday shard and site in the identifier", () => {

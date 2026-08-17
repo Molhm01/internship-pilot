@@ -1,8 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { computeActiveFeed } from "@/lib/jobs/sourcePolicy";
+import {
+  computeActiveFeed,
+  isDirectOfficialSource,
+  isLegacyAutoPromotableDirectSource,
+} from "@/lib/jobs/sourcePolicy";
 import { directAtsProfile } from "@/lib/sync/ingest";
 
-const VENDORS = ["greenhouse", "lever", "ashby", "smartrecruiters", "workday"] as const;
+const VENDORS = [
+  "greenhouse",
+  "lever",
+  "ashby",
+  "smartrecruiters",
+  "workday",
+  "icims",
+  "successfactors",
+] as const;
 
 describe("direct official jobs are visible in the active feed", () => {
   it("shows verified direct ATS jobs", () => {
@@ -18,11 +30,18 @@ describe("direct official jobs are visible in the active feed", () => {
     }
   });
 
-  it("keeps Pending ATS rows hidden until the direct-source repair promotes them", () => {
+  it("keeps Pending ATS rows hidden until an exact direct sighting promotes them", () => {
     for (const vendor of VENDORS) {
       expect(
         computeActiveFeed({ source: vendor, verificationStatus: "Pending", company: "Acme Robotics" }),
       ).toBe(false);
+    }
+  });
+
+  it("recognizes iCIMS and SuccessFactors as direct sources without bulk-promoting their legacy generic rows", () => {
+    for (const vendor of ["icims", "successfactors"]) {
+      expect(isDirectOfficialSource(vendor)).toBe(true);
+      expect(isLegacyAutoPromotableDirectSource(vendor)).toBe(false);
     }
   });
 
