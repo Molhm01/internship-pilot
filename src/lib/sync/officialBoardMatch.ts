@@ -79,8 +79,15 @@ export async function findOfficialBoardMatch(
 ): Promise<AtsJob | null> {
   if (!company.atsType || company.atsType === "unknown") return null;
 
-  const result = await listJobsForCompany(company);
-  if (!result.supported || result.notModified || result.jobs.length === 0) return null;
+  // Matching needs the board contents even when the normal company monitor saw
+  // the same ETag earlier, so do not send conditional-cache state here.
+  const result = await listJobsForCompany({
+    ...company,
+    lastETag: null,
+    lastModified: null,
+    contentHash: null,
+  });
+  if (!result.supported || result.jobs.length === 0) return null;
 
   let best: { job: AtsJob; score: number } | null = null;
   for (const job of result.jobs) {
