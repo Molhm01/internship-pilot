@@ -25,8 +25,10 @@ export async function POST() {
   try {
     const cutover = await reconcileDirectOfficialFeed();
     const companies = await runCompanyDiscoveryBatch(10);
-    const discovery = await runInternListOriginalSourceDiscovery(24);
-    const freshness = await runFreshnessVerificationBatch(20);
+    // Keep manual runs bounded for the hosted runtime. Repeated Sync Now runs
+    // naturally rotate through remaining discovery/backlog and freshness rows.
+    const discovery = await runInternListOriginalSourceDiscovery(12);
+    const freshness = await runFreshnessVerificationBatch(10);
     const usajobs = await runUsaJobsDiscovery();
     const queue = await runQueueBatch();
 
