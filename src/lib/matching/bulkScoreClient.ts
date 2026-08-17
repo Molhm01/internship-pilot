@@ -86,6 +86,8 @@ export function startBulkScoreStatusPolling(options: {
   onError?: (message: string) => void;
   intervalMs?: number;
   visibility?: VisibilitySource;
+  /** Keep checking for a server-started queue even when the previous poll was idle. */
+  keepWatchingWhenIdle?: boolean;
 }): () => void {
   const intervalMs = Math.max(5_000, options.intervalMs ?? 5_000);
   const visibility = options.visibility ?? document;
@@ -112,7 +114,9 @@ export function startBulkScoreStatusPolling(options: {
       const status = await options.fetchStatus();
       if (stopped) return;
       options.onStatus(status);
-      if (status.queued > 0 || status.running > 0) scheduleNext();
+      if (options.keepWatchingWhenIdle || status.queued > 0 || status.running > 0) {
+        scheduleNext();
+      }
     } catch (error) {
       if (!stopped) {
         options.onError?.(error instanceof Error ? error.message : "Scoring progress is unavailable.");
