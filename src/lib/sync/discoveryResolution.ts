@@ -105,8 +105,8 @@ function liveCandidate(raw: RawInternListJob): DiscoveryCandidate {
     postedAtText: raw.sourcePostedText,
     sourceListingUrl:
       raw.sourceListingUrl ?? (raw.applyUrl && isAggregatorUrl(raw.applyUrl) ? raw.applyUrl : null),
-    officialApplicationUrl: raw.officialApplicationUrl,
-    originalJobPostUrl: raw.originalJobPostUrl,
+    officialApplicationUrl: raw.officialApplicationUrl ?? null,
+    originalJobPostUrl: raw.originalJobPostUrl ?? null,
     internshipTerm: formatInternshipTerm(raw.hireTime),
     compensation: raw.salary && raw.salary.toUpperCase() !== "N/A" ? raw.salary : null,
   };
@@ -213,9 +213,6 @@ async function processCandidate(
     now,
   });
 
-  // If the same posting existed only as a hidden aggregator row, convert that
-  // row to direct employer provenance instead of leaving the competitor as its
-  // canonical source.
   await promoteCanonicalDirectJob(atsJob, resolved.source, resolved.atsTenant);
 
   const canonicalJobId = await findCanonicalJobId(candidate.company, destination.officialApplicationUrl);
