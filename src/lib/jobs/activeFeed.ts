@@ -6,10 +6,7 @@ import {
   isTrustedAggregatorSource,
 } from "@/lib/jobs/sourcePolicy";
 
-/**
- * Recompute and persist the Active-feed VISIBILITY flag for one job using the
- * central policy. Returns the resulting boolean. Never touches verificationStatus.
- */
+/** Recompute and persist the Active-feed flag for one job. */
 export async function recomputeJobActiveFeed(jobId: string): Promise<boolean> {
   const job = await prisma.job.findUnique({
     where: { id: jobId },
@@ -24,14 +21,11 @@ export async function recomputeJobActiveFeed(jobId: string): Promise<boolean> {
 }
 
 /**
- * One idempotent catalogue cutover/repair.
+ * Idempotent production cutover/repair.
  *
- * - hides Jobright/Simplify/Intern-List rows from the default Discover feed;
- * - upgrades rows already read directly from an official ATS but accidentally
- *   stored as Pending by the old company-discovery path;
- * - recomputes activeFeed from the new direct-source policy.
- *
- * Safe to run on every hosted cron invocation. It never deletes jobs.
+ * This is intentionally batched: the first production run may need to flip
+ * hundreds of legacy aggregator rows, and a serverless function should do a
+ * handful of updateMany calls rather than hundreds of sequential updates.
  */
 export async function reconcileDirectOfficialFeed(): Promise<{
   scanned: number;
@@ -48,51 +42,60 @@ export async function reconcileDirectOfficialFeed(): Promise<{
       activeFeed: true,
       officialApplicationUrl: true,
       sourceUrl: true,
-      lastVerifiedAt: true,
     },
   });
 
+  const aggregatorIds = jobs
+    .filter((job) => isTrustedAggregatorSource(job.source) && job.activeFeed)
+    .map((job) => job.id);
+
   let hiddenAggregators = 0;
-  let promotedDirect = 0;
-  let visibilityUpdated = 0;
-  const now = new Date();
-
-  for (const job of jobs) {
-    const canonical = canonicalizeSource(job.source);
-    const aggregator = isTrustedAggregatorSource(job.source);
-    const direct = isDirectOfficialSource(job.source) && Boolean(job.officialApplicationUrl ?? job.sourceUrl);
-
-    let verificationStatus = job.verificationStatus;
-    const data: Record<string, unknown> = {};
-
-    if (direct && verificationStatus !== "VERIFIED_OFFICIAL_AT_LAST_CHECK") {
-      verificationStatus = "VERIFIED_OFFICIAL_AT_LAST_CHECK";
-      data.verificationStatus = verificationStatus;
-      data.reasonCode = "OFFICIAL_ATS_BOARD";
-      data.verificationReason = `Read directly from the official ${canonical ?? "ATS"} job source.`;
-      data.verificationMethod = `${canonical ?? "ats"}-board-api`;
-      data.lastVerifiedAt = job.lastVerifiedAt ?? now;
-      promotedDirect += 1;
-    }
-
-    const nextActive = computeActiveFeed({
-      source: job.source,
-      verificationStatus,
-      company: job.company,
+  if (aggregatorIds.length > 0) {
+    const result = await prisma.job.updateMany({
+      where: { id: { in: aggregatorIds } },
+      data: { activeFeed: false },
     });
-
-    if (aggregator && job.activeFeed && !nextActive) hiddenAggregators += 1;
-    if (nextActive !== job.activeFeed) {
-      data.activeFeed = nextActive;
-      visibilityUpdated += 1;
-    }
-
-    if (Object.keys(data).length > 0) {
-      await prisma.job.update({ where: { id: job.id }, data });
-    }
+    hiddenAggregators = result.count;
   }
 
-  return { scanned: jobs.length, hiddenAggregators, promotedDirect, visibilityUpdated };
+  const directGroups = new Map<string, { ids: string[]; inactive: number }>();
+  for (const job of jobs) {
+    if (!isDirectOfficialSource(job.source)) continue;
+    if (!job.officialApplicationUrl && !job.sourceUrl) continue;
+    const canonical = canonicalizeSource(job.source);
+    if (!canonical) continue;
+    if (job.verificationStatus === "VERIFIED_OFFICIAL_AT_LAST_CHECK" && job.activeFeed) continue;
+    const group = directGroups.get(canonical) ?? { ids: [], inactive: 0 };
+    group.ids.push(job.id);
+    if (!job.activeFeed) group.inactive += 1;
+    directGroups.set(canonical, group);
+  }
+
+  let promotedDirect = 0;
+  let directVisibilityUpdates = 0;
+  const now = new Date();
+  for (const [source, group] of directGroups) {
+    const result = await prisma.job.updateMany({
+      where: { id: { in: group.ids } },
+      data: {
+        verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
+        reasonCode: "OFFICIAL_ATS_BOARD",
+        verificationReason: `Read directly from the official ${source} job source.`,
+        verificationMethod: `${source}-board-api`,
+        lastVerifiedAt: now,
+        activeFeed: true,
+      },
+    });
+    promotedDirect += result.count;
+    directVisibilityUpdates += group.inactive;
+  }
+
+  return {
+    scanned: jobs.length,
+    hiddenAggregators,
+    promotedDirect,
+    visibilityUpdated: hiddenAggregators + directVisibilityUpdates,
+  };
 }
 
 /** Idempotent full visibility backfill. */
