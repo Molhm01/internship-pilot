@@ -82,7 +82,10 @@ export async function geminiGenerateJSON<T = unknown>(
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           responseMimeType: "application/json",
-          responseSchema: options.schema,
+          // matchResponseJsonSchema is real JSON Schema (including
+          // additionalProperties), so use Google's JSON-Schema-specific field
+          // rather than the older OpenAPI-style responseSchema field.
+          responseJsonSchema: options.schema,
           thinkingConfig: { thinkingLevel: "minimal" },
           maxOutputTokens: 2400,
         },
