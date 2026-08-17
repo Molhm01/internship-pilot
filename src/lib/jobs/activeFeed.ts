@@ -4,9 +4,15 @@ import { canonicalizeJobUrl } from "@/lib/sync/ingest";
 import {
   canonicalizeSource,
   computeActiveFeed,
-  isDirectOfficialSource,
+  isLegacyAutoPromotableDirectSource,
   isTrustedAggregatorSource,
 } from "@/lib/jobs/sourcePolicy";
+
+function verificationMethodFor(source: string): string {
+  return source === "icims" || source === "successfactors"
+    ? `${source}-public-job-page`
+    : `${source}-board-api`;
+}
 
 /** Recompute and persist the Active-feed flag for one job. */
 export async function recomputeJobActiveFeed(jobId: string): Promise<boolean> {
@@ -23,9 +29,9 @@ export async function recomputeJobActiveFeed(jobId: string): Promise<boolean> {
 }
 
 /**
- * If a direct ATS sighting matched a legacy aggregator row by URL/requisition,
- * promote that row so the canonical provenance and click target are the direct
- * employer/public-authority source rather than Jobright/Simplify/Intern List.
+ * If a direct ATS sighting matched a legacy aggregator/generic row by URL,
+ * promote that exact row so the canonical provenance and click target are the
+ * verified employer/public-authority source.
  */
 export async function promoteCanonicalDirectJob(
   job: AtsJob,
@@ -74,7 +80,7 @@ export async function promoteCanonicalDirectJob(
       verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
       reasonCode: "OFFICIAL_ATS_BOARD",
       verificationReason: `Read directly from the official ${atsType} job source.`,
-      verificationMethod: `${atsType}-board-api`,
+      verificationMethod: verificationMethodFor(atsType),
       lastVerifiedAt: now,
       atsType,
       atsTenant: atsIdentifier,
@@ -89,9 +95,10 @@ export async function promoteCanonicalDirectJob(
 /**
  * Idempotent production cutover/repair.
  *
- * This is intentionally batched: the first production run may need to flip
- * hundreds of legacy aggregator rows, and a serverless function should do a
- * handful of updateMany calls rather than hundreds of sequential updates.
+ * Only sources that historically ALWAYS used a trusted direct adapter are
+ * eligible for bulk promotion. iCIMS/SuccessFactors had legacy generic scans,
+ * so their old rows stay hidden until promoteCanonicalDirectJob() verifies the
+ * exact job URL through the new structured adapters.
  */
 export async function reconcileDirectOfficialFeed(): Promise<{
   scanned: number;
@@ -126,7 +133,7 @@ export async function reconcileDirectOfficialFeed(): Promise<{
 
   const directGroups = new Map<string, { ids: string[]; inactive: number }>();
   for (const job of jobs) {
-    if (!isDirectOfficialSource(job.source)) continue;
+    if (!isLegacyAutoPromotableDirectSource(job.source)) continue;
     if (!job.officialApplicationUrl && !job.sourceUrl) continue;
     const canonical = canonicalizeSource(job.source);
     if (!canonical) continue;
@@ -147,7 +154,7 @@ export async function reconcileDirectOfficialFeed(): Promise<{
         verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
         reasonCode: "OFFICIAL_ATS_BOARD",
         verificationReason: `Read directly from the official ${source} job source.`,
-        verificationMethod: `${source}-board-api`,
+        verificationMethod: verificationMethodFor(source),
         lastVerifiedAt: now,
         activeFeed: true,
       },
