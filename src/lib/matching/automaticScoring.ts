@@ -176,6 +176,26 @@ export async function scheduleProfileRefreshesForUser(
   };
 }
 
+export type AutomaticUserScheduleResult = {
+  initialQueued: number;
+  refreshQueued: number;
+};
+
+/**
+ * Called after a profile mutation as well as by the hosted backstop. This is
+ * what makes adding the FIRST approved fact automatically queue all active jobs
+ * instead of waiting for the user to press Score unscored.
+ */
+export async function scheduleAutomaticScoresForUser(
+  userId: string,
+): Promise<AutomaticUserScheduleResult> {
+  const [initial, refresh] = await Promise.all([
+    scheduleAllUnscoredActiveJobs(userId),
+    scheduleProfileRefreshesForUser(userId),
+  ]);
+  return { initialQueued: initial.queued, refreshQueued: refresh.queued };
+}
+
 export type AutomaticScoringPreparation = {
   users: number;
   initialQueued: number;
@@ -189,12 +209,9 @@ export async function prepareAutomaticScoringQueues(): Promise<AutomaticScoringP
   let refreshQueued = 0;
 
   for (const userId of userIds) {
-    const [initial, refresh] = await Promise.all([
-      scheduleAllUnscoredActiveJobs(userId),
-      scheduleProfileRefreshesForUser(userId),
-    ]);
-    initialQueued += initial.queued;
-    refreshQueued += refresh.queued;
+    const scheduled = await scheduleAutomaticScoresForUser(userId);
+    initialQueued += scheduled.initialQueued;
+    refreshQueued += scheduled.refreshQueued;
   }
 
   return { users: userIds.length, initialQueued, refreshQueued };
