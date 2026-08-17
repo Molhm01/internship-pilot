@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type SyncStatus = {
   lastSyncAt: string | null;
@@ -42,14 +42,50 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
   const [coverage, setCoverage] = useState<CoverageDiagnostics | null>(null);
   const [coverageError, setCoverageError] = useState<string | null>(null);
   const [employerSweep, setEmployerSweep] = useState<EmployerSweepSummary | null>(null);
+  const lastObservedSyncAt = useRef<string | null>(null);
 
-  const load = useCallback(async () => {
-    const res = await fetch("/api/sync/status");
-    if (res.ok) setStatus(await res.json());
-  }, []);
+  const load = useCallback(
+    async ({ notify = false }: { notify?: boolean } = {}) => {
+      const res = await fetch("/api/sync/status", { cache: "no-store" });
+      if (!res.ok) return;
+
+      const next = (await res.json()) as SyncStatus;
+      const previousSyncAt = lastObservedSyncAt.current;
+      lastObservedSyncAt.current = next.lastSyncAt;
+      setStatus(next);
+
+      // The page polls only the tiny status endpoint. The expensive jobs query
+      // is refreshed only when a background ingestion run actually completed.
+      if (
+        notify &&
+        previousSyncAt &&
+        next.lastSyncAt &&
+        next.lastSyncAt !== previousSyncAt
+      ) {
+        onSynced();
+      }
+    },
+    [onSynced],
+  );
 
   useEffect(() => {
-    load();
+    void load();
+
+    const checkForCompletedSync = () => {
+      if (document.visibilityState !== "visible") return;
+      void load({ notify: true });
+    };
+
+    // A background employer sweep is scheduled every 30 minutes. Polling the
+    // lightweight status endpoint once per minute makes a newly completed run
+    // appear in Discover without the user refreshing or pressing Sync Now.
+    const interval = window.setInterval(checkForCompletedSync, 60_000);
+    document.addEventListener("visibilitychange", checkForCompletedSync);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", checkForCompletedSync);
+    };
   }, [load]);
 
   async function loadCoverageDiagnostics() {
@@ -139,8 +175,16 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
         disabled={syncing}
         className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2 disabled:opacity-40 hover:bg-accent-dark transition-colors shrink-0"
       >
-        {syncing ? "Sweeping employers…" : "Sync Now"}
+        {syncing ? "Sweeping employers…" : "Run sync now"}
       </button>
+
+      <div className="basis-full flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-tertiary">
+        <span className="inline-flex items-center gap-1.5 font-medium text-emerald-500">
+          <span className="size-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
+          Live updates
+        </span>
+        <span>Employer sources are checked automatically every 30 minutes. Discover refreshes when a run finishes.</span>
+      </div>
 
       {employerSweep && (
         <div className="basis-full rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs leading-5 text-secondary">
