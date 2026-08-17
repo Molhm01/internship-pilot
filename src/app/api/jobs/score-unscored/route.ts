@@ -3,19 +3,26 @@ import {
   BulkInitialMatchError,
   scheduleAllUnscoredActiveJobs,
 } from "@/lib/matching/bulkInitialMatch";
-import { runAutomaticScoringSweep } from "@/lib/matching/automaticScoring";
+import {
+  runAutomaticScoringSweep,
+  scheduleProfileRefreshesForUser,
+} from "@/lib/matching/automaticScoring";
 import { hasGeminiApiKey } from "@/lib/gemini";
 import { isCloudRuntime } from "@/lib/runtime/deployment";
 import { withUser } from "@/lib/auth/session";
 
 /**
  * Emergency/manual fallback. Normal production operation is scheduled, but if
- * the user presses the button this route now starts real processing instead of
- * merely leaving rows in PENDING.
+ * the user presses the button this route explicitly retries failed initial and
+ * stale-profile work, then starts real processing instead of only leaving rows
+ * in PENDING.
  */
 export const POST = withUser(async (_request, user) => {
   try {
-    const result = await scheduleAllUnscoredActiveJobs(user.id);
+    const [result] = await Promise.all([
+      scheduleAllUnscoredActiveJobs(user.id, { retryFailed: true }),
+      scheduleProfileRefreshesForUser(user.id, { retryFailed: true }),
+    ]);
 
     if (isCloudRuntime() && hasGeminiApiKey()) {
       after(async () => {
