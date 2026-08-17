@@ -2,21 +2,21 @@ import { after, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { FACT_TYPES } from "@/lib/statuses";
 import { notFoundResponse, withUser } from "@/lib/auth/session";
-import { scheduleProfileRefreshesForUser } from "@/lib/matching/automaticScoring";
+import { scheduleAutomaticScoresForUser } from "@/lib/matching/automaticScoring";
 
 type Params = { params: Promise<{ id: string }> };
 
 function queueRefreshAfterProfileChange(userId: string) {
   after(async () => {
     try {
-      await scheduleProfileRefreshesForUser(userId);
+      await scheduleAutomaticScoresForUser(userId);
     } catch (error) {
-      console.error("[resume-fact] automatic score refresh scheduling failed", {
+      console.error("[resume-fact] automatic score scheduling failed", {
         userId,
         errorCode:
           error && typeof error === "object" && "code" in error
             ? String((error as { code: unknown }).code)
-            : "PROFILE_REFRESH_QUEUE_FAILED",
+            : "AUTOMATIC_SCORE_QUEUE_FAILED",
       });
     }
   });
