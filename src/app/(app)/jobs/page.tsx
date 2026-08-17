@@ -197,14 +197,17 @@ function JobsPageContent() {
     });
   }, [refreshBulkStatus]);
 
-  useEffect(() => {
-    if (!bulkStatus || (bulkStatus.queued === 0 && bulkStatus.running === 0)) return;
-    return startBulkScoreStatusPolling({
-      fetchStatus: fetchBulkScoreStatus,
-      onStatus: applyBulkStatus,
-      onError: setBulkError,
-    });
-  }, [applyBulkStatus, bulkStatus]);
+  // Automatic scoring can start on the server after this page was already
+  // opened. Keep a cheap status watch alive while the tab is visible so a new
+  // queue is noticed without a manual reload; cards/counts are re-fetched only
+  // when work actually settles.
+  useEffect(() => startBulkScoreStatusPolling({
+    fetchStatus: fetchBulkScoreStatus,
+    onStatus: applyBulkStatus,
+    onError: setBulkError,
+    intervalMs: 15_000,
+    keepWatchingWhenIdle: true,
+  }), [applyBulkStatus]);
 
   const handleScoreAllUnscored = useCallback(async () => {
     setBulkError(null);
@@ -452,7 +455,7 @@ function JobsPageContent() {
       ) : viewState === "error" ? null : viewState === "empty" ? (
         <EmptyState
           title="No jobs match these filters"
-          description="Jobs loaded successfully, but nothing matched. Try Sync Now, or loosen the filters."
+          description="Jobs loaded successfully, but nothing matched. Automatic discovery keeps running in the background; try loosening the filters."
           action={
             <Button variant="secondary" onClick={() => setFilters(EMPTY_FILTERS)}>
               Clear filters
