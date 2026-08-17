@@ -25,10 +25,15 @@ export type ProfileRefreshScheduleResult = {
   skippedNoDescription: number;
 };
 
+function validCurrentScore(value: number | null | undefined): boolean {
+  return Number.isInteger(value) && value! >= 0 && value! <= 100;
+}
+
 /**
- * Ensure every currently scored active job is grounded in the user's CURRENT
- * approved fact fingerprint. Old pending profile revisions are retired rather
- * than allowed to spend model calls after the profile changes again.
+ * Ensure every active job with historical score evidence is grounded in the
+ * user's CURRENT approved fact fingerprint. Historical MatchResults are the
+ * durable source of score history; UserJobState is only the current display
+ * copy and can legitimately be null after all approved facts were removed.
  */
 export async function scheduleProfileRefreshesForUser(
   userId: string,
@@ -73,7 +78,7 @@ export async function scheduleProfileRefreshesForUser(
   const jobs = await prisma.job.findMany({
     where: {
       activeFeed: true,
-      userStates: { some: { userId, matchScore: VALID_SCORE } },
+      matchResults: { some: { userId, score: VALID_SCORE } },
     },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     select: {
@@ -81,6 +86,11 @@ export async function scheduleProfileRefreshesForUser(
       description: true,
       jobResponsibilities: true,
       jobQualifications: true,
+      userStates: {
+        where: { userId },
+        take: 1,
+        select: { matchScore: true },
+      },
       matchResults: {
         where: { userId, score: VALID_SCORE },
         orderBy: { createdAt: "desc" },
@@ -102,7 +112,8 @@ export async function scheduleProfileRefreshesForUser(
 
   for (const job of jobs) {
     const latest = job.matchResults[0];
-    if (originMatchesProfile(latest?.origin, revision.hash)) {
+    const currentStateIsValid = validCurrentScore(job.userStates[0]?.matchScore);
+    if (originMatchesProfile(latest?.origin, revision.hash) && currentStateIsValid) {
       alreadyCurrent += 1;
       continue;
     }
@@ -112,12 +123,18 @@ export async function scheduleProfileRefreshesForUser(
     }
 
     const existing = job.initialAiMatchJobs[0];
-    if (existing && ["PENDING", "RUNNING", "SUCCEEDED"].includes(existing.state)) {
+    // Pending/running/retryable/terminal failures already describe this exact
+    // profile revision. Do not resurrect terminal failures every maintenance
+    // cycle. A manual retry remains available after the root cause is fixed.
+    if (existing && existing.state !== "SUCCEEDED") {
       alreadyQueued += 1;
       continue;
     }
 
     try {
+      // A SUCCEEDED row can be safely reused only when its persisted current
+      // state is still current (handled above). If that display copy was later
+      // cleared, recycle the durable row to rebuild it from the same evidence.
       const queueWrite = existing
         ? prisma.initialAiMatchJob.update({
           where: { id: existing.id },
@@ -190,7 +207,9 @@ export async function scheduleAutomaticScoresForUser(
   userId: string,
 ): Promise<AutomaticUserScheduleResult> {
   const [initial, refresh] = await Promise.all([
-    scheduleAllUnscoredActiveJobs(userId),
+    // Automatic maintenance does not revive terminal failures every 30 min.
+    // The manual fallback intentionally keeps retryFailed=true by default.
+    scheduleAllUnscoredActiveJobs(userId, { retryFailed: false }),
     scheduleProfileRefreshesForUser(userId),
   ]);
   return { initialQueued: initial.queued, refreshQueued: refresh.queued };
