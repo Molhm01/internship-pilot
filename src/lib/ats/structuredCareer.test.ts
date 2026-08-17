@@ -66,6 +66,6 @@ describe("structured public ATS job parsing", () => {
   });
 
   it("strips scripts, styles, tags, and common HTML entities", () => {
-    expect(stripPortalHtml("<style>x</style><script>y</script><p>PCB &amp; FPGA&nbsp; work</p>")).toContain("PCB & FPGA");
+    expect(stripPortalHtml("<style>x</style><script>y</script><p>PCB &amp; FPGA work</p>")).toBe("PCB & FPGA work");
   });
 });
