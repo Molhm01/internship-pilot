@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { runCompanyDiscoveryBatch } from "@/lib/sync/companyDiscovery";
+import { runCompanyDiscoverySweep } from "@/lib/sync/companyDiscovery";
 import { runInternListOriginalSourceDiscovery } from "@/lib/sync/discoveryResolution";
 import { runFreshnessVerificationBatch } from "@/lib/sync/freshness";
 import { isSchedulerPaused } from "@/lib/sync/schedulerState";
 import { reconcileDirectOfficialFeed } from "@/lib/jobs/activeFeed";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 function unauthorized() {
   return NextResponse.json(
@@ -36,16 +36,34 @@ export async function GET(request: Request) {
   const log = await prisma.syncLog.create({ data: { source: "employer-ats", status: "running" } });
 
   try {
-    // Keep the direct-source feed repaired first, then add new employer jobs,
-    // resolve fresh aggregator discoveries to their ORIGINAL employer posting,
-    // and finally re-check older visible jobs for confirmed closure.
     const cutover = await reconcileDirectOfficialFeed();
 
-    const batchSize = Math.min(25, Math.max(1, Number.parseInt(process.env.CRON_JOB_BATCH_SIZE ?? "8", 10) || 8));
-    const discoveryLimit = Math.min(20, Math.max(1, Number.parseInt(process.env.CRON_DISCOVERY_RESOLVE_LIMIT ?? "6", 10) || 6));
-    const freshnessLimit = Math.min(25, Math.max(1, Number.parseInt(process.env.CRON_FRESHNESS_CHECK_LIMIT ?? "8", 10) || 8));
+    const sweepLimit = Math.min(
+      1000,
+      Math.max(1, Number.parseInt(process.env.CRON_COMPANY_SWEEP_LIMIT ?? "1000", 10) || 1000),
+    );
+    const sweepConcurrency = Math.min(
+      20,
+      Math.max(1, Number.parseInt(process.env.CRON_COMPANY_SWEEP_CONCURRENCY ?? "10", 10) || 10),
+    );
+    const discoveryLimit = Math.min(
+      20,
+      Math.max(1, Number.parseInt(process.env.CRON_DISCOVERY_RESOLVE_LIMIT ?? "20", 10) || 20),
+    );
+    const freshnessLimit = Math.min(
+      50,
+      Math.max(1, Number.parseInt(process.env.CRON_FRESHNESS_CHECK_LIMIT ?? "50", 10) || 50),
+    );
 
-    const result = await runCompanyDiscoveryBatch(batchSize);
+    // One Hobby cron run now spends most of its available Fluid Compute window
+    // sweeping the registry. Never-checked employers are handled first, then
+    // the least-recently checked employers. If the time budget is reached, the
+    // next daily run naturally resumes with the remaining oldest companies.
+    const result = await runCompanyDiscoverySweep({
+      limit: sweepLimit,
+      concurrency: sweepConcurrency,
+      maxRuntimeMs: 210_000,
+    });
     const discovery = await runInternListOriginalSourceDiscovery(discoveryLimit);
     const freshness = await runFreshnessVerificationBatch(freshnessLimit);
 
@@ -72,6 +90,9 @@ export async function GET(request: Request) {
         ok: errors === 0,
         cutover,
         checked: result.checked,
+        totalEligible: result.totalEligible,
+        stoppedForTimeBudget: result.stoppedForTimeBudget,
+        remainingInSweep: Math.max(0, result.totalEligible - result.checked),
         newJobs,
         updatedJobs,
         errors,
