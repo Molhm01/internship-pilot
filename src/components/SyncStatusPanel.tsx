@@ -14,9 +14,26 @@ type SyncStatus = {
   recentErrorCount: number;
 };
 
+type CoverageDiagnostics = {
+  sourceCandidates: number;
+  sourceCompanies: number;
+  registryCompanies: number;
+  registryMatched: number;
+  registryMissing: number;
+  withConfiguredSource: number;
+  withoutConfiguredSource: number;
+  boardSampled: number;
+  boardMatched: number;
+  boardNoMatch: number;
+  boardErrors: number;
+  topMissingCompanies: Array<{ company: string; count: number }>;
+};
+
 export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) {
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [coverage, setCoverage] = useState<CoverageDiagnostics | null>(null);
+  const [coverageError, setCoverageError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const res = await fetch("/api/sync/status");
@@ -27,11 +44,35 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
     load();
   }, [load]);
 
+  async function loadCoverageDiagnostics() {
+    setCoverageError(null);
+    try {
+      const res = await fetch("/api/sync/coverage-diagnostics", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok) {
+        setCoverage(null);
+        setCoverageError(data.error ?? "Coverage diagnostics failed.");
+        return;
+      }
+      setCoverage(data as CoverageDiagnostics);
+    } catch (error) {
+      setCoverage(null);
+      setCoverageError(error instanceof Error ? error.message : "Coverage diagnostics failed.");
+    }
+  }
+
   async function handleSyncNow() {
     setSyncing(true);
+    setCoverage(null);
+    setCoverageError(null);
     try {
-      await fetch("/api/sync/run", { method: "POST" });
-      await load();
+      const res = await fetch("/api/sync/run", { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setCoverageError(data.error ?? "Sync failed.");
+        return;
+      }
+      await Promise.all([load(), loadCoverageDiagnostics()]);
       onSynced();
     } finally {
       setSyncing(false);
@@ -81,6 +122,25 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
       >
         {syncing ? "Syncing…" : "Sync Now"}
       </button>
+
+      {coverage && (
+        <div className="basis-full rounded-md border border-hairline bg-surface-raised px-3 py-2 text-xs leading-5 text-secondary">
+          <span className="font-semibold text-primary">Coverage diagnostic:</span>{" "}
+          {coverage.sourceCandidates} source jobs · {coverage.sourceCompanies} companies · {coverage.registryMatched} registry matches · {coverage.registryMissing} missing registry · {coverage.withConfiguredSource} with ATS/careers source · {coverage.withoutConfiguredSource} without source · {coverage.boardMatched}/{coverage.boardSampled} official-board matches
+          {coverage.boardErrors > 0 ? ` · ${coverage.boardErrors} board errors` : ""}
+          {coverage.topMissingCompanies.length > 0 && (
+            <div className="mt-1 text-tertiary">
+              Top missing companies: {coverage.topMissingCompanies.map((item) => `${item.company} (${item.count})`).join(", ")}
+            </div>
+          )}
+        </div>
+      )}
+
+      {coverageError && (
+        <div className="basis-full rounded-md border border-rose-500/30 bg-rose-500/5 px-3 py-2 text-xs text-rose-500">
+          Coverage diagnostic error: {coverageError}
+        </div>
+      )}
     </section>
   );
 }
