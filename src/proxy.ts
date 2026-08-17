@@ -55,16 +55,16 @@ function normalizeOrigin(value: string | undefined): string | null {
  * production deployment its own immutable hostname, so opening those generated
  * URLs creates a second browser cookie jar and makes a valid login look "lost".
  *
- * Browser pages in production therefore converge on the one stable origin used
- * by Better Auth (`BETTER_AUTH_URL`, or Vercel's production-project URL as a
- * fallback). API routes are deliberately excluded: cron/webhook callers should
- * never be redirected and OAuth already constructs callbacks from baseURL.
+ * In production, Vercel's own stable project-production URL is the source of
+ * truth. `BETTER_AUTH_URL` remains a fallback for non-Vercel/self-hosted installs,
+ * but it must never be allowed to redirect a healthy Vercel production domain
+ * to an old immutable deployment URL.
  */
 function canonicalProductionOrigin(): string | null {
   if (process.env.VERCEL_ENV !== "production") return null;
   return (
-    normalizeOrigin(process.env.BETTER_AUTH_URL)
-    ?? normalizeOrigin(process.env.VERCEL_PROJECT_PRODUCTION_URL)
+    normalizeOrigin(process.env.VERCEL_PROJECT_PRODUCTION_URL)
+    ?? normalizeOrigin(process.env.BETTER_AUTH_URL)
   );
 }
 
