@@ -32,9 +32,27 @@ export const TRUSTED_AGGREGATORS: ReadonlySet<CanonicalSource> = new Set<Canonic
   "intern-list",
 ]);
 
-// Sources where Internship Pilot reads the posting from the employer/public
-// authority's own job system rather than from a third-party listing aggregator.
+// Sources where Internship Pilot now has a first-class adapter that reads a
+// posting from the employer/public authority's own job system and validates the
+// final job-detail destination. iCIMS and SuccessFactors enter this set only
+// after the structured public-page adapters were added.
 export const DIRECT_OFFICIAL_SOURCES: ReadonlySet<CanonicalSource> = new Set<CanonicalSource>([
+  "greenhouse",
+  "lever",
+  "ashby",
+  "smartrecruiters",
+  "workday",
+  "icims",
+  "successfactors",
+  "usajobs",
+]);
+
+// Startup/feed reconciliation predates the structured iCIMS/SuccessFactors
+// adapters. Historical rows from those vendors may have been produced by the
+// old generic HTML scanner, so they MUST NOT be bulk-promoted merely because
+// the source token is now direct. They are promoted individually only when the
+// new adapter rediscovers and verifies the exact official job URL.
+export const LEGACY_AUTO_PROMOTABLE_DIRECT_SOURCES: ReadonlySet<CanonicalSource> = new Set<CanonicalSource>([
   "greenhouse",
   "lever",
   "ashby",
@@ -93,6 +111,11 @@ export function isTrustedAggregatorSource(raw: string | null | undefined): boole
 export function isDirectOfficialSource(raw: string | null | undefined): boolean {
   const canonical = canonicalizeSource(raw);
   return canonical !== null && DIRECT_OFFICIAL_SOURCES.has(canonical);
+}
+
+export function isLegacyAutoPromotableDirectSource(raw: string | null | undefined): boolean {
+  const canonical = canonicalizeSource(raw);
+  return canonical !== null && LEGACY_AUTO_PROMOTABLE_DIRECT_SOURCES.has(canonical);
 }
 
 export type VerificationState =
