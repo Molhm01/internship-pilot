@@ -1,21 +1,21 @@
 /*
  * Shared data, but not public data.
  *
- * Sync Now checks direct employer/public-authority sources, uses Intern List
- * only as a DISCOVERY signal that must resolve to the original employer post,
- * and re-checks older active jobs so confirmed closed postings leave Discover.
+ * Sync Now performs a broad direct-employer sweep, uses Intern List only as a
+ * DISCOVERY signal that must resolve to the original employer post, and then
+ * re-checks older active jobs so confirmed closed postings leave Discover.
  */
 import { guardSession } from "@/lib/auth/session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { runQueueBatch } from "@/lib/sync/queue";
-import { runCompanyDiscoveryBatch, runUsaJobsDiscovery } from "@/lib/sync/companyDiscovery";
+import { runCompanyDiscoverySweep, runUsaJobsDiscovery } from "@/lib/sync/companyDiscovery";
 import { runInternListOriginalSourceDiscovery } from "@/lib/sync/discoveryResolution";
 import { runFreshnessVerificationBatch } from "@/lib/sync/freshness";
 import { reconcileDirectOfficialFeed } from "@/lib/jobs/activeFeed";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 export async function POST() {
   const denied = await guardSession();
@@ -24,11 +24,18 @@ export async function POST() {
   const log = await prisma.syncLog.create({ data: { source: "employer-ats", status: "running" } });
   try {
     const cutover = await reconcileDirectOfficialFeed();
-    const companies = await runCompanyDiscoveryBatch(10);
-    // Keep manual runs bounded for the hosted runtime. Repeated Sync Now runs
-    // naturally rotate through remaining discovery/backlog and freshness rows.
-    const discovery = await runInternListOriginalSourceDiscovery(12);
-    const freshness = await runFreshnessVerificationBatch(10);
+
+    // Spend most of the serverless time budget on the employer registry itself.
+    // Never-checked companies come first; subsequent runs resume with the
+    // least-recently checked companies rather than re-checking the same few.
+    const companies = await runCompanyDiscoverySweep({
+      limit: 1000,
+      concurrency: 10,
+      maxRuntimeMs: 180_000,
+    });
+
+    const discovery = await runInternListOriginalSourceDiscovery(20);
+    const freshness = await runFreshnessVerificationBatch(50);
     const usajobs = await runUsaJobsDiscovery();
     const queue = await runQueueBatch();
 
@@ -53,7 +60,15 @@ export async function POST() {
       },
     });
 
-    return NextResponse.json({ cutover, companies, discovery, freshness, usajobs, queue });
+    return NextResponse.json({
+      cutover,
+      companies,
+      discovery,
+      freshness,
+      usajobs,
+      queue,
+      companySweepRemaining: Math.max(0, companies.totalEligible - companies.checked),
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await prisma.syncLog.update({
