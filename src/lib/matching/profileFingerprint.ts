@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { prisma } from "@/lib/db";
 
+export const PROFILE_REFRESH_MATCH_PREFIX = "PROFILE_REFRESH:";
+
 export type FingerprintFact = {
   id: string;
   type: string;
@@ -42,7 +44,7 @@ export async function approvedProfileRevision(
 export function scoreOriginForProfile(
   kind: "MANUAL" | "INITIAL_AUTO" | "PROFILE_AUTO",
   profileHash: string,
-): `${typeof kind}:${string}` {
+): string {
   return `${kind}:${profileHash}`;
 }
 
@@ -52,4 +54,14 @@ export function originMatchesProfile(
 ): boolean {
   if (!origin) return false;
   return origin.endsWith(`:${profileHash}`);
+}
+
+export function profileRefreshMatchType(profileHash: string): string {
+  return `${PROFILE_REFRESH_MATCH_PREFIX}${profileHash}`;
+}
+
+export function profileHashFromRefreshMatchType(matchType: string): string | null {
+  if (!matchType.startsWith(PROFILE_REFRESH_MATCH_PREFIX)) return null;
+  const hash = matchType.slice(PROFILE_REFRESH_MATCH_PREFIX.length);
+  return /^[a-f0-9]{64}$/i.test(hash) ? hash : null;
 }
