@@ -107,7 +107,10 @@ export async function runFreshnessVerificationBatch(
       verificationStatus: AVAILABILITY.OFFICIAL_VERIFIED,
       officialApplicationUrl: { not: null },
     },
-    orderBy: [{ lastVerifiedAt: "asc" }, { sourcePostedAt: "asc" }],
+    orderBy: [
+      { lastVerifiedAt: { sort: "asc", nulls: "first" } },
+      { sourcePostedAt: { sort: "asc", nulls: "first" } },
+    ],
     take: Math.max(1, Math.min(limit, 50)),
     select: {
       id: true,
@@ -117,7 +120,7 @@ export async function runFreshnessVerificationBatch(
     },
   });
 
-  const outcomes = await mapWithConcurrency(jobs, 4, async (job) => {
+  const outcomes = await mapWithConcurrency(jobs, 8, async (job) => {
     const probe = await probeOfficialJobAvailability(job.officialApplicationUrl!);
     const now = new Date();
 
