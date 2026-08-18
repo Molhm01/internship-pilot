@@ -1,10 +1,10 @@
 import { guardSession } from "@/lib/auth/session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { runJobrightFreshDiscovery } from "@/lib/sync/jobrightFreshDiscovery";
+import { runLiveDiscoveryCycle } from "@/lib/sync/liveDiscoveryEngine";
 
 export const runtime = "nodejs";
-export const maxDuration = 120;
+export const maxDuration = 180;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const FRESH_24H_TARGET = 25;
@@ -17,7 +17,7 @@ export async function POST() {
 
   const running = await prisma.syncLog.findFirst({
     where: {
-      source: "fresh-discovery",
+      source: "live-discovery",
       status: "running",
       startedAt: { gte: new Date(Date.now() - RECENT_RUNNING_WINDOW_MS) },
     },
@@ -32,11 +32,16 @@ export async function POST() {
   }
 
   const log = await prisma.syncLog.create({
-    data: { source: "fresh-discovery", status: "running" },
+    data: { source: "live-discovery", status: "running" },
   });
 
   try {
-    const freshDiscovery = await runJobrightFreshDiscovery(200);
+    // Browser self-heal uses the same production engine as QStash, but with a
+    // slightly smaller direct-ATS batch because the page is waiting on it.
+    const liveDiscovery = await runLiveDiscoveryCycle({
+      atsCheckLimit: 20,
+      queueProcessLimit: 80,
+    });
     const now = Date.now();
     const [active, fresh24h, fresh72h] = await Promise.all([
       prisma.job.count({ where: { activeFeed: true } }),
@@ -53,8 +58,8 @@ export async function POST() {
       data: {
         status: "success",
         finishedAt: new Date(),
-        newJobsCount: freshDiscovery.newCount,
-        updatedJobsCount: freshDiscovery.updatedCount,
+        newJobsCount: liveDiscovery.newJobs,
+        updatedJobsCount: liveDiscovery.updatedJobs,
       },
     });
 
@@ -67,7 +72,7 @@ export async function POST() {
         fresh24hTarget: FRESH_24H_TARGET,
         fresh72hTarget: FRESH_72H_TARGET,
         freshnessTargetReached: fresh24h >= FRESH_24H_TARGET && fresh72h >= FRESH_72H_TARGET,
-        freshDiscovery,
+        liveDiscovery,
       },
       { headers: { "cache-control": "no-store" } },
     );
