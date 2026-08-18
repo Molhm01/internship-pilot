@@ -15,19 +15,7 @@ const SIMPLIFY_FEED =
 const ZAPPLY_FEED =
   "https://raw.githubusercontent.com/zapplyjobs/Internships-2027/main/README.md";
 
-const TECHNICAL_ROLE_PATTERN = /\b(?:
-  engineer(?:ing)?|software|developer|development|programmer|computer\s+science|data\s+scien(?:ce|tist)|
-  machine\s+learning|artificial\s+intelligence|ai\s+(?:engineer|research|intern)|ml\s+(?:engineer|research|intern)|
-  hardware|firmware|embedded|electrical|electronics|mechanical|aerospace|aeronautical|civil|chemical|biomedical|
-  bioengineering|industrial\s+engineer|manufacturing|semiconductor|silicon|fpga|asic|vlsi|robotics|automation|
-  controls?|systems?\s+engineer|systems?\s+intern|cybersecurity|cyber\s+security|security\s+engineer|
-  cloud\s+engineer|devops|site\s+reliability|platform\s+engineer|infrastructure\s+engineer|network\s+engineer|
-  test\s+engineer|test\s+engineering|validation\s+engineer|quality\s+engineer|materials?\s+engineer|
-  power\s+(?:systems?|engineer)|energy\s+engineer|mechatronics|product\s+design\s+engineer|flight\s+software|
-  propulsion|avionics|computer\s+vision|autonomous\s+systems
-)\b/ix;
-
-const STUDENT_SIGNAL = /\b(?:intern(?:ship)?|co-?op|student|undergrad(?:uate)?|year\s+at)\b/i;
+const TECHNICAL_ROLE_PATTERN = /\b(?:engineer(?:ing)?|software|developer|development|programmer|computer\s+science|data\s+scien(?:ce|tist)|machine\s+learning|artificial\s+intelligence|ai\s+(?:engineer|research|intern)|ml\s+(?:engineer|research|intern)|hardware|firmware|embedded|electrical|electronics|mechanical|aerospace|aeronautical|civil|chemical|biomedical|bioengineering|industrial\s+engineer|manufacturing|semiconductor|silicon|fpga|asic|vlsi|robotics|automation|controls?|systems?\s+engineer|systems?\s+intern|cybersecurity|cyber\s+security|security\s+engineer|cloud\s+engineer|devops|site\s+reliability|platform\s+engineer|infrastructure\s+engineer|network\s+engineer|test\s+engineer|test\s+engineering|validation\s+engineer|quality\s+engineer|materials?\s+engineer|power\s+(?:systems?|engineer)|energy\s+engineer|mechatronics|product\s+design\s+engineer|flight\s+software|propulsion|avionics|computer\s+vision|autonomous\s+systems)\b/i;
 
 export type MassFeedCandidate = {
   discoverySource: "simplify" | "zapply";
@@ -73,7 +61,7 @@ function cleanCompany(value: string): string {
 }
 
 function isTechnicalInternship(title: string): boolean {
-  return TECHNICAL_ROLE_PATTERN.test(title) && (STUDENT_SIGNAL.test(title) || true);
+  return TECHNICAL_ROLE_PATTERN.test(title);
 }
 
 function validDirectUrl(value: string | null): value is string {
