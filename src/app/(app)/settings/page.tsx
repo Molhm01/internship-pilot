@@ -1,7 +1,4 @@
-import { redirect } from "next/navigation";
-import AccountSettings from "@/components/settings/AccountSettings";
-import LiveDiscoverySettings from "@/components/settings/LiveDiscoverySettings";
-import { currentUser } from "@/lib/auth/session";
+import SettingsClient from "@/components/settings/SettingsClient";
 import { googleAuthConfigured } from "@/lib/auth/betterAuth";
 
 export const dynamic = "force-dynamic";
@@ -9,16 +6,13 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Settings — Internship Pilot" };
 
 /**
- * Settings.
- *
- * The session is read here, on the server, rather than fetched by the client
- * component: the page should not render an account shell for somebody who is
- * not signed in, even briefly.
+ * Settings is an interactive client surface. Route protection remains in the
+ * workspace proxy and every API called by the screen authenticates itself.
+ * Avoiding a second Better Auth database/session lookup during the server render
+ * means a transient auth lookup can no longer take the whole page down with a
+ * server-render 500.
  */
-export default async function SettingsPage() {
-  const user = await currentUser();
-  if (!user) redirect("/login?next=/settings");
-
+export default function SettingsPage() {
   return (
     <div className="mx-auto max-w-3xl px-8 py-10">
       <header>
@@ -28,12 +22,7 @@ export default async function SettingsPage() {
         </p>
       </header>
 
-      <AccountSettings
-        name={user.name}
-        email={user.email}
-        googleEnabled={googleAuthConfigured}
-      />
-      <LiveDiscoverySettings />
+      <SettingsClient googleEnabled={googleAuthConfigured} />
     </div>
   );
 }
