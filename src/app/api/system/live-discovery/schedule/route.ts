@@ -96,10 +96,9 @@ export async function POST() {
 
   const destination = `${baseUrl}/api/cron/live-discovery`;
 
-  // QStash's create-schedule API expects the destination URL literally in the
-  // path: /v2/schedules/https://example.com/endpoint. Do not percent-encode the
-  // entire destination first; doing so turns the destination into one encoded
-  // path segment and QStash rejects it as an invalid schedule destination.
+  // Keep the destination literal. This mirrors Upstash's documented REST form:
+  // /v2/schedules/https://example.com/endpoint. Encoding the whole URL into a
+  // single path segment causes QStash to reject the schedule destination.
   const response = await qstash(`/schedules/${destination}`, {
     method: "POST",
     headers: {
