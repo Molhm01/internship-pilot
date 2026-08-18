@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { runCompanyDiscoveryBatch } from "@/lib/sync/companyDiscovery";
+import { runLiveDirectRadar } from "@/lib/sync/liveDirectRadar";
 import {
   enqueueJobrightFreshSignals,
   getLiveDiscoveryQueueHealth,
@@ -26,6 +27,7 @@ export async function getLiveDiscoveryHealth() {
     queue,
     lastLiveRun,
     lastLiveError,
+    directRadarCursor,
   ] = await Promise.all([
     prisma.job.count({ where: { activeFeed: true } }),
     prisma.job.count({
@@ -60,6 +62,7 @@ export async function getLiveDiscoveryHealth() {
       orderBy: { finishedAt: "desc" },
       select: { finishedAt: true, errorMessage: true },
     }),
+    prisma.appSetting.findUnique({ where: { key: "liveDiscovery:cursor:direct-radar" } }),
   ]);
 
   const lagsMinutes = recentJobs
@@ -68,6 +71,13 @@ export async function getLiveDiscoveryHealth() {
       return Math.max(0, (job.firstSeenAt.getTime() - job.sourcePostedAt.getTime()) / 60_000);
     })
     .filter((value): value is number => value !== null && Number.isFinite(value));
+
+  let directRadar: unknown = null;
+  try {
+    directRadar = directRadarCursor?.value ? JSON.parse(directRadarCursor.value) : null;
+  } catch {
+    directRadar = null;
+  }
 
   return {
     active,
@@ -81,6 +91,7 @@ export async function getLiveDiscoveryHealth() {
     sourceLagMinutesP95: percentile(lagsMinutes, 0.95),
     recentLagSampleSize: lagsMinutes.length,
     queue,
+    directRadar,
     lastLiveDiscoveryAt: lastLiveRun?.finishedAt?.toISOString() ?? null,
     lastLiveNewJobs: lastLiveRun?.newJobsCount ?? 0,
     lastLiveUpdatedJobs: lastLiveRun?.updatedJobsCount ?? 0,
@@ -92,15 +103,21 @@ export async function getLiveDiscoveryHealth() {
 export async function runLiveDiscoveryCycle(options: {
   atsCheckLimit?: number;
   queueProcessLimit?: number;
+  directRadarLimit?: number;
 } = {}) {
   const startedAt = Date.now();
   const atsCheckLimit = Math.max(1, Math.min(options.atsCheckLimit ?? 40, 100));
   const queueProcessLimit = Math.max(1, Math.min(options.queueProcessLimit ?? 80, 200));
+  const directRadarLimit = Math.max(1, Math.min(options.directRadarLimit ?? 250, 500));
 
-  // Capture radar signals first. This is intentionally cheap and durable: even
-  // if an ATS is slow later in the run, the signal survives in AppSetting and
-  // the next 5-minute cycle can retry it.
-  const enqueue = await enqueueJobrightFreshSignals();
+  // Run the two radar lanes in parallel. Jobright/Intern-List signals are
+  // durable-queued because they may need later ATS resolution. Simplify,
+  // Zapply, ApplyGuy and Dreamwork already provide job-specific original URLs,
+  // so their newest deltas can take the direct fast path immediately.
+  const [enqueue, directRadar] = await Promise.all([
+    enqueueJobrightFreshSignals(),
+    runLiveDirectRadar(directRadarLimit),
+  ]);
 
   // Work the most recent unresolved radar events first, then poll employer ATS
   // boards that are actually due according to their per-company nextCheckAt
@@ -110,23 +127,24 @@ export async function runLiveDiscoveryCycle(options: {
   const queue = await processLiveDiscoveryQueue(queueProcessLimit);
   const ats = await runCompanyDiscoveryBatch(atsCheckLimit);
 
+  const atsNew = ats.results.reduce((sum, row) => sum + row.newCount, 0);
+  const atsUpdated = ats.results.reduce((sum, row) => sum + row.updatedCount, 0);
   const health = await getLiveDiscoveryHealth();
   return {
     ok: true,
     durationMs: Date.now() - startedAt,
     enqueue,
+    directRadar,
     queue,
     ats: {
       checked: ats.checked,
-      newCount: ats.results.reduce((sum, row) => sum + row.newCount, 0),
-      updatedCount: ats.results.reduce((sum, row) => sum + row.updatedCount, 0),
+      newCount: atsNew,
+      updatedCount: atsUpdated,
       errors: ats.results.filter((row) => row.status === "error").length,
       unsupported: ats.results.filter((row) => row.status === "unsupported").length,
     },
-    newJobs:
-      queue.newCount + ats.results.reduce((sum, row) => sum + row.newCount, 0),
-    updatedJobs:
-      queue.updatedCount + ats.results.reduce((sum, row) => sum + row.updatedCount, 0),
+    newJobs: directRadar.newCount + queue.newCount + atsNew,
+    updatedJobs: directRadar.updatedCount + queue.updatedCount + atsUpdated,
     health,
   };
 }
