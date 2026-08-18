@@ -1,10 +1,9 @@
 /*
  * Shared data, but not public data.
  *
- * Sync Now and browser self-healing use Intern List only as a DISCOVERY signal
- * that must resolve to the original employer post, then sweep direct employer
- * sources and re-check older active jobs so confirmed closed postings leave
- * Discover.
+ * Browser self-healing and manual recovery ingest broad public direct-job
+ * feeds first, then use Intern List as a secondary discovery signal, sweep the
+ * owned employer registry, and re-check older active jobs.
  */
 import { guardSession } from "@/lib/auth/session";
 import { NextResponse } from "next/server";
@@ -13,6 +12,7 @@ import { runQueueBatch } from "@/lib/sync/queue";
 import { runCompanyDiscoverySweep, runUsaJobsDiscovery } from "@/lib/sync/companyDiscovery";
 import { runInternListOriginalSourceDiscovery } from "@/lib/sync/discoveryResolution";
 import { runFreshnessVerificationBatch } from "@/lib/sync/freshness";
+import { runPublicDirectFeedDiscovery } from "@/lib/sync/publicDirectFeeds";
 import { reconcileDirectOfficialFeed } from "@/lib/jobs/activeFeed";
 
 export const runtime = "nodejs";
@@ -52,19 +52,20 @@ export async function POST() {
   try {
     const cutover = await reconcileDirectOfficialFeed();
 
-    // Resolve the freshest broad discovery signals first. The previous order
-    // spent most of the function window on the registry sweep and left only a
-    // small tail for Intern List, which made the feed cluster around a handful
-    // of recently-scanned employers.
+    // Broadest/highest-confidence external inputs first. These feeds carry the
+    // original employer/ATS URL rather than a competitor redirect.
+    const publicDirect = await runPublicDirectFeedDiscovery(160);
+
+    // Intern List remains useful for roles not present in the direct feeds, but
+    // it still must resolve back to a live original employer posting.
     const discovery = await runInternListOriginalSourceDiscovery(50);
 
-    // Continue the direct-employer registry sweep afterward. It is resumable
-    // and oldest-first, so giving fresh discovery priority does not lose
-    // employer coverage across repeated automatic runs.
+    // Continue the direct-employer registry afterward. It is resumable and
+    // oldest-first, so repeated automatic runs still cover the full catalogue.
     const companies = await runCompanyDiscoverySweep({
       limit: 1000,
       concurrency: 10,
-      maxRuntimeMs: 150_000,
+      maxRuntimeMs: 110_000,
     });
 
     const freshness = await runFreshnessVerificationBatch(50);
@@ -73,10 +74,12 @@ export async function POST() {
 
     const newJobsCount =
       companies.results.reduce((sum, company) => sum + company.newCount, 0) +
+      publicDirect.newCount +
       discovery.newCount +
       usajobs.newCount;
     const updatedJobsCount =
       companies.results.reduce((sum, company) => sum + company.updatedCount, 0) +
+      publicDirect.updatedCount +
       discovery.updatedCount +
       usajobs.updatedCount;
     const companyErrors = companies.results.filter((company) => company.status === "error").length;
@@ -95,8 +98,9 @@ export async function POST() {
     return NextResponse.json({
       ok: true,
       cutover,
-      companies,
+      publicDirect,
       discovery,
+      companies,
       freshness,
       usajobs,
       queue,
