@@ -36,16 +36,35 @@ type EmployerSweepSummary = {
   stoppedForTimeBudget: boolean;
 };
 
+const AUTOMATIC_SYNC_CATCHUP_AFTER_MS = 45 * 60 * 1000;
 const AUTOMATIC_SYNC_STALE_AFTER_MS = 75 * 60 * 1000;
+const AUTOMATIC_RECOVERY_COOLDOWN_MS = 10 * 60 * 1000;
 
-type AutomaticSyncHealth = "healthy" | "stale" | "error" | "waiting";
+type AutomaticSyncHealth = "healthy" | "recovering" | "stale" | "error" | "waiting";
 
-function automaticSyncHealth(status: SyncStatus | null): AutomaticSyncHealth {
+function syncAgeMs(status: SyncStatus | null): number | null {
+  if (!status?.lastSyncAt) return null;
+  const timestamp = new Date(status.lastSyncAt).getTime();
+  return Number.isFinite(timestamp) ? Math.max(0, Date.now() - timestamp) : null;
+}
+
+function needsAutomaticCatchup(status: SyncStatus | null): boolean {
+  if (!status?.lastSyncAt) return true;
+  if (status.lastSyncStatus === "error") return true;
+  const age = syncAgeMs(status);
+  return age === null || age > AUTOMATIC_SYNC_CATCHUP_AFTER_MS;
+}
+
+function automaticSyncHealth(
+  status: SyncStatus | null,
+  automaticRecovering: boolean,
+): AutomaticSyncHealth {
+  if (automaticRecovering) return "recovering";
   if (!status?.lastSyncAt) return "waiting";
   if (status.lastSyncStatus === "error") return "error";
-  const timestamp = new Date(status.lastSyncAt).getTime();
-  if (!Number.isFinite(timestamp)) return "stale";
-  return Date.now() - timestamp > AUTOMATIC_SYNC_STALE_AFTER_MS ? "stale" : "healthy";
+  const age = syncAgeMs(status);
+  if (age === null) return "stale";
+  return age > AUTOMATIC_SYNC_STALE_AFTER_MS ? "stale" : "healthy";
 }
 
 const HEALTH_COPY: Record<AutomaticSyncHealth, { label: string; className: string; dotClassName: string; detail: string }> = {
@@ -53,48 +72,54 @@ const HEALTH_COPY: Record<AutomaticSyncHealth, { label: string; className: strin
     label: "Automatic sync healthy",
     className: "text-emerald-500",
     dotClassName: "bg-emerald-500",
-    detail: "Employer sources are scheduled every 30 minutes. Discover refreshes when a completed run is detected.",
+    detail: "The external schedule targets every 30 minutes. Discover also self-heals missed runs while this page is open.",
+  },
+  recovering: {
+    label: "Catching up automatically",
+    className: "text-cyan-400",
+    dotClassName: "bg-cyan-400",
+    detail: "A stale feed was detected, so Discover started a real employer sweep automatically. No button press is required.",
   },
   stale: {
     label: "Automatic sync stale",
     className: "text-amber-500",
     dotClassName: "bg-amber-500",
-    detail: "No employer sync has completed recently. The scheduled GitHub workflow needs attention; Run sync now remains available as a fallback.",
+    detail: "The external scheduler missed its freshness target. Discover will automatically retry a catch-up sweep while this page is open.",
   },
   error: {
     label: "Automatic sync error",
     className: "text-rose-500",
     dotClassName: "bg-rose-500",
-    detail: "The latest employer sync failed. Check the live-maintenance workflow or use Run sync now while the scheduler is repaired.",
+    detail: "The latest employer sync failed. Discover will automatically retry after the recovery cooldown; Run sync now remains an emergency fallback.",
   },
   waiting: {
     label: "Waiting for automatic sync",
     className: "text-amber-500",
     dotClassName: "bg-amber-500",
-    detail: "No completed hosted employer sync has been recorded yet.",
+    detail: "No completed employer sync is recorded yet. Discover will start one automatically while this page is open.",
   },
 };
 
 export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) {
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [automaticRecovering, setAutomaticRecovering] = useState(false);
   const [coverage, setCoverage] = useState<CoverageDiagnostics | null>(null);
   const [coverageError, setCoverageError] = useState<string | null>(null);
   const [employerSweep, setEmployerSweep] = useState<EmployerSweepSummary | null>(null);
   const lastObservedSyncAt = useRef<string | null>(null);
+  const lastAutomaticRecoveryAttemptAt = useRef(0);
 
   const load = useCallback(
-    async ({ notify = false }: { notify?: boolean } = {}) => {
+    async ({ notify = false }: { notify?: boolean } = {}): Promise<SyncStatus | null> => {
       const res = await fetch("/api/sync/status", { cache: "no-store" });
-      if (!res.ok) return;
+      if (!res.ok) return null;
 
       const next = (await res.json()) as SyncStatus;
       const previousSyncAt = lastObservedSyncAt.current;
       lastObservedSyncAt.current = next.lastSyncAt;
       setStatus(next);
 
-      // The page polls only the tiny status endpoint. The expensive jobs query
-      // is refreshed only when a background ingestion run actually completed.
       if (
         notify &&
         previousSyncAt &&
@@ -103,26 +128,60 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
       ) {
         onSynced();
       }
+      return next;
     },
     [onSynced],
   );
 
-  useEffect(() => {
-    void load();
+  const runAutomaticCatchup = useCallback(async (observed: SyncStatus | null) => {
+    if (!needsAutomaticCatchup(observed)) return;
+    if (document.visibilityState !== "visible") return;
 
-    const checkForCompletedSync = () => {
+    const now = Date.now();
+    if (now - lastAutomaticRecoveryAttemptAt.current < AUTOMATIC_RECOVERY_COOLDOWN_MS) return;
+    lastAutomaticRecoveryAttemptAt.current = now;
+    setAutomaticRecovering(true);
+
+    try {
+      const res = await fetch("/api/sync/run", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setCoverageError(data.error ?? "Automatic catch-up sync failed.");
+        return;
+      }
+
+      if (data.companies) {
+        setEmployerSweep({
+          checked: Number(data.companies.checked ?? 0),
+          totalEligible: Number(data.companies.totalEligible ?? 0),
+          remaining: Number(data.companySweepRemaining ?? 0),
+          stoppedForTimeBudget: Boolean(data.companies.stoppedForTimeBudget),
+        });
+      }
+    } catch (error) {
+      setCoverageError(error instanceof Error ? error.message : "Automatic catch-up sync failed.");
+    } finally {
+      setAutomaticRecovering(false);
+      await load({ notify: true });
+    }
+  }, [load]);
+
+  useEffect(() => {
+    const checkFreshness = async () => {
       if (document.visibilityState !== "visible") return;
-      void load({ notify: true });
+      const next = await load({ notify: true });
+      if (next) void runAutomaticCatchup(next);
     };
 
-    const interval = window.setInterval(checkForCompletedSync, 60_000);
-    document.addEventListener("visibilitychange", checkForCompletedSync);
+    void checkFreshness();
+    const interval = window.setInterval(checkFreshness, 60_000);
+    document.addEventListener("visibilitychange", checkFreshness);
 
     return () => {
       window.clearInterval(interval);
-      document.removeEventListener("visibilitychange", checkForCompletedSync);
+      document.removeEventListener("visibilitychange", checkFreshness);
     };
-  }, [load]);
+  }, [load, runAutomaticCatchup]);
 
   async function loadCoverageDiagnostics() {
     setCoverageError(null);
@@ -163,14 +222,13 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
         });
       }
 
-      await Promise.all([load(), loadCoverageDiagnostics()]);
-      onSynced();
+      await Promise.all([load({ notify: true }), loadCoverageDiagnostics()]);
     } finally {
       setSyncing(false);
     }
   }
 
-  const health = automaticSyncHealth(status);
+  const health = automaticSyncHealth(status, automaticRecovering);
   const healthCopy = HEALTH_COPY[health];
 
   return (
@@ -211,10 +269,10 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
       </div>
       <button
         onClick={handleSyncNow}
-        disabled={syncing}
+        disabled={syncing || automaticRecovering}
         className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2 disabled:opacity-40 hover:bg-accent-dark transition-colors shrink-0"
       >
-        {syncing ? "Sweeping employers…" : "Run sync now"}
+        {automaticRecovering ? "Catching up…" : syncing ? "Sweeping employers…" : "Run sync now"}
       </button>
 
       <div className="basis-full flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-tertiary">
@@ -250,7 +308,7 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
 
       {coverageError && (
         <div className="basis-full rounded-md border border-rose-500/30 bg-rose-500/5 px-3 py-2 text-xs text-rose-500">
-          Coverage diagnostic error: {coverageError}
+          Sync diagnostic: {coverageError}
         </div>
       )}
     </section>

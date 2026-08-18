@@ -17,9 +17,35 @@ import { reconcileDirectOfficialFeed } from "@/lib/jobs/activeFeed";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
+const RECENT_RUNNING_WINDOW_MS = 7 * 60 * 1000;
+
+async function recentRunningSync() {
+  return prisma.syncLog.findFirst({
+    where: {
+      source: "employer-ats",
+      status: "running",
+      startedAt: { gte: new Date(Date.now() - RECENT_RUNNING_WINDOW_MS) },
+    },
+    select: { id: true, startedAt: true },
+    orderBy: { startedAt: "desc" },
+  });
+}
+
 export async function POST() {
   const denied = await guardSession();
   if (denied) return denied;
+
+  const running = await recentRunningSync();
+  if (running) {
+    return NextResponse.json(
+      {
+        ok: true,
+        skipped: "already_running",
+        runningSince: running.startedAt.toISOString(),
+      },
+      { status: 202, headers: { "cache-control": "no-store" } },
+    );
+  }
 
   const log = await prisma.syncLog.create({ data: { source: "employer-ats", status: "running" } });
   try {
@@ -61,6 +87,7 @@ export async function POST() {
     });
 
     return NextResponse.json({
+      ok: true,
       cutover,
       companies,
       discovery,
