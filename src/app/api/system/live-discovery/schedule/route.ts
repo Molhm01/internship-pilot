@@ -68,7 +68,7 @@ export async function GET() {
   if (!response.ok) {
     const detail = await response.text();
     return NextResponse.json(
-      { error: "Could not read the QStash live-discovery schedule.", detail: detail.slice(0, 300) },
+      { error: "Could not read the QStash live-discovery schedule.", detail: detail.slice(0, 500) },
       { status: 502 },
     );
   }
@@ -95,7 +95,12 @@ export async function POST() {
   }
 
   const destination = `${baseUrl}/api/cron/live-discovery`;
-  const response = await qstash(`/schedules/${encodeURIComponent(destination)}`, {
+
+  // QStash's create-schedule API expects the destination URL literally in the
+  // path: /v2/schedules/https://example.com/endpoint. Do not percent-encode the
+  // entire destination first; doing so turns the destination into one encoded
+  // path segment and QStash rejects it as an invalid schedule destination.
+  const response = await qstash(`/schedules/${destination}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -112,7 +117,11 @@ export async function POST() {
   if (!response.ok) {
     const detail = await response.text();
     return NextResponse.json(
-      { error: "QStash rejected the live-discovery schedule.", detail: detail.slice(0, 500) },
+      {
+        error: "QStash rejected the live-discovery schedule.",
+        detail: detail.slice(0, 1000),
+        status: response.status,
+      },
       { status: 502 },
     );
   }
@@ -120,6 +129,8 @@ export async function POST() {
   const created = await response.json();
   return NextResponse.json({
     ok: true,
+    configured: true,
+    scheduled: true,
     scheduleId: created.scheduleId ?? SCHEDULE_ID,
     cron: SCHEDULE_CRON,
     destination,
@@ -137,7 +148,7 @@ export async function DELETE() {
   if (!response.ok && response.status !== 404) {
     const detail = await response.text();
     return NextResponse.json(
-      { error: "Could not delete the QStash schedule.", detail: detail.slice(0, 300) },
+      { error: "Could not delete the QStash schedule.", detail: detail.slice(0, 500) },
       { status: 502 },
     );
   }
