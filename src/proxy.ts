@@ -32,9 +32,10 @@ function isPublic(pathname: string): boolean {
   // Better Auth's own endpoints, including the OAuth callback the browser is
   // redirected to by Google before any session exists.
   if (pathname.startsWith("/api/auth")) return true;
-  // Aggregate-only production health. This endpoint exposes counts/timestamps
-  // only — never user data, job details, credentials, or secrets.
-  if (pathname === "/api/health/catalog") return true;
+  // Aggregate-only production health/coverage diagnostics. These endpoints
+  // expose counts/timestamps only — never user data, job details, credentials,
+  // or secrets.
+  if (pathname === "/api/health/catalog" || pathname.startsWith("/api/health/catalog/")) return true;
   // Vercel invokes cron routes without a user session cookie. These handlers
   // authenticate themselves with CRON_SECRET, so the proxy must let the
   // request reach the route instead of replacing it with the normal API 401.
