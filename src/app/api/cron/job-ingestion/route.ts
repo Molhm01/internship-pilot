@@ -9,6 +9,8 @@ import { reconcileDirectOfficialFeed } from "@/lib/jobs/activeFeed";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
+const RECENT_RUNNING_WINDOW_MS = 7 * 60 * 1000;
+
 function unauthorized() {
   return NextResponse.json(
     { error: "Unauthorized cron request." },
@@ -28,6 +30,33 @@ export async function GET(request: Request) {
   if (await isSchedulerPaused()) {
     return NextResponse.json(
       { ok: true, skipped: "scheduler_paused", checked: 0, newJobs: 0, updatedJobs: 0, errors: 0 },
+      { headers: { "cache-control": "no-store" } },
+    );
+  }
+
+  // Browser self-healing, manual recovery and the external scheduler all share
+  // the same catalogue. If one sweep is already genuinely running, do not
+  // start another copy against the same employer registry.
+  const running = await prisma.syncLog.findFirst({
+    where: {
+      source: "employer-ats",
+      status: "running",
+      startedAt: { gte: new Date(Date.now() - RECENT_RUNNING_WINDOW_MS) },
+    },
+    select: { id: true, startedAt: true },
+    orderBy: { startedAt: "desc" },
+  });
+  if (running) {
+    return NextResponse.json(
+      {
+        ok: true,
+        skipped: "already_running",
+        runningSince: running.startedAt.toISOString(),
+        checked: 0,
+        newJobs: 0,
+        updatedJobs: 0,
+        errors: 0,
+      },
       { headers: { "cache-control": "no-store" } },
     );
   }
@@ -55,10 +84,6 @@ export async function GET(request: Request) {
       Math.max(1, Number.parseInt(process.env.CRON_FRESHNESS_CHECK_LIMIT ?? "50", 10) || 50),
     );
 
-    // One Hobby cron run now spends most of its available Fluid Compute window
-    // sweeping the registry. Never-checked employers are handled first, then
-    // the least-recently checked employers. If the time budget is reached, the
-    // next daily run naturally resumes with the remaining oldest companies.
     const result = await runCompanyDiscoverySweep({
       limit: sweepLimit,
       concurrency: sweepConcurrency,
