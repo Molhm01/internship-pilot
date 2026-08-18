@@ -36,6 +36,45 @@ type EmployerSweepSummary = {
   stoppedForTimeBudget: boolean;
 };
 
+const AUTOMATIC_SYNC_STALE_AFTER_MS = 75 * 60 * 1000;
+
+type AutomaticSyncHealth = "healthy" | "stale" | "error" | "waiting";
+
+function automaticSyncHealth(status: SyncStatus | null): AutomaticSyncHealth {
+  if (!status?.lastSyncAt) return "waiting";
+  if (status.lastSyncStatus === "error") return "error";
+  const timestamp = new Date(status.lastSyncAt).getTime();
+  if (!Number.isFinite(timestamp)) return "stale";
+  return Date.now() - timestamp > AUTOMATIC_SYNC_STALE_AFTER_MS ? "stale" : "healthy";
+}
+
+const HEALTH_COPY: Record<AutomaticSyncHealth, { label: string; className: string; dotClassName: string; detail: string }> = {
+  healthy: {
+    label: "Automatic sync healthy",
+    className: "text-emerald-500",
+    dotClassName: "bg-emerald-500",
+    detail: "Employer sources are scheduled every 30 minutes. Discover refreshes when a completed run is detected.",
+  },
+  stale: {
+    label: "Automatic sync stale",
+    className: "text-amber-500",
+    dotClassName: "bg-amber-500",
+    detail: "No employer sync has completed recently. The scheduled GitHub workflow needs attention; Run sync now remains available as a fallback.",
+  },
+  error: {
+    label: "Automatic sync error",
+    className: "text-rose-500",
+    dotClassName: "bg-rose-500",
+    detail: "The latest employer sync failed. Check the live-maintenance workflow or use Run sync now while the scheduler is repaired.",
+  },
+  waiting: {
+    label: "Waiting for automatic sync",
+    className: "text-amber-500",
+    dotClassName: "bg-amber-500",
+    detail: "No completed hosted employer sync has been recorded yet.",
+  },
+};
+
 export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) {
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -76,9 +115,6 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
       void load({ notify: true });
     };
 
-    // A background employer sweep is scheduled every 30 minutes. Polling the
-    // lightweight status endpoint once per minute makes a newly completed run
-    // appear in Discover without the user refreshing or pressing Sync Now.
     const interval = window.setInterval(checkForCompletedSync, 60_000);
     document.addEventListener("visibilitychange", checkForCompletedSync);
 
@@ -134,6 +170,9 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
     }
   }
 
+  const health = automaticSyncHealth(status);
+  const healthCopy = HEALTH_COPY[health];
+
   return (
     <section className="bg-surface rounded-lg border border-hairline p-4 flex flex-wrap items-center justify-between gap-4">
       <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
@@ -179,11 +218,11 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
       </button>
 
       <div className="basis-full flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-tertiary">
-        <span className="inline-flex items-center gap-1.5 font-medium text-emerald-500">
-          <span className="size-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
-          Live updates
+        <span className={`inline-flex items-center gap-1.5 font-medium ${healthCopy.className}`}>
+          <span className={`size-1.5 rounded-full ${healthCopy.dotClassName}`} aria-hidden="true" />
+          {healthCopy.label}
         </span>
-        <span>Employer sources are checked automatically every 30 minutes. Discover refreshes when a run finishes.</span>
+        <span>{healthCopy.detail}</span>
       </div>
 
       {employerSweep && (
