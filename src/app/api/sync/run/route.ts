@@ -1,9 +1,9 @@
 /*
  * Shared data, but not public data.
  *
- * Browser self-healing and manual recovery ingest broad public direct-job
- * feeds first, then use Intern List as a secondary discovery signal, sweep the
- * owned employer registry, and re-check older active jobs.
+ * Browser self-healing and manual recovery ingest the largest current direct
+ * technical-internship feeds first, then use Intern List as a secondary signal,
+ * sweep the owned employer registry, and re-check older active jobs.
  */
 import { guardSession } from "@/lib/auth/session";
 import { NextResponse } from "next/server";
@@ -13,12 +13,14 @@ import { runCompanyDiscoverySweep, runUsaJobsDiscovery } from "@/lib/sync/compan
 import { runInternListOriginalSourceDiscovery } from "@/lib/sync/discoveryResolution";
 import { runFreshnessVerificationBatch } from "@/lib/sync/freshness";
 import { runExpandedPublicDirectFeedDiscovery } from "@/lib/sync/publicDirectFeedsExpanded";
+import { runMassTechnicalFeedDiscovery } from "@/lib/sync/massTechnicalFeeds";
 import { reconcileDirectOfficialFeed } from "@/lib/jobs/activeFeed";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const RECENT_RUNNING_WINDOW_MS = 7 * 60 * 1000;
+const ACTIVE_TARGET = 500;
 
 async function recentRunningSync() {
   return prisma.syncLog.findFirst({
@@ -52,21 +54,14 @@ export async function POST() {
   try {
     const cutover = await reconcileDirectOfficialFeed();
 
-    // Consume the whole current direct-feed candidate set first. A current
-    // source row already contains the job-specific original employer/ATS URL,
-    // so Vercel bot-block responses must not starve Discover coverage.
+    const massTechnical = await runMassTechnicalFeedDiscovery(1500);
     const publicDirect = await runExpandedPublicDirectFeedDiscovery(600);
-
-    // Intern List remains useful for roles not present in the direct feeds, but
-    // it still must resolve back to a live original employer posting.
     const discovery = await runInternListOriginalSourceDiscovery(50);
 
-    // Continue the direct-employer registry afterward. It is resumable and
-    // oldest-first, so repeated automatic runs still cover the full catalogue.
     const companies = await runCompanyDiscoverySweep({
       limit: 1000,
       concurrency: 10,
-      maxRuntimeMs: 110_000,
+      maxRuntimeMs: 75_000,
     });
 
     const freshness = await runFreshnessVerificationBatch(50);
@@ -75,15 +70,18 @@ export async function POST() {
 
     const newJobsCount =
       companies.results.reduce((sum, company) => sum + company.newCount, 0) +
+      massTechnical.newCount +
       publicDirect.newCount +
       discovery.newCount +
       usajobs.newCount;
     const updatedJobsCount =
       companies.results.reduce((sum, company) => sum + company.updatedCount, 0) +
+      massTechnical.updatedCount +
       publicDirect.updatedCount +
       discovery.updatedCount +
       usajobs.updatedCount;
     const companyErrors = companies.results.filter((company) => company.status === "error").length;
+    const activeAfterRun = await prisma.job.count({ where: { activeFeed: true } });
 
     await prisma.syncLog.update({
       where: { id: log.id },
@@ -98,7 +96,11 @@ export async function POST() {
 
     return NextResponse.json({
       ok: true,
+      activeTarget: ACTIVE_TARGET,
+      activeAfterRun,
+      targetReached: activeAfterRun >= ACTIVE_TARGET,
       cutover,
+      massTechnical,
       publicDirect,
       discovery,
       companies,
