@@ -5,11 +5,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 type SyncStatus = {
   lastSyncAt: string | null;
   lastSyncStatus: string | null;
+  lastFreshSyncAt: string | null;
+  lastFreshSyncStatus: string | null;
   newJobsLastRun: number;
   updatedJobsLastRun: number;
   activeCount: number;
   activeTarget: number;
   activeTargetReached: boolean;
+  fresh24hCount: number;
+  fresh72hCount: number;
+  fresh24hTarget: number;
+  fresh72hTarget: number;
+  freshnessTargetReached: boolean;
   verifiedCount: number;
   needsReviewCount: number;
   closedCount: number;
@@ -42,8 +49,18 @@ type EmployerSweepSummary = {
 const AUTOMATIC_SYNC_CATCHUP_AFTER_MS = 45 * 60 * 1000;
 const AUTOMATIC_SYNC_STALE_AFTER_MS = 75 * 60 * 1000;
 const AUTOMATIC_RECOVERY_COOLDOWN_MS = 10 * 60 * 1000;
+const FRESHNESS_RECOVERY_COOLDOWN_MS = 30 * 60 * 1000;
 
-type AutomaticSyncHealth = "healthy" | "building" | "recovering" | "stale" | "error" | "waiting";
+type AutomaticAction = "catalog" | "fresh" | null;
+type AutomaticSyncHealth =
+  | "healthy"
+  | "building"
+  | "freshness"
+  | "recovering"
+  | "freshening"
+  | "stale"
+  | "error"
+  | "waiting";
 
 function syncAgeMs(status: SyncStatus | null): number | null {
   if (!status?.lastSyncAt) return null;
@@ -55,10 +72,15 @@ function belowActiveTarget(status: SyncStatus | null): boolean {
   return Boolean(status && status.activeTarget > 0 && status.activeCount < status.activeTarget);
 }
 
-function needsAutomaticCatchup(status: SyncStatus | null): boolean {
-  // Coverage is a product invariant now, not merely a freshness metric. A
-  // recently completed legacy sync must not block a newly deployed mass-feed
-  // importer from running while the catalogue is still below the 500+ target.
+function belowFreshnessTarget(status: SyncStatus | null): boolean {
+  if (!status) return false;
+  return (
+    status.fresh24hCount < status.fresh24hTarget ||
+    status.fresh72hCount < status.fresh72hTarget
+  );
+}
+
+function needsFullCatchup(status: SyncStatus | null): boolean {
   if (belowActiveTarget(status)) return true;
   if (!status?.lastSyncAt) return true;
   if (status.lastSyncStatus === "error") return true;
@@ -68,12 +90,14 @@ function needsAutomaticCatchup(status: SyncStatus | null): boolean {
 
 function automaticSyncHealth(
   status: SyncStatus | null,
-  automaticRecovering: boolean,
+  automaticAction: AutomaticAction,
 ): AutomaticSyncHealth {
-  if (automaticRecovering) return "recovering";
+  if (automaticAction === "catalog") return "recovering";
+  if (automaticAction === "fresh") return "freshening";
   if (!status?.lastSyncAt) return "waiting";
   if (status.lastSyncStatus === "error") return "error";
   if (belowActiveTarget(status)) return "building";
+  if (belowFreshnessTarget(status)) return "freshness";
   const age = syncAgeMs(status);
   if (age === null) return "stale";
   return age > AUTOMATIC_SYNC_STALE_AFTER_MS ? "stale" : "healthy";
@@ -84,31 +108,43 @@ const HEALTH_COPY: Record<AutomaticSyncHealth, { label: string; className: strin
     label: "Automatic sync healthy",
     className: "text-emerald-500",
     dotClassName: "bg-emerald-500",
-    detail: "The active catalogue is at target and Discover continues checking for newer internships automatically.",
+    detail: "Catalogue depth and recent-posting freshness are both at target.",
   },
   building: {
     label: "Building catalogue automatically",
     className: "text-cyan-400",
     dotClassName: "bg-cyan-400",
-    detail: "The active catalogue is below 500, so Discover will automatically run the mass internship import. No button press is required.",
+    detail: "The active catalogue is below 500, so Discover will automatically run the mass internship import.",
+  },
+  freshness: {
+    label: "Freshness below target",
+    className: "text-amber-500",
+    dotClassName: "bg-amber-500",
+    detail: "The catalogue is large enough, but too few jobs were posted recently. Discover will chase the newest technical postings automatically.",
   },
   recovering: {
     label: "Importing internships automatically",
     className: "text-cyan-400",
     dotClassName: "bg-cyan-400",
-    detail: "Discover is running the direct-link mass import and employer sweep automatically. No button press is required.",
+    detail: "Discover is running the full catalogue import and employer sweep automatically.",
+  },
+  freshening: {
+    label: "Chasing new postings automatically",
+    className: "text-cyan-400",
+    dotClassName: "bg-cyan-400",
+    detail: "Discover is checking the newest exact-timestamp technical internship signals and resolving them to employer ATS pages.",
   },
   stale: {
     label: "Automatic sync stale",
     className: "text-amber-500",
     dotClassName: "bg-amber-500",
-    detail: "The external scheduler missed its freshness target. Discover will automatically retry a catch-up sweep while this page is open.",
+    detail: "The external scheduler missed its freshness target. Discover will automatically retry while this page is open.",
   },
   error: {
     label: "Automatic sync error",
     className: "text-rose-500",
     dotClassName: "bg-rose-500",
-    detail: "The latest employer sync failed. Discover will automatically retry after the recovery cooldown; Run sync now remains an emergency fallback.",
+    detail: "The latest employer sync failed. Discover will automatically retry after the recovery cooldown.",
   },
   waiting: {
     label: "Waiting for automatic sync",
@@ -121,12 +157,13 @@ const HEALTH_COPY: Record<AutomaticSyncHealth, { label: string; className: strin
 export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) {
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [syncing, setSyncing] = useState(false);
-  const [automaticRecovering, setAutomaticRecovering] = useState(false);
+  const [automaticAction, setAutomaticAction] = useState<AutomaticAction>(null);
   const [coverage, setCoverage] = useState<CoverageDiagnostics | null>(null);
   const [coverageError, setCoverageError] = useState<string | null>(null);
   const [employerSweep, setEmployerSweep] = useState<EmployerSweepSummary | null>(null);
   const lastObservedSyncAt = useRef<string | null>(null);
   const lastAutomaticRecoveryAttemptAt = useRef(0);
+  const lastFreshnessRecoveryAttemptAt = useRef(0);
 
   const load = useCallback(
     async ({ notify = false }: { notify?: boolean } = {}): Promise<SyncStatus | null> => {
@@ -152,23 +189,34 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
   );
 
   const runAutomaticCatchup = useCallback(async (observed: SyncStatus | null) => {
-    if (!needsAutomaticCatchup(observed)) return;
-    if (document.visibilityState !== "visible") return;
+    if (!observed || document.visibilityState !== "visible") return;
+
+    const fullCatchup = needsFullCatchup(observed);
+    const freshCatchup = !fullCatchup && belowFreshnessTarget(observed);
+    if (!fullCatchup && !freshCatchup) return;
 
     const now = Date.now();
-    if (now - lastAutomaticRecoveryAttemptAt.current < AUTOMATIC_RECOVERY_COOLDOWN_MS) return;
-    lastAutomaticRecoveryAttemptAt.current = now;
-    setAutomaticRecovering(true);
+    if (fullCatchup) {
+      if (now - lastAutomaticRecoveryAttemptAt.current < AUTOMATIC_RECOVERY_COOLDOWN_MS) return;
+      lastAutomaticRecoveryAttemptAt.current = now;
+    } else {
+      if (now - lastFreshnessRecoveryAttemptAt.current < FRESHNESS_RECOVERY_COOLDOWN_MS) return;
+      lastFreshnessRecoveryAttemptAt.current = now;
+    }
+
+    const action: AutomaticAction = fullCatchup ? "catalog" : "fresh";
+    setAutomaticAction(action);
 
     try {
-      const res = await fetch("/api/sync/run", { method: "POST" });
+      const endpoint = fullCatchup ? "/api/sync/run" : "/api/sync/fresh";
+      const res = await fetch(endpoint, { method: "POST" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setCoverageError(data.error ?? "Automatic catch-up sync failed.");
+        setCoverageError(data.error ?? "Automatic sync failed.");
         return;
       }
 
-      if (data.companies) {
+      if (fullCatchup && data.companies) {
         setEmployerSweep({
           checked: Number(data.companies.checked ?? 0),
           totalEligible: Number(data.companies.totalEligible ?? 0),
@@ -176,13 +224,17 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
           stoppedForTimeBudget: Boolean(data.companies.stoppedForTimeBudget),
         });
       }
+
+      // Fresh-only sync has its own log timestamp, so explicitly refresh the
+      // Discover cards as soon as new postings are persisted.
+      if (!fullCatchup) onSynced();
     } catch (error) {
-      setCoverageError(error instanceof Error ? error.message : "Automatic catch-up sync failed.");
+      setCoverageError(error instanceof Error ? error.message : "Automatic sync failed.");
     } finally {
-      setAutomaticRecovering(false);
+      setAutomaticAction(null);
       await load({ notify: true });
     }
-  }, [load]);
+  }, [load, onSynced]);
 
   useEffect(() => {
     const checkFreshness = async () => {
@@ -246,7 +298,7 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
     }
   }
 
-  const health = automaticSyncHealth(status, automaticRecovering);
+  const health = automaticSyncHealth(status, automaticAction);
   const healthCopy = HEALTH_COPY[health];
 
   return (
@@ -271,6 +323,14 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
           <span className="font-medium text-primary">{status?.activeCount ?? 0} / {status?.activeTarget ?? 500}</span>
         </div>
         <div>
+          <span className="text-cyan-500">Fresh 24h: </span>
+          <span className="font-medium text-primary">{status?.fresh24hCount ?? 0} / {status?.fresh24hTarget ?? 25}</span>
+        </div>
+        <div>
+          <span className="text-cyan-500">Fresh 72h: </span>
+          <span className="font-medium text-primary">{status?.fresh72hCount ?? 0} / {status?.fresh72hTarget ?? 75}</span>
+        </div>
+        <div>
           <span className="text-amber-600">Needs review: </span>
           <span className="font-medium text-primary">{status?.needsReviewCount ?? 0}</span>
         </div>
@@ -291,10 +351,16 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
       </div>
       <button
         onClick={handleSyncNow}
-        disabled={syncing || automaticRecovering}
+        disabled={syncing || automaticAction !== null}
         className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2 disabled:opacity-40 hover:bg-accent-dark transition-colors shrink-0"
       >
-        {automaticRecovering ? "Importing automatically…" : syncing ? "Sweeping employers…" : "Run sync now"}
+        {automaticAction === "fresh"
+          ? "Chasing new postings…"
+          : automaticAction === "catalog"
+            ? "Importing automatically…"
+            : syncing
+              ? "Sweeping employers…"
+              : "Run sync now"}
       </button>
 
       <div className="basis-full flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-tertiary">
