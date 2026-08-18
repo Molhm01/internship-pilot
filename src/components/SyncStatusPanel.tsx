@@ -7,6 +7,7 @@ type SyncStatus = {
   lastSyncStatus: string | null;
   lastFreshSyncAt: string | null;
   lastFreshSyncStatus: string | null;
+  lastLiveDiscoveryAt: string | null;
   newJobsLastRun: number;
   updatedJobsLastRun: number;
   activeCount: number;
@@ -17,6 +18,17 @@ type SyncStatus = {
   fresh24hTarget: number;
   fresh72hTarget: number;
   freshnessTargetReached: boolean;
+  latestSourcePostedAt: string | null;
+  sourceLagMinutesP50: number | null;
+  sourceLagMinutesP95: number | null;
+  recentLagSampleSize: number;
+  liveQueue: {
+    pending: number;
+    retry: number;
+    resolved: number;
+    closed: number;
+    abandoned: number;
+  } | null;
   verifiedCount: number;
   needsReviewCount: number;
   closedCount: number;
@@ -103,6 +115,13 @@ function automaticSyncHealth(
   return age > AUTOMATIC_SYNC_STALE_AFTER_MS ? "stale" : "healthy";
 }
 
+function minutesLabel(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  if (value < 1) return "<1m";
+  if (value < 60) return `${Math.round(value)}m`;
+  return `${(value / 60).toFixed(1)}h`;
+}
+
 const HEALTH_COPY: Record<AutomaticSyncHealth, { label: string; className: string; dotClassName: string; detail: string }> = {
   healthy: {
     label: "Automatic sync healthy",
@@ -120,7 +139,7 @@ const HEALTH_COPY: Record<AutomaticSyncHealth, { label: string; className: strin
     label: "Freshness below target",
     className: "text-amber-500",
     dotClassName: "bg-amber-500",
-    detail: "The catalogue is large enough, but too few jobs were posted recently. Discover will chase the newest technical postings automatically.",
+    detail: "The catalogue is large enough, but too few jobs were posted recently. Live discovery keeps chasing new technical postings.",
   },
   recovering: {
     label: "Importing internships automatically",
@@ -132,7 +151,7 @@ const HEALTH_COPY: Record<AutomaticSyncHealth, { label: string; className: strin
     label: "Chasing new postings automatically",
     className: "text-cyan-400",
     dotClassName: "bg-cyan-400",
-    detail: "Discover is checking the newest exact-timestamp technical internship signals and resolving them to employer ATS pages.",
+    detail: "Discover is checking fresh radar signals and due employer ATS boards, then resolving everything to original employer pages.",
   },
   stale: {
     label: "Automatic sync stale",
@@ -161,7 +180,7 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
   const [coverage, setCoverage] = useState<CoverageDiagnostics | null>(null);
   const [coverageError, setCoverageError] = useState<string | null>(null);
   const [employerSweep, setEmployerSweep] = useState<EmployerSweepSummary | null>(null);
-  const lastObservedSyncAt = useRef<string | null>(null);
+  const lastObservedDiscoveryAt = useRef<string | null>(null);
   const lastAutomaticRecoveryAttemptAt = useRef(0);
   const lastFreshnessRecoveryAttemptAt = useRef(0);
 
@@ -171,15 +190,16 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
       if (!res.ok) return null;
 
       const next = (await res.json()) as SyncStatus;
-      const previousSyncAt = lastObservedSyncAt.current;
-      lastObservedSyncAt.current = next.lastSyncAt;
+      const nextDiscoveryAt = next.lastLiveDiscoveryAt ?? next.lastFreshSyncAt ?? next.lastSyncAt;
+      const previousDiscoveryAt = lastObservedDiscoveryAt.current;
+      lastObservedDiscoveryAt.current = nextDiscoveryAt;
       setStatus(next);
 
       if (
         notify &&
-        previousSyncAt &&
-        next.lastSyncAt &&
-        next.lastSyncAt !== previousSyncAt
+        previousDiscoveryAt &&
+        nextDiscoveryAt &&
+        nextDiscoveryAt !== previousDiscoveryAt
       ) {
         onSynced();
       }
@@ -225,8 +245,6 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
         });
       }
 
-      // Fresh-only sync has its own log timestamp, so explicitly refresh the
-      // Discover cards as soon as new postings are persisted.
       if (!fullCatchup) onSynced();
     } catch (error) {
       setCoverageError(error instanceof Error ? error.message : "Automatic sync failed.");
@@ -300,6 +318,7 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
 
   const health = automaticSyncHealth(status, automaticAction);
   const healthCopy = HEALTH_COPY[health];
+  const livePending = (status?.liveQueue?.pending ?? 0) + (status?.liveQueue?.retry ?? 0);
 
   return (
     <section className="bg-surface rounded-lg border border-hairline p-4 flex flex-wrap items-center justify-between gap-4">
@@ -308,6 +327,12 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
           <span className="text-tertiary">Last sync: </span>
           <span className="font-medium text-primary">
             {status?.lastSyncAt ? new Date(status.lastSyncAt).toLocaleString() : "never"}
+          </span>
+        </div>
+        <div>
+          <span className="text-tertiary">Live scan: </span>
+          <span className="font-medium text-primary">
+            {status?.lastLiveDiscoveryAt ? new Date(status.lastLiveDiscoveryAt).toLocaleTimeString() : "not yet"}
           </span>
         </div>
         <div>
@@ -329,6 +354,14 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
         <div>
           <span className="text-cyan-500">Fresh 72h: </span>
           <span className="font-medium text-primary">{status?.fresh72hCount ?? 0} / {status?.fresh72hTarget ?? 75}</span>
+        </div>
+        <div>
+          <span className="text-violet-400">Discovery lag p50/p95: </span>
+          <span className="font-medium text-primary">{minutesLabel(status?.sourceLagMinutesP50)} / {minutesLabel(status?.sourceLagMinutesP95)}</span>
+        </div>
+        <div>
+          <span className="text-violet-400">Live queue: </span>
+          <span className="font-medium text-primary">{livePending}</span>
         </div>
         <div>
           <span className="text-amber-600">Needs review: </span>
