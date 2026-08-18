@@ -4,6 +4,7 @@ import { runCompanyDiscoverySweep } from "@/lib/sync/companyDiscovery";
 import { runInternListOriginalSourceDiscovery } from "@/lib/sync/discoveryResolution";
 import { runFreshnessVerificationBatch } from "@/lib/sync/freshness";
 import { runExpandedPublicDirectFeedDiscovery } from "@/lib/sync/publicDirectFeedsExpanded";
+import { runMassTechnicalFeedDiscovery } from "@/lib/sync/massTechnicalFeeds";
 import { isSchedulerPaused } from "@/lib/sync/schedulerState";
 import { reconcileDirectOfficialFeed } from "@/lib/jobs/activeFeed";
 
@@ -11,6 +12,7 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const RECENT_RUNNING_WINDOW_MS = 7 * 60 * 1000;
+const ACTIVE_TARGET = 500;
 
 function unauthorized() {
   return NextResponse.json(
@@ -81,36 +83,43 @@ export async function GET(request: Request) {
       600,
       Math.max(1, Number.parseInt(process.env.CRON_PUBLIC_DIRECT_LIMIT ?? "600", 10) || 600),
     );
+    const massTechnicalLimit = Math.min(
+      2000,
+      Math.max(1, Number.parseInt(process.env.CRON_MASS_TECHNICAL_LIMIT ?? "1500", 10) || 1500),
+    );
     const freshnessLimit = Math.min(
       50,
       Math.max(1, Number.parseInt(process.env.CRON_FRESHNESS_CHECK_LIMIT ?? "50", 10) || 50),
     );
 
-    // Highest-yield first: consume the full current public direct-feed pool.
-    // These feeds already carry the original job-specific employer/ATS URL, so
-    // ATS bot challenges must not make legitimate listings disappear merely
-    // because Vercel cannot re-fetch the same page server-side.
+    // The 500+ catalogue target needs a large upstream pool. Simplify/Pitt CSC
+    // and Zapply expose current technical internships with original employer
+    // application URLs; ingest those first and dedupe by the official URL.
+    const massTechnical = await runMassTechnicalFeedDiscovery(massTechnicalLimit);
+
+    // Keep ApplyGuy + Dreamwork as additional direct-link coverage.
     const publicDirect = await runExpandedPublicDirectFeedDiscovery(publicDirectLimit);
 
-    // Intern List remains a secondary discovery signal for roles the direct
-    // feeds miss. Its candidates still resolve to an original employer post.
+    // Intern List remains a secondary discovery signal for roles missing from
+    // the direct-link feeds.
     const discovery = await runInternListOriginalSourceDiscovery(discoveryLimit);
 
-    // Continue the owned-employer sweep after the broad current feeds. It is
-    // resumable/oldest-first, so repeated runs still cover the full registry.
+    // Direct employer registry remains the owned-source backbone, but receives a
+    // bounded tail of the run so mass discovery cannot be starved by the sweep.
     const result = await runCompanyDiscoverySweep({
       limit: sweepLimit,
       concurrency: sweepConcurrency,
-      maxRuntimeMs: 120_000,
+      maxRuntimeMs: 80_000,
     });
     const freshness = await runFreshnessVerificationBatch(freshnessLimit);
 
     const companyNewJobs = result.results.reduce((sum, company) => sum + company.newCount, 0);
     const companyUpdatedJobs = result.results.reduce((sum, company) => sum + company.updatedCount, 0);
-    const newJobs = companyNewJobs + discovery.newCount + publicDirect.newCount;
-    const updatedJobs = companyUpdatedJobs + discovery.updatedCount + publicDirect.updatedCount;
+    const newJobs = companyNewJobs + massTechnical.newCount + publicDirect.newCount + discovery.newCount;
+    const updatedJobs = companyUpdatedJobs + massTechnical.updatedCount + publicDirect.updatedCount + discovery.updatedCount;
     const errors = result.results.filter((company) => company.status === "error").length;
     const unsupported = result.results.filter((company) => company.status === "unsupported").length;
+    const activeAfterRun = await prisma.job.count({ where: { activeFeed: true } });
 
     await prisma.syncLog.update({
       where: { id: log.id },
@@ -126,6 +135,9 @@ export async function GET(request: Request) {
     return NextResponse.json(
       {
         ok: errors === 0,
+        activeTarget: ACTIVE_TARGET,
+        activeAfterRun,
+        targetReached: activeAfterRun >= ACTIVE_TARGET,
         cutover,
         checked: result.checked,
         totalEligible: result.totalEligible,
@@ -135,6 +147,7 @@ export async function GET(request: Request) {
         updatedJobs,
         errors,
         unsupported,
+        massTechnical,
         publicDirect,
         discovery,
         freshness,
