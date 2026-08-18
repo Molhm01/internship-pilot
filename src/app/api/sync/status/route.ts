@@ -8,6 +8,8 @@ import { guardSession } from "@/lib/auth/session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 
+const ACTIVE_TARGET = 500;
+
 export async function GET() {
   const denied = await guardSession();
   if (denied) return denied;
@@ -24,7 +26,8 @@ export async function GET() {
     },
   });
 
-  const [verifiedCount, needsReviewCount, closedCount, pendingCount] = await Promise.all([
+  const [activeCount, verifiedCount, needsReviewCount, closedCount, pendingCount] = await Promise.all([
+    prisma.job.count({ where: { activeFeed: true } }),
     prisma.job.count({ where: { activeFeed: true, verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK" } }),
     prisma.job.count({ where: { activeFeed: false, verificationStatus: "NeedsReview" } }),
     prisma.job.count({ where: { verificationStatus: "Closed" } }),
@@ -36,6 +39,9 @@ export async function GET() {
     lastSyncStatus: lastLog?.status ?? null,
     newJobsLastRun: lastLog?.newJobsCount ?? 0,
     updatedJobsLastRun: lastLog?.updatedJobsCount ?? 0,
+    activeCount,
+    activeTarget: ACTIVE_TARGET,
+    activeTargetReached: activeCount >= ACTIVE_TARGET,
     verifiedCount,
     needsReviewCount,
     closedCount,

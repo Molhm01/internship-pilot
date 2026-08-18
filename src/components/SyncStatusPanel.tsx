@@ -7,6 +7,9 @@ type SyncStatus = {
   lastSyncStatus: string | null;
   newJobsLastRun: number;
   updatedJobsLastRun: number;
+  activeCount: number;
+  activeTarget: number;
+  activeTargetReached: boolean;
   verifiedCount: number;
   needsReviewCount: number;
   closedCount: number;
@@ -40,7 +43,7 @@ const AUTOMATIC_SYNC_CATCHUP_AFTER_MS = 45 * 60 * 1000;
 const AUTOMATIC_SYNC_STALE_AFTER_MS = 75 * 60 * 1000;
 const AUTOMATIC_RECOVERY_COOLDOWN_MS = 10 * 60 * 1000;
 
-type AutomaticSyncHealth = "healthy" | "recovering" | "stale" | "error" | "waiting";
+type AutomaticSyncHealth = "healthy" | "building" | "recovering" | "stale" | "error" | "waiting";
 
 function syncAgeMs(status: SyncStatus | null): number | null {
   if (!status?.lastSyncAt) return null;
@@ -48,7 +51,15 @@ function syncAgeMs(status: SyncStatus | null): number | null {
   return Number.isFinite(timestamp) ? Math.max(0, Date.now() - timestamp) : null;
 }
 
+function belowActiveTarget(status: SyncStatus | null): boolean {
+  return Boolean(status && status.activeTarget > 0 && status.activeCount < status.activeTarget);
+}
+
 function needsAutomaticCatchup(status: SyncStatus | null): boolean {
+  // Coverage is a product invariant now, not merely a freshness metric. A
+  // recently completed legacy sync must not block a newly deployed mass-feed
+  // importer from running while the catalogue is still below the 500+ target.
+  if (belowActiveTarget(status)) return true;
   if (!status?.lastSyncAt) return true;
   if (status.lastSyncStatus === "error") return true;
   const age = syncAgeMs(status);
@@ -62,6 +73,7 @@ function automaticSyncHealth(
   if (automaticRecovering) return "recovering";
   if (!status?.lastSyncAt) return "waiting";
   if (status.lastSyncStatus === "error") return "error";
+  if (belowActiveTarget(status)) return "building";
   const age = syncAgeMs(status);
   if (age === null) return "stale";
   return age > AUTOMATIC_SYNC_STALE_AFTER_MS ? "stale" : "healthy";
@@ -72,13 +84,19 @@ const HEALTH_COPY: Record<AutomaticSyncHealth, { label: string; className: strin
     label: "Automatic sync healthy",
     className: "text-emerald-500",
     dotClassName: "bg-emerald-500",
-    detail: "The external schedule targets every 30 minutes. Discover also self-heals missed runs while this page is open.",
+    detail: "The active catalogue is at target and Discover continues checking for newer internships automatically.",
   },
-  recovering: {
-    label: "Catching up automatically",
+  building: {
+    label: "Building catalogue automatically",
     className: "text-cyan-400",
     dotClassName: "bg-cyan-400",
-    detail: "A stale feed was detected, so Discover started a real employer sweep automatically. No button press is required.",
+    detail: "The active catalogue is below 500, so Discover will automatically run the mass internship import. No button press is required.",
+  },
+  recovering: {
+    label: "Importing internships automatically",
+    className: "text-cyan-400",
+    dotClassName: "bg-cyan-400",
+    detail: "Discover is running the direct-link mass import and employer sweep automatically. No button press is required.",
   },
   stale: {
     label: "Automatic sync stale",
@@ -249,6 +267,10 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
           <span className="font-medium text-primary">{status?.verifiedCount ?? 0}</span>
         </div>
         <div>
+          <span className="text-cyan-500">Active target: </span>
+          <span className="font-medium text-primary">{status?.activeCount ?? 0} / {status?.activeTarget ?? 500}</span>
+        </div>
+        <div>
           <span className="text-amber-600">Needs review: </span>
           <span className="font-medium text-primary">{status?.needsReviewCount ?? 0}</span>
         </div>
@@ -272,7 +294,7 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
         disabled={syncing || automaticRecovering}
         className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2 disabled:opacity-40 hover:bg-accent-dark transition-colors shrink-0"
       >
-        {automaticRecovering ? "Catching up…" : syncing ? "Sweeping employers…" : "Run sync now"}
+        {automaticRecovering ? "Importing automatically…" : syncing ? "Sweeping employers…" : "Run sync now"}
       </button>
 
       <div className="basis-full flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-tertiary">
