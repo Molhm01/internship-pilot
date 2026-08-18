@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { runCompanyDiscoveryBatch } from "@/lib/sync/companyDiscovery";
 import { runLiveDirectRadar } from "@/lib/sync/liveDirectRadar";
+import { pruneTerminalLiveDiscoveryEvents } from "@/lib/sync/liveDiscoveryMaintenance";
 import {
   enqueueJobrightFreshSignals,
   getLiveDiscoveryQueueHealth,
@@ -126,6 +127,7 @@ export async function runLiveDiscoveryCycle(options: {
   // backoff, so this is incremental rather than a full 665-company sweep.
   const queue = await processLiveDiscoveryQueue(queueProcessLimit);
   const ats = await runCompanyDiscoveryBatch(atsCheckLimit);
+  const prunedTerminalEvents = await pruneTerminalLiveDiscoveryEvents();
 
   const atsNew = ats.results.reduce((sum, row) => sum + row.newCount, 0);
   const atsUpdated = ats.results.reduce((sum, row) => sum + row.updatedCount, 0);
@@ -136,6 +138,7 @@ export async function runLiveDiscoveryCycle(options: {
     enqueue,
     directRadar,
     queue,
+    prunedTerminalEvents,
     ats: {
       checked: ats.checked,
       newCount: atsNew,
