@@ -98,15 +98,15 @@ export async function POST() {
   const response = await qstash(`/schedules/${encodeURIComponent(destination)}`, {
     method: "POST",
     headers: {
-      "Content-Type": "text/plain",
+      "Content-Type": "application/json",
       "Upstash-Cron": SCHEDULE_CRON,
       "Upstash-Schedule-Id": SCHEDULE_ID,
-      "Upstash-Method": "GET",
+      "Upstash-Method": "POST",
       "Upstash-Timeout": "240s",
       "Upstash-Retries": "2",
       "Upstash-Forward-Authorization": `Bearer ${cronSecret}`,
     },
-    body: "live-discovery",
+    body: JSON.stringify({ source: "qstash-live-discovery" }),
   });
 
   if (!response.ok) {
