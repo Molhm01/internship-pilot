@@ -9,6 +9,8 @@ type ScheduleState = {
   scheduleId?: string;
   cron?: string;
   destination?: string;
+  status?: number;
+  detail?: string;
   schedule?: {
     scheduleId?: string;
     cron?: string;
@@ -25,6 +27,12 @@ function formatTime(value?: number) {
   return new Date(value).toLocaleString();
 }
 
+function errorMessage(data: ScheduleState, fallback: string) {
+  const base = data.error ?? fallback;
+  const detail = data.detail?.trim();
+  return detail ? `${base} ${detail}` : base;
+}
+
 export default function LiveDiscoverySettings() {
   const [state, setState] = useState<ScheduleState | null>(null);
   const [busy, setBusy] = useState(false);
@@ -34,7 +42,7 @@ export default function LiveDiscoverySettings() {
     setError(null);
     const response = await fetch("/api/system/live-discovery/schedule", { cache: "no-store" });
     const data = (await response.json().catch(() => ({}))) as ScheduleState;
-    if (!response.ok) setError(data.error ?? "Could not load live-discovery scheduler status.");
+    if (!response.ok) setError(errorMessage(data, "Could not load live-discovery scheduler status."));
     setState(data);
   }, []);
 
@@ -49,7 +57,7 @@ export default function LiveDiscoverySettings() {
       const response = await fetch("/api/system/live-discovery/schedule", { method: "POST" });
       const data = (await response.json().catch(() => ({}))) as ScheduleState;
       if (!response.ok) {
-        setError(data.error ?? "Could not enable live discovery.");
+        setError(errorMessage(data, "Could not enable live discovery."));
         return;
       }
       await load();
@@ -65,7 +73,7 @@ export default function LiveDiscoverySettings() {
       const response = await fetch("/api/system/live-discovery/schedule", { method: "DELETE" });
       const data = (await response.json().catch(() => ({}))) as ScheduleState;
       if (!response.ok) {
-        setError(data.error ?? "Could not disable live discovery.");
+        setError(errorMessage(data, "Could not disable live discovery."));
         return;
       }
       await load();
@@ -114,7 +122,7 @@ export default function LiveDiscoverySettings() {
       )}
 
       {error && (
-        <div className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/5 p-3 text-sm text-rose-500">
+        <div className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/5 p-3 text-sm text-rose-500 break-words">
           {error}
         </div>
       )}
