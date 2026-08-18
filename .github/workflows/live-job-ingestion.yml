@@ -1,9 +1,9 @@
-name: Live internship ingestion
+name: Live internship maintenance
 
 on:
   schedule:
-    # Avoid the top of the hour, when scheduled GitHub Actions are more likely
-    # to be delayed. This runs twice an hour on the default branch.
+    # Avoid the top of the hour, when GitHub says scheduled workflows are more
+    # likely to be delayed. This runs twice an hour on the default branch.
     - cron: "7,37 * * * *"
   workflow_dispatch:
 
@@ -11,15 +11,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: live-internship-ingestion
+  group: live-internship-maintenance
   cancel-in-progress: false
 
 jobs:
-  trigger:
+  sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 6
     steps:
-      - name: Trigger Internship Pilot live maintenance
+      - name: Run the real employer ingestion sweep
         env:
           CRON_SECRET: ${{ secrets.INTERNSHIP_PILOT_CRON_SECRET }}
         run: |
@@ -28,20 +28,43 @@ jobs:
             exit 1
           fi
 
-          echo "Triggering employer ingestion..."
+          echo "Starting employer ingestion and waiting for the real result..."
           curl --fail-with-body --silent --show-error \
-            --max-time 20 \
-            --request POST \
+            --max-time 295 \
+            --request GET \
             --header "Authorization: Bearer $CRON_SECRET" \
-            --header "Content-Type: application/json" \
-            https://internship-pilot.vercel.app/api/cron/job-ingestion/trigger
+            https://internship-pilot.vercel.app/api/cron/job-ingestion
           echo
 
-          echo "Triggering automatic AI scoring..."
-          curl --fail-with-body --silent --show-error \
+  score:
+    # Scoring is independent from ingestion. A scoring/provider problem must
+    # never make a successful employer sync look failed.
+    needs: sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Trigger automatic AI scoring when configured
+        env:
+          CRON_SECRET: ${{ secrets.INTERNSHIP_PILOT_CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "Missing repository Actions secret: INTERNSHIP_PILOT_CRON_SECRET"
+            exit 1
+          fi
+
+          response="$(curl --silent --show-error \
             --max-time 20 \
             --request POST \
             --header "Authorization: Bearer $CRON_SECRET" \
             --header "Content-Type: application/json" \
-            https://internship-pilot.vercel.app/api/cron/ai-scoring/trigger
-          echo
+            --write-out "\n%{http_code}" \
+            https://internship-pilot.vercel.app/api/cron/ai-scoring/trigger || true)"
+          body="$(printf '%s\n' "$response" | sed '$d')"
+          status="$(printf '%s\n' "$response" | tail -n 1)"
+          echo "$body"
+
+          # Keep ingestion independent. Surface scoring trouble in this job's
+          # log, but do not retroactively mark the completed employer sync bad.
+          if [ -z "$status" ] || [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            echo "Automatic scoring trigger returned HTTP ${status:-unknown}; ingestion already succeeded."
+          fi
