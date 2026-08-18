@@ -34,9 +34,6 @@ export async function GET(request: Request) {
     );
   }
 
-  // Browser self-healing, manual recovery and the external scheduler all share
-  // the same catalogue. If one sweep is already genuinely running, do not
-  // start another copy against the same employer registry.
   const running = await prisma.syncLog.findFirst({
     where: {
       source: "employer-ats",
@@ -76,20 +73,28 @@ export async function GET(request: Request) {
       Math.max(1, Number.parseInt(process.env.CRON_COMPANY_SWEEP_CONCURRENCY ?? "10", 10) || 10),
     );
     const discoveryLimit = Math.min(
-      20,
-      Math.max(1, Number.parseInt(process.env.CRON_DISCOVERY_RESOLVE_LIMIT ?? "20", 10) || 20),
+      50,
+      Math.max(1, Number.parseInt(process.env.CRON_DISCOVERY_RESOLVE_LIMIT ?? "50", 10) || 50),
     );
     const freshnessLimit = Math.min(
       50,
       Math.max(1, Number.parseInt(process.env.CRON_FRESHNESS_CHECK_LIMIT ?? "50", 10) || 50),
     );
 
+    // Fresh external discovery comes first. The previous order let the broad
+    // company sweep consume most of the serverless budget before Intern List
+    // resolution even started, which made the feed look dominated by whichever
+    // employer boards happened to be scanned most recently.
+    const discovery = await runInternListOriginalSourceDiscovery(discoveryLimit);
+
+    // The registry still receives the majority of the function window, but it
+    // runs after newest-source discovery and naturally resumes oldest-first on
+    // the next cycle.
     const result = await runCompanyDiscoverySweep({
       limit: sweepLimit,
       concurrency: sweepConcurrency,
-      maxRuntimeMs: 210_000,
+      maxRuntimeMs: 160_000,
     });
-    const discovery = await runInternListOriginalSourceDiscovery(discoveryLimit);
     const freshness = await runFreshnessVerificationBatch(freshnessLimit);
 
     const companyNewJobs = result.results.reduce((sum, company) => sum + company.newCount, 0);
