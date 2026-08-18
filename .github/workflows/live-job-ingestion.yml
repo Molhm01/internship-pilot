@@ -1,6 +1,9 @@
 name: Live internship maintenance
 
 on:
+  push:
+    branches:
+      - main
   schedule:
     # Avoid the top of the hour, when GitHub says scheduled workflows are more
     # likely to be delayed. This runs twice an hour on the default branch.
