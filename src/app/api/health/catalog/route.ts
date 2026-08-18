@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { getLiveDiscoveryHealth } from "@/lib/sync/liveDiscoveryEngine";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +23,7 @@ export async function GET() {
     olderThan14d,
     latestSync,
     bySource,
+    liveDiscovery,
   ] = await Promise.all([
     prisma.job.count({ where: { activeFeed: true } }),
     prisma.job.count(),
@@ -51,6 +53,7 @@ export async function GET() {
       _count: { _all: true },
       orderBy: { _count: { source: "desc" } },
     }),
+    getLiveDiscoveryHealth(),
   ]);
 
   return NextResponse.json(
@@ -65,6 +68,7 @@ export async function GET() {
         postedWithin72h: fresh72h,
         olderThan14Days: olderThan14d,
       },
+      liveDiscovery,
       lastSuccessfulSyncAt: latestSync?.finishedAt?.toISOString() ?? null,
       lastSyncNewJobs: latestSync?.newJobsCount ?? 0,
       lastSyncUpdatedJobs: latestSync?.updatedJobsCount ?? 0,
