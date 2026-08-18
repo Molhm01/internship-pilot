@@ -5,9 +5,24 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const ACTIVE_TARGET = 500;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export async function GET() {
-  const [active, total, verifiedActive, latestSync, bySource] = await Promise.all([
+  const now = Date.now();
+  const last24h = new Date(now - DAY_MS);
+  const last72h = new Date(now - 3 * DAY_MS);
+  const fourteenDaysAgo = new Date(now - 14 * DAY_MS);
+
+  const [
+    active,
+    total,
+    verifiedActive,
+    fresh24h,
+    fresh72h,
+    olderThan14d,
+    latestSync,
+    bySource,
+  ] = await Promise.all([
     prisma.job.count({ where: { activeFeed: true } }),
     prisma.job.count(),
     prisma.job.count({
@@ -15,6 +30,15 @@ export async function GET() {
         activeFeed: true,
         verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
       },
+    }),
+    prisma.job.count({
+      where: { activeFeed: true, sourcePostedAt: { gte: last24h } },
+    }),
+    prisma.job.count({
+      where: { activeFeed: true, sourcePostedAt: { gte: last72h } },
+    }),
+    prisma.job.count({
+      where: { activeFeed: true, sourcePostedAt: { lt: fourteenDaysAgo } },
     }),
     prisma.syncLog.findFirst({
       where: { source: "employer-ats", status: "success" },
@@ -36,6 +60,11 @@ export async function GET() {
       targetReached: active >= ACTIVE_TARGET,
       verifiedActive,
       total,
+      freshness: {
+        postedWithin24h: fresh24h,
+        postedWithin72h: fresh72h,
+        olderThan14Days: olderThan14d,
+      },
       lastSuccessfulSyncAt: latestSync?.finishedAt?.toISOString() ?? null,
       lastSyncNewJobs: latestSync?.newJobsCount ?? 0,
       lastSyncUpdatedJobs: latestSync?.updatedJobsCount ?? 0,
