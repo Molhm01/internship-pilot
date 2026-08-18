@@ -1,0 +1,30 @@
+name: Catalog 500 audit
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Wait for production ingestion to settle
+        run: sleep 180
+
+      - name: Verify production active catalog target
+        run: |
+          body="$(curl --fail-with-body --silent --show-error --max-time 30 https://internship-pilot.vercel.app/api/health/catalog)"
+          echo "$body" | jq .
+          active="$(echo "$body" | jq -r '.active')"
+          target="$(echo "$body" | jq -r '.activeTarget')"
+          reached="$(echo "$body" | jq -r '.targetReached')"
+          echo "ACTIVE=$active TARGET=$target REACHED=$reached"
+          if [ "$active" -lt 500 ]; then
+            echo "Catalog target not reached: $active active jobs"
+            exit 1
+          fi
