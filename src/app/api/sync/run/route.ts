@@ -12,7 +12,7 @@ import { runQueueBatch } from "@/lib/sync/queue";
 import { runCompanyDiscoverySweep, runUsaJobsDiscovery } from "@/lib/sync/companyDiscovery";
 import { runInternListOriginalSourceDiscovery } from "@/lib/sync/discoveryResolution";
 import { runFreshnessVerificationBatch } from "@/lib/sync/freshness";
-import { runPublicDirectFeedDiscovery } from "@/lib/sync/publicDirectFeeds";
+import { runExpandedPublicDirectFeedDiscovery } from "@/lib/sync/publicDirectFeedsExpanded";
 import { reconcileDirectOfficialFeed } from "@/lib/jobs/activeFeed";
 
 export const runtime = "nodejs";
@@ -52,9 +52,10 @@ export async function POST() {
   try {
     const cutover = await reconcileDirectOfficialFeed();
 
-    // Broadest/highest-confidence external inputs first. These feeds carry the
-    // original employer/ATS URL rather than a competitor redirect.
-    const publicDirect = await runPublicDirectFeedDiscovery(160);
+    // Consume the whole current direct-feed candidate set first. A current
+    // source row already contains the job-specific original employer/ATS URL,
+    // so Vercel bot-block responses must not starve Discover coverage.
+    const publicDirect = await runExpandedPublicDirectFeedDiscovery(600);
 
     // Intern List remains useful for roles not present in the direct feeds, but
     // it still must resolve back to a live original employer posting.
