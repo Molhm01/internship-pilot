@@ -7,6 +7,7 @@
 import { guardSession } from "@/lib/auth/session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { getLiveDiscoveryHealth } from "@/lib/sync/liveDiscoveryEngine";
 
 const ACTIVE_TARGET = 500;
 const FRESH_24H_TARGET = 25;
@@ -16,21 +17,22 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export async function GET() {
   const denied = await guardSession();
   if (denied) return denied;
-  const [lastLog, lastFreshLog] = await Promise.all([
+  const [lastLog, lastFreshLog, liveDiscovery] = await Promise.all([
     prisma.syncLog.findFirst({
       where: { source: "employer-ats", status: { in: ["success", "error"] } },
       orderBy: { startedAt: "desc" },
     }),
     prisma.syncLog.findFirst({
-      where: { source: "fresh-discovery", status: { in: ["success", "error"] } },
+      where: { source: { in: ["live-discovery", "fresh-discovery"] }, status: { in: ["success", "error"] } },
       orderBy: { startedAt: "desc" },
     }),
+    getLiveDiscoveryHealth(),
   ]);
 
   const now = Date.now();
   const recentErrorCount = await prisma.syncLog.count({
     where: {
-      source: { in: ["employer-ats", "fresh-discovery"] },
+      source: { in: ["employer-ats", "live-discovery", "fresh-discovery"] },
       status: "error",
       startedAt: { gt: new Date(now - DAY_MS) },
     },
@@ -69,6 +71,7 @@ export async function GET() {
     lastSyncStatus: lastLog?.status ?? null,
     lastFreshSyncAt: lastFreshLog?.finishedAt ?? null,
     lastFreshSyncStatus: lastFreshLog?.status ?? null,
+    lastLiveDiscoveryAt: liveDiscovery.lastLiveDiscoveryAt,
     newJobsLastRun: lastLog?.newJobsCount ?? 0,
     updatedJobsLastRun: lastLog?.updatedJobsCount ?? 0,
     activeCount,
@@ -80,6 +83,10 @@ export async function GET() {
     fresh72hTarget: FRESH_72H_TARGET,
     freshnessTargetReached: fresh24hCount >= FRESH_24H_TARGET && fresh72hCount >= FRESH_72H_TARGET,
     latestSourcePostedAt: latestSourceJob?.sourcePostedAt ?? null,
+    sourceLagMinutesP50: liveDiscovery.sourceLagMinutesP50,
+    sourceLagMinutesP95: liveDiscovery.sourceLagMinutesP95,
+    recentLagSampleSize: liveDiscovery.recentLagSampleSize,
+    liveQueue: liveDiscovery.queue,
     verifiedCount,
     needsReviewCount,
     closedCount,
