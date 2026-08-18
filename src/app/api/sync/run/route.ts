@@ -1,9 +1,9 @@
 /*
  * Shared data, but not public data.
  *
- * Browser self-healing and manual recovery ingest the largest current direct
- * technical-internship feeds first, then use Intern List as a secondary signal,
- * sweep the owned employer registry, and re-check older active jobs.
+ * Browser self-healing and manual recovery prioritize the freshest exact-
+ * timestamp technical internship signals first, then maintain broad catalogue
+ * depth and sweep owned employer sources.
  */
 import { guardSession } from "@/lib/auth/session";
 import { NextResponse } from "next/server";
@@ -14,6 +14,7 @@ import { runInternListOriginalSourceDiscovery } from "@/lib/sync/discoveryResolu
 import { runFreshnessVerificationBatch } from "@/lib/sync/freshness";
 import { runExpandedPublicDirectFeedDiscovery } from "@/lib/sync/publicDirectFeedsExpanded";
 import { runMassTechnicalFeedDiscovery } from "@/lib/sync/massTechnicalFeeds";
+import { runJobrightFreshDiscovery } from "@/lib/sync/jobrightFreshDiscovery";
 import { reconcileDirectOfficialFeed } from "@/lib/jobs/activeFeed";
 
 export const runtime = "nodejs";
@@ -54,6 +55,11 @@ export async function POST() {
   try {
     const cutover = await reconcileDirectOfficialFeed();
 
+    // First priority is speed-to-post: exact source timestamps from public
+    // Jobright internship categories, resolved back to employer ATS pages.
+    const freshDiscovery = await runJobrightFreshDiscovery(150);
+
+    // Then maintain broad 500+ catalogue depth.
     const massTechnical = await runMassTechnicalFeedDiscovery(1500);
     const publicDirect = await runExpandedPublicDirectFeedDiscovery(600);
     const discovery = await runInternListOriginalSourceDiscovery(50);
@@ -61,7 +67,7 @@ export async function POST() {
     const companies = await runCompanyDiscoverySweep({
       limit: 1000,
       concurrency: 10,
-      maxRuntimeMs: 75_000,
+      maxRuntimeMs: 60_000,
     });
 
     const freshness = await runFreshnessVerificationBatch(50);
@@ -70,12 +76,14 @@ export async function POST() {
 
     const newJobsCount =
       companies.results.reduce((sum, company) => sum + company.newCount, 0) +
+      freshDiscovery.newCount +
       massTechnical.newCount +
       publicDirect.newCount +
       discovery.newCount +
       usajobs.newCount;
     const updatedJobsCount =
       companies.results.reduce((sum, company) => sum + company.updatedCount, 0) +
+      freshDiscovery.updatedCount +
       massTechnical.updatedCount +
       publicDirect.updatedCount +
       discovery.updatedCount +
@@ -100,6 +108,7 @@ export async function POST() {
       activeAfterRun,
       targetReached: activeAfterRun >= ACTIVE_TARGET,
       cutover,
+      freshDiscovery,
       massTechnical,
       publicDirect,
       discovery,

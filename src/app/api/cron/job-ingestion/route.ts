@@ -5,6 +5,7 @@ import { runInternListOriginalSourceDiscovery } from "@/lib/sync/discoveryResolu
 import { runFreshnessVerificationBatch } from "@/lib/sync/freshness";
 import { runExpandedPublicDirectFeedDiscovery } from "@/lib/sync/publicDirectFeedsExpanded";
 import { runMassTechnicalFeedDiscovery } from "@/lib/sync/massTechnicalFeeds";
+import { runJobrightFreshDiscovery } from "@/lib/sync/jobrightFreshDiscovery";
 import { isSchedulerPaused } from "@/lib/sync/schedulerState";
 import { reconcileDirectOfficialFeed } from "@/lib/jobs/activeFeed";
 
@@ -75,6 +76,10 @@ export async function GET(request: Request) {
       20,
       Math.max(1, Number.parseInt(process.env.CRON_COMPANY_SWEEP_CONCURRENCY ?? "10", 10) || 10),
     );
+    const freshDiscoveryLimit = Math.min(
+      200,
+      Math.max(1, Number.parseInt(process.env.CRON_FRESH_DISCOVERY_LIMIT ?? "150", 10) || 150),
+    );
     const discoveryLimit = Math.min(
       50,
       Math.max(1, Number.parseInt(process.env.CRON_DISCOVERY_RESOLVE_LIMIT ?? "50", 10) || 50),
@@ -92,31 +97,44 @@ export async function GET(request: Request) {
       Math.max(1, Number.parseInt(process.env.CRON_FRESHNESS_CHECK_LIMIT ?? "50", 10) || 50),
     );
 
-    // The 500+ catalogue target needs a large upstream pool. Simplify/Pitt CSC
-    // and Zapply expose current technical internships with original employer
-    // application URLs; ingest those first and dedupe by the official URL.
-    const massTechnical = await runMassTechnicalFeedDiscovery(massTechnicalLimit);
+    // FRESHNESS FIRST. Jobright's public internship minisites carry exact
+    // source timestamps, so resolve the newest technical rows before spending
+    // time on historical catalogue depth. This is the lane that competes on
+    // "posted minutes/hours ago", not merely on total active count.
+    const freshDiscovery = await runJobrightFreshDiscovery(freshDiscoveryLimit);
 
-    // Keep ApplyGuy + Dreamwork as additional direct-link coverage.
+    // Maintain the 500+ catalogue target after the fresh lane has had first use
+    // of the invocation budget.
+    const massTechnical = await runMassTechnicalFeedDiscovery(massTechnicalLimit);
     const publicDirect = await runExpandedPublicDirectFeedDiscovery(publicDirectLimit);
 
-    // Intern List remains a secondary discovery signal for roles missing from
-    // the direct-link feeds.
+    // Intern List's broader public pages remain useful for depth and employers
+    // missing from the exact-timestamp minisites.
     const discovery = await runInternListOriginalSourceDiscovery(discoveryLimit);
 
     // Direct employer registry remains the owned-source backbone, but receives a
-    // bounded tail of the run so mass discovery cannot be starved by the sweep.
+    // bounded tail of the run so fresh discovery cannot be starved by the sweep.
     const result = await runCompanyDiscoverySweep({
       limit: sweepLimit,
       concurrency: sweepConcurrency,
-      maxRuntimeMs: 80_000,
+      maxRuntimeMs: 65_000,
     });
     const freshness = await runFreshnessVerificationBatch(freshnessLimit);
 
     const companyNewJobs = result.results.reduce((sum, company) => sum + company.newCount, 0);
     const companyUpdatedJobs = result.results.reduce((sum, company) => sum + company.updatedCount, 0);
-    const newJobs = companyNewJobs + massTechnical.newCount + publicDirect.newCount + discovery.newCount;
-    const updatedJobs = companyUpdatedJobs + massTechnical.updatedCount + publicDirect.updatedCount + discovery.updatedCount;
+    const newJobs =
+      companyNewJobs +
+      freshDiscovery.newCount +
+      massTechnical.newCount +
+      publicDirect.newCount +
+      discovery.newCount;
+    const updatedJobs =
+      companyUpdatedJobs +
+      freshDiscovery.updatedCount +
+      massTechnical.updatedCount +
+      publicDirect.updatedCount +
+      discovery.updatedCount;
     const errors = result.results.filter((company) => company.status === "error").length;
     const unsupported = result.results.filter((company) => company.status === "unsupported").length;
     const activeAfterRun = await prisma.job.count({ where: { activeFeed: true } });
@@ -147,6 +165,7 @@ export async function GET(request: Request) {
         updatedJobs,
         errors,
         unsupported,
+        freshDiscovery,
         massTechnical,
         publicDirect,
         discovery,
