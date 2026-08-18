@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import AccountSettings from "@/components/settings/AccountSettings";
+import LiveDiscoverySettings from "@/components/settings/LiveDiscoverySettings";
 import { currentUser } from "@/lib/auth/session";
 import { googleAuthConfigured } from "@/lib/auth/betterAuth";
 
@@ -23,7 +24,7 @@ export default async function SettingsPage() {
       <header>
         <h1 className="text-2xl font-semibold text-primary">Settings</h1>
         <p className="mt-1 text-sm text-secondary">
-          Your account, how you sign in, and the devices connected to it.
+          Your account, how you sign in, connected devices, and live internship discovery.
         </p>
       </header>
 
@@ -32,6 +33,7 @@ export default async function SettingsPage() {
         email={user.email}
         googleEnabled={googleAuthConfigured}
       />
+      <LiveDiscoverySettings />
     </div>
   );
 }
