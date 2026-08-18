@@ -134,8 +134,6 @@ function findCompanyConfig(
   if (exact) return exact;
   if (key.length < 5) return null;
 
-  // Accept a close registry alias only when one normalized company name fully
-  // contains the other. The job-title/location matcher still has to pass next.
   return (
     companies.find((company) => {
       const candidate = companyKey(company.name);
@@ -189,9 +187,6 @@ async function processCandidate(
 ): Promise<"new" | "updated" | "unchanged" | "unresolved" | "closed" | "unknown"> {
   const now = new Date();
 
-  // Highest-value path: use Intern List only as the discovery signal, then ask
-  // the employer's own known ATS board for the matching title/location. This
-  // does not depend on Jobright/Intern List exposing an "Original Job Post".
   let boardMatch: AtsJob | null = null;
   if (company) {
     try {
@@ -316,9 +311,61 @@ async function processCandidate(
   return upsertResult;
 }
 
+function candidateIdentity(candidate: DiscoveryCandidate): string {
+  return candidate.sourceListingUrl
+    ?? `${candidate.company}|${candidate.title}|${candidate.location ?? ""}`;
+}
+
+function uniqueCandidates(input: DiscoveryCandidate[]): DiscoveryCandidate[] {
+  const result: DiscoveryCandidate[] = [];
+  const seen = new Set<string>();
+  for (const candidate of input) {
+    const key = candidateIdentity(candidate);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(candidate);
+  }
+  return result;
+}
+
+/**
+ * Always inspect the freshest source rows, but reserve most of the remaining
+ * budget for a rotating window through the deeper pool. Without this, the same
+ * unresolved first 50 jobs can starve hundreds of later companies forever.
+ */
+function selectCandidatesForRun(
+  pool: DiscoveryCandidate[],
+  limit: number,
+  now = new Date(),
+): DiscoveryCandidate[] {
+  if (pool.length <= limit) return pool;
+
+  const newestBudget = Math.min(limit, Math.max(10, Math.ceil(limit * 0.4)));
+  const rotatingBudget = limit - newestBudget;
+  const newest = pool.slice(0, newestBudget);
+  if (rotatingBudget <= 0) return newest;
+
+  const tail = pool.slice(newestBudget);
+  if (tail.length <= rotatingBudget) return [...newest, ...tail];
+
+  // Scheduled syncs run roughly twice an hour. Advancing by one rotating-budget
+  // block per half-hour bucket makes later candidates progress even when GitHub
+  // scheduling is delayed, without needing another database cursor/migration.
+  const bucket = Math.floor(now.getTime() / (30 * 60 * 1000));
+  const offset = (bucket * rotatingBudget) % tail.length;
+  const rotating: DiscoveryCandidate[] = [];
+  for (let i = 0; i < rotatingBudget; i += 1) {
+    rotating.push(tail[(offset + i) % tail.length]!);
+  }
+  return [...newest, ...rotating];
+}
+
 export async function runInternListOriginalSourceDiscovery(
-  limit = 20,
+  limit = 50,
 ): Promise<{
+  sourceFetched: number;
+  sourceRelevant: number;
+  candidatePool: number;
   examined: number;
   resolved: number;
   unresolved: number;
@@ -394,16 +441,8 @@ export async function runInternListOriginalSourceDiscovery(
       compensation: job.compensation,
     }));
 
-  const candidates: DiscoveryCandidate[] = [];
-  const seen = new Set<string>();
-  for (const candidate of [...liveCandidates, ...backlogCandidates]) {
-    const key =
-      candidate.sourceListingUrl ?? `${candidate.company}|${candidate.title}|${candidate.location ?? ""}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    candidates.push(candidate);
-    if (candidates.length >= boundedLimit) break;
-  }
+  const pool = uniqueCandidates([...liveCandidates, ...backlogCandidates]);
+  const candidates = selectCandidatesForRun(pool, boundedLimit);
 
   const companies: CompanyForListing[] = await prisma.company.findMany({
     where: { allowlisted: true, monitoringStatus: "active" },
@@ -436,6 +475,9 @@ export async function runInternListOriginalSourceDiscovery(
   await Promise.all(workers);
 
   return {
+    sourceFetched: liveJobs.length,
+    sourceRelevant: relevantLive.length,
+    candidatePool: pool.length,
     examined: outcomes.length,
     resolved: outcomes.filter((outcome) => ["new", "updated", "unchanged"].includes(outcome)).length,
     unresolved: outcomes.filter((outcome) => outcome === "unresolved").length,

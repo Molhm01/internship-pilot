@@ -1,9 +1,10 @@
 /*
  * Shared data, but not public data.
  *
- * Sync Now performs a broad direct-employer sweep, uses Intern List only as a
- * DISCOVERY signal that must resolve to the original employer post, and then
- * re-checks older active jobs so confirmed closed postings leave Discover.
+ * Sync Now and browser self-healing use Intern List only as a DISCOVERY signal
+ * that must resolve to the original employer post, then sweep direct employer
+ * sources and re-check older active jobs so confirmed closed postings leave
+ * Discover.
  */
 import { guardSession } from "@/lib/auth/session";
 import { NextResponse } from "next/server";
@@ -51,16 +52,21 @@ export async function POST() {
   try {
     const cutover = await reconcileDirectOfficialFeed();
 
-    // Spend most of the serverless time budget on the employer registry itself.
-    // Never-checked companies come first; subsequent runs resume with the
-    // least-recently checked companies rather than re-checking the same few.
+    // Resolve the freshest broad discovery signals first. The previous order
+    // spent most of the function window on the registry sweep and left only a
+    // small tail for Intern List, which made the feed cluster around a handful
+    // of recently-scanned employers.
+    const discovery = await runInternListOriginalSourceDiscovery(50);
+
+    // Continue the direct-employer registry sweep afterward. It is resumable
+    // and oldest-first, so giving fresh discovery priority does not lose
+    // employer coverage across repeated automatic runs.
     const companies = await runCompanyDiscoverySweep({
       limit: 1000,
       concurrency: 10,
-      maxRuntimeMs: 180_000,
+      maxRuntimeMs: 150_000,
     });
 
-    const discovery = await runInternListOriginalSourceDiscovery(20);
     const freshness = await runFreshnessVerificationBatch(50);
     const usajobs = await runUsaJobsDiscovery();
     const queue = await runQueueBatch();

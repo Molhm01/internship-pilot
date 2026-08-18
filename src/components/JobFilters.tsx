@@ -53,8 +53,18 @@ export const EMPTY_FILTERS: JobFiltersState = {
 };
 
 const DISCIPLINE_LABELS: Record<DisciplineTag, string> = {
+  software: "Software Engineering",
   electrical: "Electrical",
   computerEngineering: "Computer Engineering",
+  mechanical: "Mechanical Engineering",
+  aerospace: "Aerospace Engineering",
+  civil: "Civil Engineering",
+  chemical: "Chemical Engineering",
+  biomedical: "Biomedical Engineering",
+  industrial: "Industrial Engineering",
+  materials: "Materials Engineering",
+  powerEnergy: "Power & Energy",
+  mechatronics: "Mechatronics",
   hardware: "Hardware",
   embedded: "Embedded systems",
   electronics: "Electronics",
@@ -242,7 +252,7 @@ export default function JobFilters({
                 type="checkbox"
                 checked={filters.disciplines.includes(tag)}
                 onChange={() => toggleDiscipline(tag)}
-                className="hidden"
+                className="accent-[var(--brand)]"
               />
               {DISCIPLINE_LABELS[tag]}
             </label>
@@ -251,16 +261,20 @@ export default function JobFilters({
       </details>
 
       <details className="group">
-        <summary className="cursor-pointer text-sm font-medium text-secondary">Eligibility</summary>
+        <summary className="cursor-pointer text-sm font-medium text-secondary">Eligibility & compensation</summary>
         <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
           <SelectField
             label="Sophomore eligible"
             value={filters.sophomoreEligible}
             onChange={(v) => set("sophomoreEligible", v)}
             options={["", "true", "false"]}
-            labels={{ "": "Any", true: "Yes", false: "No" }}
           />
-          <TextField label="Graduation year" value={filters.graduationYear} onChange={(v) => set("graduationYear", v)} type="number" />
+          <TextField
+            label="Graduation year"
+            value={filters.graduationYear}
+            onChange={(v) => set("graduationYear", v)}
+            type="number"
+          />
           <SelectField
             label="Sponsorship"
             value={filters.sponsorship}
@@ -272,18 +286,27 @@ export default function JobFilters({
             value={filters.citizenshipOrClearance}
             onChange={(v) => set("citizenshipOrClearance", v)}
             options={["", "true", "false"]}
-            labels={{ "": "Any", true: "Required", false: "Not mentioned" }}
+          />
+          <TextField
+            label="Min hourly comp"
+            value={filters.compMin}
+            onChange={(v) => set("compMin", v)}
+            type="number"
+          />
+          <TextField
+            label="Minimum match score"
+            value={filters.matchScoreMin}
+            onChange={(v) => set("matchScoreMin", v)}
+            type="number"
           />
         </div>
       </details>
 
       <details className="group">
-        <summary className="cursor-pointer text-sm font-medium text-secondary">Compensation, score & status</summary>
+        <summary className="cursor-pointer text-sm font-medium text-secondary">Application status</summary>
         <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
-          <TextField label="Min compensation ($/hr)" value={filters.compMin} onChange={(v) => set("compMin", v)} type="number" />
-          <TextField label="Min match score" value={filters.matchScoreMin} onChange={(v) => set("matchScoreMin", v)} type="number" />
           <SelectField
-            label="Application status"
+            label="Status"
             value={filters.status}
             onChange={(v) => set("status", v)}
             options={["", ...TRACKER_STATUSES]}
@@ -292,23 +315,17 @@ export default function JobFilters({
             label="Availability"
             value={filters.availability}
             onChange={(v) => set("availability", v)}
-            options={["", "official", "source_listed", "verification_pending", "closed", "security", "all"]}
-            labels={{
-              "": "Active feed (default)",
-              official: "Officially verified",
-              source_listed: "Source listed",
-              verification_pending: "Verification pending",
-              closed: "Closed confirmed",
-              security: "Security blocked",
-              all: "Everything",
-            }}
+            options={[
+              { value: "", label: "Active feed" },
+              { value: "official", label: "Officially verified" },
+              { value: "source_listed", label: "Source listed" },
+              { value: "verification_pending", label: "Verification pending" },
+              { value: "closed", label: "Closed" },
+              { value: "security", label: "Security blocked" },
+              { value: "all", label: "All records" },
+            ]}
           />
         </div>
-        <p className="mt-3 text-xs text-faint">
-          The Active feed shows every legitimate discovered job — officially verified, source listed,
-          and verification pending — newest first. Closed/mismatch/security-blocked records are hidden
-          from the default feed but reachable via the Availability filter above.
-        </p>
       </details>
     </section>
   );
@@ -326,9 +343,14 @@ function TextField({
   type?: string;
 }) {
   return (
-    <label className="block space-y-1">
-      <span className="text-xs font-medium text-secondary">{label}</span>
-      <input type={type} value={value} onChange={(e) => onChange(e.target.value)} className="input-sm w-full" />
+    <label className="space-y-1">
+      <span className="block text-xs font-medium text-secondary">{label}</span>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-primary outline-none focus:border-accent-line"
+      />
     </label>
   );
 }
@@ -338,23 +360,29 @@ function SelectField({
   value,
   onChange,
   options,
-  labels,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
-  options: string[];
-  labels?: Record<string, string>;
+  options: Array<string | { value: string; label: string }>;
 }) {
   return (
-    <label className="block space-y-1">
-      <span className="text-xs font-medium text-secondary">{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className="input-sm w-full">
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {labels?.[o] ?? (o === "" ? "Any" : o)}
-          </option>
-        ))}
+    <label className="space-y-1">
+      <span className="block text-xs font-medium text-secondary">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-primary outline-none focus:border-accent-line"
+      >
+        {options.map((option) => {
+          const value = typeof option === "string" ? option : option.value;
+          const label = typeof option === "string" ? (option || "Any") : option.label;
+          return (
+            <option key={value || "any"} value={value}>
+              {label}
+            </option>
+          );
+        })}
       </select>
     </label>
   );
