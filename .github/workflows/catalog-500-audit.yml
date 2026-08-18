@@ -1,0 +1,28 @@
+name: Catalog 500 audit
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Measure production catalog freshness
+        run: |
+          body="$(curl --fail-with-body --silent --show-error --max-time 30 https://internship-pilot.vercel.app/api/health/catalog)"
+          echo "$body" | jq .
+          active="$(echo "$body" | jq -r '.active')"
+          fresh24="$(echo "$body" | jq -r '.freshWithin24h // 0')"
+          fresh72="$(echo "$body" | jq -r '.freshWithin72h // 0')"
+          old14="$(echo "$body" | jq -r '.olderThan14d // 0')"
+          echo "ACTIVE=$active FRESH_24H=$fresh24 FRESH_72H=$fresh72 OLDER_14D=$old14"
+          if [ "$active" -lt 500 ]; then
+            echo "Catalog target not reached: $active active jobs"
+            exit 1
+          fi
