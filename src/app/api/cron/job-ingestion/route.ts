@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { runCompanyDiscoverySweep } from "@/lib/sync/companyDiscovery";
 import { runInternListOriginalSourceDiscovery } from "@/lib/sync/discoveryResolution";
 import { runFreshnessVerificationBatch } from "@/lib/sync/freshness";
+import { runPublicDirectFeedDiscovery } from "@/lib/sync/publicDirectFeeds";
 import { isSchedulerPaused } from "@/lib/sync/schedulerState";
 import { reconcileDirectOfficialFeed } from "@/lib/jobs/activeFeed";
 
@@ -76,31 +77,38 @@ export async function GET(request: Request) {
       50,
       Math.max(1, Number.parseInt(process.env.CRON_DISCOVERY_RESOLVE_LIMIT ?? "50", 10) || 50),
     );
+    const publicDirectLimit = Math.min(
+      250,
+      Math.max(1, Number.parseInt(process.env.CRON_PUBLIC_DIRECT_LIMIT ?? "160", 10) || 160),
+    );
     const freshnessLimit = Math.min(
       50,
       Math.max(1, Number.parseInt(process.env.CRON_FRESHNESS_CHECK_LIMIT ?? "50", 10) || 50),
     );
 
-    // Fresh external discovery comes first. The previous order let the broad
-    // company sweep consume most of the serverless budget before Intern List
-    // resolution even started, which made the feed look dominated by whichever
-    // employer boards happened to be scanned most recently.
+    // Highest-yield first: these public feeds already carry original employer
+    // or ATS URLs, so they can add broad coverage without reverse-resolving a
+    // competitor redirect. Every URL is still independently availability-checked.
+    const publicDirect = await runPublicDirectFeedDiscovery(publicDirectLimit);
+
+    // Intern List remains a discovery signal for roles the direct feeds miss.
+    // Its candidates still have to resolve to a live original employer posting.
     const discovery = await runInternListOriginalSourceDiscovery(discoveryLimit);
 
-    // The registry still receives the majority of the function window, but it
-    // runs after newest-source discovery and naturally resumes oldest-first on
-    // the next cycle.
+    // Continue the owned employer registry after fresh external discovery. The
+    // sweep is resumable/oldest-first, so trimming its per-run window does not
+    // lose coverage; it simply leaves enough serverless budget for broad feeds.
     const result = await runCompanyDiscoverySweep({
       limit: sweepLimit,
       concurrency: sweepConcurrency,
-      maxRuntimeMs: 160_000,
+      maxRuntimeMs: 120_000,
     });
     const freshness = await runFreshnessVerificationBatch(freshnessLimit);
 
     const companyNewJobs = result.results.reduce((sum, company) => sum + company.newCount, 0);
     const companyUpdatedJobs = result.results.reduce((sum, company) => sum + company.updatedCount, 0);
-    const newJobs = companyNewJobs + discovery.newCount;
-    const updatedJobs = companyUpdatedJobs + discovery.updatedCount;
+    const newJobs = companyNewJobs + discovery.newCount + publicDirect.newCount;
+    const updatedJobs = companyUpdatedJobs + discovery.updatedCount + publicDirect.updatedCount;
     const errors = result.results.filter((company) => company.status === "error").length;
     const unsupported = result.results.filter((company) => company.status === "unsupported").length;
 
@@ -127,6 +135,7 @@ export async function GET(request: Request) {
         updatedJobs,
         errors,
         unsupported,
+        publicDirect,
         discovery,
         freshness,
         durationMs: Date.now() - startedAt,
