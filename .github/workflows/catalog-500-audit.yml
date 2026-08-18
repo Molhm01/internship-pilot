@@ -11,10 +11,26 @@ permissions:
 jobs:
   audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 7
+    timeout-minutes: 8
     steps:
-      - name: Wait for production ingestion to settle
-        run: sleep 180
+      - name: Run production ingestion and print source diagnostics
+        env:
+          CRON_SECRET: ${{ secrets.INTERNSHIP_PILOT_CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "Missing repository Actions secret: INTERNSHIP_PILOT_CRON_SECRET"
+            exit 1
+          fi
+          body="$(curl --fail-with-body --silent --show-error --max-time 295 \
+            --header "Authorization: Bearer $CRON_SECRET" \
+            https://internship-pilot.vercel.app/api/cron/job-ingestion)"
+          echo "$body" | jq .
+          echo "MASS_SOURCE_FETCHED=$(echo "$body" | jq -r '.massTechnical.sourceFetched // 0')"
+          echo "SIMPLIFY_FETCHED=$(echo "$body" | jq -r '.massTechnical.simplifyFetched // 0')"
+          echo "ZAPPLY_FETCHED=$(echo "$body" | jq -r '.massTechnical.zapplyFetched // 0')"
+          echo "MASS_EXAMINED=$(echo "$body" | jq -r '.massTechnical.examined // 0')"
+          echo "MASS_NEW=$(echo "$body" | jq -r '.massTechnical.newCount // 0')"
+          echo "ACTIVE_AFTER_RUN=$(echo "$body" | jq -r '.activeAfterRun // 0')"
 
       - name: Verify production active catalog target
         run: |
