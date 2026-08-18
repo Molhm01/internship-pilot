@@ -1,16 +1,14 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
-import { scheduleInitialAiMatch } from "@/lib/matching/initialAiMatchQueue";
+import {
+  INITIAL_MATCH_TYPE,
+  scheduleInitialAiMatch,
+} from "@/lib/matching/initialAiMatchQueue";
+import { PROFILE_REFRESH_MATCH_PREFIX } from "@/lib/matching/profileFingerprint";
 
 const VALID_SCORE = { gte: 0, lte: 100 };
-/**
- * "Unscored" is a question about a person and a job, not about a job.
- *
- * The predicate used to read `Job.matchScore` — a single denormalized column on
- * the shared row — so once anybody had scored a posting it counted as scored
- * for everyone. It now asks whether THIS user has a valid score, through their
- * own `UserJobState` and their own `MatchResult` rows.
- */
+
+/** "Unscored" is always a question about this user and this job. */
 function unscoredActiveWhere(userId: string): Prisma.JobWhereInput {
   return {
     activeFeed: true,
@@ -86,7 +84,7 @@ async function assertInitialAiMatchQueueReady(): Promise<void> {
     );
   }
   try {
-    await queueDelegate.count({ where: { matchType: "INITIAL" } });
+    await queueDelegate.count({ where: { matchType: INITIAL_MATCH_TYPE } });
   } catch (error) {
     if (isMissingQueueMigration(error)) {
       throw new BulkInitialMatchError(
@@ -110,6 +108,7 @@ function logQueueFailure(jobId: string, error: unknown) {
 
 export async function scheduleAllUnscoredActiveJobs(
   userId: string,
+  options: { retryFailed?: boolean } = {},
 ): Promise<BulkInitialMatchScheduleResult> {
   await assertInitialAiMatchQueueReady();
   let activeCount: number;
@@ -134,7 +133,7 @@ export async function scheduleAllUnscoredActiveJobs(
   for (const job of jobs) {
     try {
       const result = await scheduleInitialAiMatch(job.id, userId, {
-        retryFailed: true,
+        retryFailed: options.retryFailed ?? true,
         startWorker: false,
       });
       if (result.scheduled) queued += 1;
@@ -162,29 +161,49 @@ export async function getBulkInitialMatchStatus(
   userId: string,
 ): Promise<BulkInitialMatchStatus> {
   await assertInitialAiMatchQueueReady();
-  const activeInitialWork: Prisma.InitialAiMatchJobWhereInput = {
+  const activeAutomaticWork: Prisma.InitialAiMatchJobWhereInput = {
+    userId,
     job: { activeFeed: true },
-    matchType: "INITIAL",
+    OR: [
+      { matchType: INITIAL_MATCH_TYPE },
+      { matchType: { startsWith: PROFILE_REFRESH_MATCH_PREFIX } },
+    ],
   };
-  let counts: [number, number, number, number, number, number];
+
   try {
-    counts = await Promise.all([
+    const [totalUnscored, queued, running, completed, retryableFailed, permanentFailed] = await Promise.all([
       prisma.job.count({ where: unscoredActiveWhere(userId) }),
-      prisma.initialAiMatchJob.count({ where: { ...activeInitialWork, state: "PENDING" } }),
-      prisma.initialAiMatchJob.count({ where: { ...activeInitialWork, state: "RUNNING" } }),
-      prisma.initialAiMatchJob.count({ where: { ...activeInitialWork, state: "SUCCEEDED" } }),
-      prisma.initialAiMatchJob.count({ where: { ...activeInitialWork, state: "RETRYABLE_FAILED" } }),
-      prisma.initialAiMatchJob.count({ where: { ...activeInitialWork, state: "PERMANENT_FAILED" } }),
+      prisma.initialAiMatchJob.count({ where: { ...activeAutomaticWork, state: "PENDING" } }),
+      prisma.initialAiMatchJob.count({ where: { ...activeAutomaticWork, state: "RUNNING" } }),
+      prisma.job.count({
+        where: {
+          activeFeed: true,
+          userStates: { some: { userId, matchScore: VALID_SCORE } },
+        },
+      }),
+      prisma.initialAiMatchJob.count({
+        where: {
+          ...activeAutomaticWork,
+          state: "RETRYABLE_FAILED",
+          NOT: { lastErrorCode: "PROFILE_REVISION_SUPERSEDED" },
+        },
+      }),
+      prisma.initialAiMatchJob.count({
+        where: {
+          ...activeAutomaticWork,
+          state: "PERMANENT_FAILED",
+          NOT: { lastErrorCode: "PROFILE_REVISION_SUPERSEDED" },
+        },
+      }),
     ]);
+    return {
+      totalUnscored,
+      queued,
+      running,
+      completed,
+      failed: retryableFailed + permanentFailed,
+    };
   } catch {
     throw new BulkInitialMatchError("BULK_SCORE_QUERY_FAILED", "queue status query", 500);
   }
-  const [totalUnscored, queued, running, completed, retryableFailed, permanentFailed] = counts;
-  return {
-    totalUnscored,
-    queued,
-    running,
-    completed,
-    failed: retryableFailed + permanentFailed,
-  };
 }

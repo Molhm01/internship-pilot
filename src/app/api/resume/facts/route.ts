@@ -1,15 +1,10 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { FACT_TYPES } from "@/lib/statuses";
 import { withUser } from "@/lib/auth/session";
+import { scheduleAutomaticScoresForUser } from "@/lib/matching/automaticScoring";
 
-/**
- * Résumé facts belong to the person whose résumé they came from.
- *
- * Both handlers take their owner from the session and nowhere else. There is no
- * `userId` parameter to tamper with, and the list query cannot be widened by a
- * query string: `status` filters within one user's rows, never across users.
- */
+/** Résumé facts are always scoped to the signed-in user. */
 export const GET = withUser(async (request, user) => {
   const { searchParams } = new URL(request.url);
   const status = searchParams.get("status");
@@ -28,6 +23,22 @@ type IncomingFact = {
   detail?: string | null;
   source?: string;
 };
+
+function queueRefreshAfterProfileChange(userId: string) {
+  after(async () => {
+    try {
+      await scheduleAutomaticScoresForUser(userId);
+    } catch (error) {
+      console.error("[resume-facts] automatic score scheduling failed", {
+        userId,
+        errorCode:
+          error && typeof error === "object" && "code" in error
+            ? String((error as { code: unknown }).code)
+            : "AUTOMATIC_SCORE_QUEUE_FAILED",
+      });
+    }
+  });
+}
 
 export const POST = withUser(async (request, user) => {
   const body = await request.json().catch(() => null);
@@ -61,5 +72,6 @@ export const POST = withUser(async (request, user) => {
     ),
   );
 
+  queueRefreshAfterProfileChange(user.id);
   return NextResponse.json({ facts: created }, { status: 201 });
 });

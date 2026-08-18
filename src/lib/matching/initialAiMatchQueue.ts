@@ -2,9 +2,15 @@ import { freemem } from "node:os";
 import { prisma } from "@/lib/db";
 import { MatchError, runMatchForJob, type MatchOrigin } from "@/lib/matching";
 import { hasUsableJobDescription } from "@/lib/matchWorkflow";
+import {
+  approvedProfileRevision,
+  profileHashFromRefreshMatchType,
+  PROFILE_REFRESH_MATCH_PREFIX,
+} from "@/lib/matching/profileFingerprint";
 
 export const INITIAL_MATCH_TYPE = "INITIAL";
 export const INITIAL_MATCH_ORIGIN: MatchOrigin = "INITIAL_AUTO";
+export const PROFILE_REFRESH_ORIGIN: MatchOrigin = "PROFILE_AUTO";
 export const INITIAL_MATCH_MAX_ATTEMPTS = 3;
 export const INITIAL_MATCH_RETRY_DELAYS_MS = [60_000, 5 * 60_000] as const;
 export const DEFAULT_AI_MATCH_WORKER_CONCURRENCY = 2;
@@ -86,7 +92,8 @@ function validJsonArray(value: string): boolean {
   }
 }
 
-export function isCompleteInitialMatch(match: PersistedMatch): boolean {
+function isCompleteAutomaticMatch(match: PersistedMatch, expectedOrigin: MatchOrigin): boolean {
+  const originOk = match.origin === expectedOrigin || match.origin?.startsWith(`${expectedOrigin}:`) === true;
   return Number.isInteger(match.score)
     && match.score >= 0
     && match.score <= 100
@@ -100,20 +107,15 @@ export function isCompleteInitialMatch(match: PersistedMatch): boolean {
     && validJsonArray(match.skillsNeedConfirmation)
     && validJsonArray(match.skillsToLearn)
     && validJsonArray(match.skillsNeverAdd)
-    && match.origin === INITIAL_MATCH_ORIGIN;
+    && originOk;
 }
 
-/**
- * Queues the one automatic score a newly discovered internship gets — for one
- * user.
- *
- * The queue used to hold one item per job. That was right when there was one
- * applicant: "has this job been scored?" and "has this job been scored for
- * you?" were the same question. They are not any more, so the item, the
- * uniqueness constraint and every "already scored" check below are per user.
- * Otherwise the first applicant to be scored would mark the job done for
- * everybody, and the second would never be scored at all.
- */
+// Kept as the public compatibility helper used by the existing queue tests.
+export function isCompleteInitialMatch(match: PersistedMatch): boolean {
+  return isCompleteAutomaticMatch(match, INITIAL_MATCH_ORIGIN);
+}
+
+/** Queue the first automatic score of a genuinely unscored job for one user. */
 export async function scheduleInitialAiMatch(
   jobId: string,
   userId: string,
@@ -211,22 +213,11 @@ export async function scheduleInitialAiMatch(
     throw error;
   }
 
-  progress("scheduled", { jobId, matchType: INITIAL_MATCH_TYPE });
+  progress("scheduled", { jobId, userId, matchType: INITIAL_MATCH_TYPE });
   if (options.startWorker !== false) triggerInitialAiMatchWorker();
   return { scheduled: true, reason: "SCHEDULED" };
 }
 
-/**
- * Everyone the automatic first score can meaningfully run for.
- *
- * Discovery has no user in scope — a sync run belongs to the installation, not
- * to a person — but the score it triggers does. So the fan-out is explicit:
- * every user who has at least one approved résumé fact, which is exactly the
- * set the scorer could produce a result for. Users with no facts are skipped
- * rather than queued and failed.
- *
- * With one account this behaves exactly as the single-user version did.
- */
 export async function usersEligibleForInitialMatch(): Promise<string[]> {
   const rows = await prisma.resumeFact.findMany({
     where: { userId: { not: null }, status: { in: ["approved", "edited"] } },
@@ -236,12 +227,6 @@ export async function usersEligibleForInitialMatch(): Promise<string[]> {
   return rows.map((row) => row.userId).filter((id): id is string => Boolean(id));
 }
 
-/**
- * Queues the automatic score of a newly discovered job for every eligible user.
- *
- * Failures are per user and never propagate: one account's queue write failing
- * must not abort ingestion of a job that every other account can still see.
- */
 export async function scheduleInitialAiMatchForAllUsers(
   jobId: string,
   options: InitialMatchScheduleOptions = {},
@@ -255,7 +240,6 @@ export async function scheduleInitialAiMatchForAllUsers(
     } catch (error) {
       console.error("[initial-ai-match] scheduling failed for one user", {
         jobId,
-        // The id, never the person: no email, no name, nothing from a profile.
         userId,
         errorCode:
           error && typeof error === "object" && "code" in error
@@ -270,6 +254,7 @@ export async function scheduleInitialAiMatchForAllUsers(
 const TRANSIENT_ERROR_CODES = new Set([
   "MODEL_UNAVAILABLE",
   "MODEL_TIMEOUT",
+  "CLOUD_MODEL_NOT_CONFIGURED",
   "MATCH_PERSISTENCE_FAILED",
   "TEMPORARY_DATABASE_FAILURE",
   "TEMPORARY_NETWORK_FAILURE",
@@ -322,12 +307,27 @@ async function recoverAbandonedInitialMatches(now: Date): Promise<void> {
   }
 }
 
+async function retireSupersededProfileRefresh(itemId: string, now: Date): Promise<void> {
+  await prisma.initialAiMatchJob.update({
+    where: { id: itemId },
+    data: {
+      state: "PERMANENT_FAILED",
+      completedAt: now,
+      lockedAt: null,
+      lastErrorCode: "PROFILE_REVISION_SUPERSEDED",
+    },
+  });
+}
+
 export async function processNextInitialAiMatch(now = new Date()): Promise<boolean> {
   const queueReadStartedAt = performance.now();
   await recoverAbandonedInitialMatches(now);
   const item = await prisma.initialAiMatchJob.findFirst({
     where: {
-      matchType: INITIAL_MATCH_TYPE,
+      OR: [
+        { matchType: INITIAL_MATCH_TYPE },
+        { matchType: { startsWith: PROFILE_REFRESH_MATCH_PREFIX } },
+      ],
       state: { in: ["PENDING", "RETRYABLE_FAILED"] },
       nextAttemptAt: { lte: now },
     },
@@ -336,20 +336,33 @@ export async function processNextInitialAiMatch(now = new Date()): Promise<boole
       id: true,
       userId: true,
       jobId: true,
+      matchType: true,
       state: true,
       attemptCount: true,
       createdAt: true,
     },
   });
   if (!item) return false;
-  // Legacy queue rows predate ownership and cannot be scored, because there is
-  // nobody to score them for. Retiring one is not a failure of the job.
+
   if (!item.userId) {
     await prisma.initialAiMatchJob.update({
       where: { id: item.id },
       data: { state: "PERMANENT_FAILED", lastErrorCode: "OWNER_UNKNOWN", completedAt: now, lockedAt: null },
     });
     return true;
+  }
+
+  // Queue rows created before matchType became explicit — and old unit-test
+  // fixtures that model those rows — are INITIAL work by definition.
+  const matchType = item.matchType ?? INITIAL_MATCH_TYPE;
+  const profileRefreshHash = profileHashFromRefreshMatchType(matchType);
+  if (matchType !== INITIAL_MATCH_TYPE) {
+    const revision = await approvedProfileRevision(item.userId);
+    if (!profileRefreshHash || !revision || revision.hash !== profileRefreshHash) {
+      await retireSupersededProfileRefresh(item.id, now);
+      progress("profile_refresh_superseded", { jobId: item.jobId, userId: item.userId });
+      return true;
+    }
   }
 
   const claimStartedAt = performance.now();
@@ -377,7 +390,7 @@ export async function processNextInitialAiMatch(now = new Date()): Promise<boole
       scoringError: null,
     },
   });
-  progress("started", { jobId: item.jobId, attempt: attemptNumber });
+  progress("started", { jobId: item.jobId, userId: item.userId, matchType, attempt: attemptNumber });
 
   try {
     const scoreStartedAt = performance.now();
@@ -393,7 +406,10 @@ export async function processNextInitialAiMatch(now = new Date()): Promise<boole
       },
     });
     const existingMatch = job?.matchResults[0];
-    if (existingMatch) {
+
+    // INITIAL means "score once". PROFILE_REFRESH intentionally ignores the
+    // old MatchResult and creates a new version grounded in the new fact set.
+    if (matchType === INITIAL_MATCH_TYPE && existingMatch) {
       await prisma.$transaction([
         prisma.initialAiMatchJob.update({
           where: { id: item.id },
@@ -410,12 +426,15 @@ export async function processNextInitialAiMatch(now = new Date()): Promise<boole
           data: { scoringState: "SCORED", scoringFinishedAt: now, scoringError: null },
         }),
       ]);
-      progress("skipped_existing_score", { jobId: item.jobId, attempt: attemptNumber });
+      progress("skipped_existing_score", { jobId: item.jobId, userId: item.userId, attempt: attemptNumber });
       return true;
     }
 
-    const match = await scorer(item.jobId, { userId: item.userId, origin: INITIAL_MATCH_ORIGIN });
-    if (!isCompleteInitialMatch(match)) {
+    const matchOrigin = matchType === INITIAL_MATCH_TYPE
+      ? INITIAL_MATCH_ORIGIN
+      : PROFILE_REFRESH_ORIGIN;
+    const match = await scorer(item.jobId, { userId: item.userId, origin: matchOrigin });
+    if (!isCompleteAutomaticMatch(match, matchOrigin)) {
       throw new MatchError(
         "The automatic AI Match result was incomplete.",
         502,
@@ -443,7 +462,7 @@ export async function processNextInitialAiMatch(now = new Date()): Promise<boole
       scoringMs: Math.round(performance.now() - scoreStartedAt),
       attempt: attemptNumber,
     });
-    progress("succeeded", { jobId: item.jobId, attempt: attemptNumber });
+    progress("succeeded", { jobId: item.jobId, userId: item.userId, matchType, attempt: attemptNumber });
   } catch (error) {
     const errorCode = safeErrorCode(error);
     const retryable = isTransient(error, errorCode) && attemptNumber < INITIAL_MATCH_MAX_ATTEMPTS;
@@ -473,6 +492,8 @@ export async function processNextInitialAiMatch(now = new Date()): Promise<boole
     ]);
     progress(retryable ? "retry_scheduled" : "permanent_failure", {
       jobId: item.jobId,
+      userId: item.userId,
+      matchType,
       attempt: attemptNumber,
       errorCode,
       ...(retryable ? { retryAt: nextAttemptAt.toISOString() } : {}),
@@ -488,9 +509,8 @@ export async function runBoundedInitialMatchWorkers(
   const bounded = Math.max(1, Math.min(2, Math.trunc(concurrency)));
   await Promise.all(Array.from({ length: bounded }, async () => {
     while (await processor()) {
-      // Immediately claim the next durable item. There is deliberately no
-      // worker sleep between jobs; future retries are picked up by the
-      // scheduler when nextAttemptAt becomes due.
+      // Immediately claim the next durable item. Future retries are picked up
+      // by the next scheduled worker once nextAttemptAt is due.
     }
   }));
 }

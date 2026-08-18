@@ -1,14 +1,44 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import {
   BulkInitialMatchError,
   scheduleAllUnscoredActiveJobs,
 } from "@/lib/matching/bulkInitialMatch";
+import {
+  runAutomaticScoringSweep,
+  scheduleProfileRefreshesForUser,
+} from "@/lib/matching/automaticScoring";
+import { hasGeminiApiKey } from "@/lib/gemini";
+import { isCloudRuntime } from "@/lib/runtime/deployment";
 import { withUser } from "@/lib/auth/session";
 
-/** Queues every job this user has no score for. Never anybody else's queue. */
+/**
+ * Emergency/manual fallback. Normal production operation is scheduled, but if
+ * the user presses the button this route explicitly retries failed initial and
+ * stale-profile work, then starts real processing instead of only leaving rows
+ * in PENDING.
+ */
 export const POST = withUser(async (_request, user) => {
   try {
-    const result = await scheduleAllUnscoredActiveJobs(user.id);
+    const [result] = await Promise.all([
+      scheduleAllUnscoredActiveJobs(user.id, { retryFailed: true }),
+      scheduleProfileRefreshesForUser(user.id, { retryFailed: true }),
+    ]);
+
+    if (isCloudRuntime() && hasGeminiApiKey()) {
+      after(async () => {
+        try {
+          await runAutomaticScoringSweep({ maxItems: 12, maxRuntimeMs: 120_000, concurrency: 2 });
+        } catch (error) {
+          console.error("[api/jobs/score-unscored] background worker failed", {
+            errorCode:
+              error && typeof error === "object" && "code" in error
+                ? String((error as { code: unknown }).code)
+                : "AUTOMATIC_SCORING_FAILED",
+          });
+        }
+      });
+    }
+
     return NextResponse.json(result, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     const known = error instanceof BulkInitialMatchError ? error : null;
