@@ -20,8 +20,14 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 8
     steps:
+      - name: Wait for the production deployment on main pushes
+        if: github.event_name == 'push'
+        run: |
+          echo "Waiting for Vercel to move the stable production alias to this main commit..."
+          sleep 75
+
       - name: Run the real employer ingestion sweep
         env:
           CRON_SECRET: ${{ secrets.INTERNSHIP_PILOT_CRON_SECRET }}
