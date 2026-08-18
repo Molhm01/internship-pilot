@@ -46,9 +46,9 @@ export default function SchedulerHealthPanel() {
     <details className="bg-surface rounded-lg border border-hairline p-4">
       <summary className="cursor-pointer flex items-center justify-between text-sm font-medium text-secondary">
         <span>
-          Scheduler health{" "}
+          Monitoring control{" "}
           <span className={health.paused ? "text-amber-600" : "text-emerald-600"}>
-            ({health.paused ? "Paused" : "Running"})
+            ({health.paused ? "Paused" : "Enabled"})
           </span>
         </span>
         <button
@@ -62,15 +62,18 @@ export default function SchedulerHealthPanel() {
           {busy ? "…" : health.paused ? "Resume Monitoring" : "Pause Monitoring"}
         </button>
       </summary>
+      <p className="mt-3 text-xs text-tertiary">
+        This switch only controls whether scheduled ingestion is allowed to run. It does not prove the external scheduler is firing; the real hosted-sync health is shown above.
+      </p>
       <div className="mt-3 grid grid-cols-2 gap-3">
         {Object.entries(health.ticks).map(([key, tick]) => (
           <div key={key} className="rounded-lg border border-hairline p-3 text-xs">
             <p className="font-medium text-secondary">{tick.label}</p>
             <p className="text-tertiary">
-              Last run: {tick.lastRunAt ? new Date(tick.lastRunAt).toLocaleString() : "never"}
+              Last local tick: {tick.lastRunAt ? new Date(tick.lastRunAt).toLocaleString() : "never"}
             </p>
             <p className="text-tertiary">
-              Next run: {tick.nextRunAt ? new Date(tick.nextRunAt).toLocaleString() : "—"}
+              Next local tick: {tick.nextRunAt ? new Date(tick.nextRunAt).toLocaleString() : "—"}
             </p>
             {tick.lastSummary && (
               <p className={tick.lastStatus === "error" ? "text-rose-600" : "text-tertiary"}>{tick.lastSummary}</p>
