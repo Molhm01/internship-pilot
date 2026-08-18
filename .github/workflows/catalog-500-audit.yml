@@ -13,26 +13,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Print production source diagnostics
-        run: |
-          body="$(curl --fail-with-body --silent --show-error --max-time 60 https://internship-pilot.vercel.app/api/health/catalog/sources)"
-          echo "$body" | jq .
-          echo "MASS_SOURCE_FETCHED=$(echo "$body" | jq -r '.massTechnical.sourceFetched // 0')"
-          echo "SIMPLIFY_FETCHED=$(echo "$body" | jq -r '.massTechnical.simplifyFetched // 0')"
-          echo "ZAPPLY_FETCHED=$(echo "$body" | jq -r '.massTechnical.zapplyFetched // 0')"
-          echo "MASS_ALREADY_ACTIVE=$(echo "$body" | jq -r '.massTechnical.alreadyActive // 0')"
-          echo "MASS_UNSEEN=$(echo "$body" | jq -r '.massTechnical.unseen // 0')"
-          echo "EXPANDED_SOURCE_FETCHED=$(echo "$body" | jq -r '.expandedDirect.sourceFetched // 0')"
-          echo "EXPANDED_UNSEEN=$(echo "$body" | jq -r '.expandedDirect.unseen // 0')"
-
-      - name: Verify production active catalog target
+      - name: Measure production catalog freshness
         run: |
           body="$(curl --fail-with-body --silent --show-error --max-time 30 https://internship-pilot.vercel.app/api/health/catalog)"
           echo "$body" | jq .
           active="$(echo "$body" | jq -r '.active')"
-          target="$(echo "$body" | jq -r '.activeTarget')"
-          reached="$(echo "$body" | jq -r '.targetReached')"
-          echo "ACTIVE=$active TARGET=$target REACHED=$reached"
+          fresh24="$(echo "$body" | jq -r '.freshWithin24h // 0')"
+          fresh72="$(echo "$body" | jq -r '.freshWithin72h // 0')"
+          old14="$(echo "$body" | jq -r '.olderThan14d // 0')"
+          echo "ACTIVE=$active FRESH_24H=$fresh24 FRESH_72H=$fresh72 OLDER_14D=$old14"
           if [ "$active" -lt 500 ]; then
             echo "Catalog target not reached: $active active jobs"
             exit 1
