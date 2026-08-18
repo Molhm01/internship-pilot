@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db";
 import { runCompanyDiscoverySweep } from "@/lib/sync/companyDiscovery";
 import { runInternListOriginalSourceDiscovery } from "@/lib/sync/discoveryResolution";
 import { runFreshnessVerificationBatch } from "@/lib/sync/freshness";
-import { runPublicDirectFeedDiscovery } from "@/lib/sync/publicDirectFeeds";
+import { runExpandedPublicDirectFeedDiscovery } from "@/lib/sync/publicDirectFeedsExpanded";
 import { isSchedulerPaused } from "@/lib/sync/schedulerState";
 import { reconcileDirectOfficialFeed } from "@/lib/jobs/activeFeed";
 
@@ -78,26 +78,26 @@ export async function GET(request: Request) {
       Math.max(1, Number.parseInt(process.env.CRON_DISCOVERY_RESOLVE_LIMIT ?? "50", 10) || 50),
     );
     const publicDirectLimit = Math.min(
-      250,
-      Math.max(1, Number.parseInt(process.env.CRON_PUBLIC_DIRECT_LIMIT ?? "160", 10) || 160),
+      600,
+      Math.max(1, Number.parseInt(process.env.CRON_PUBLIC_DIRECT_LIMIT ?? "600", 10) || 600),
     );
     const freshnessLimit = Math.min(
       50,
       Math.max(1, Number.parseInt(process.env.CRON_FRESHNESS_CHECK_LIMIT ?? "50", 10) || 50),
     );
 
-    // Highest-yield first: these public feeds already carry original employer
-    // or ATS URLs, so they can add broad coverage without reverse-resolving a
-    // competitor redirect. Every URL is still independently availability-checked.
-    const publicDirect = await runPublicDirectFeedDiscovery(publicDirectLimit);
+    // Highest-yield first: consume the full current public direct-feed pool.
+    // These feeds already carry the original job-specific employer/ATS URL, so
+    // ATS bot challenges must not make legitimate listings disappear merely
+    // because Vercel cannot re-fetch the same page server-side.
+    const publicDirect = await runExpandedPublicDirectFeedDiscovery(publicDirectLimit);
 
-    // Intern List remains a discovery signal for roles the direct feeds miss.
-    // Its candidates still have to resolve to a live original employer posting.
+    // Intern List remains a secondary discovery signal for roles the direct
+    // feeds miss. Its candidates still resolve to an original employer post.
     const discovery = await runInternListOriginalSourceDiscovery(discoveryLimit);
 
-    // Continue the owned employer registry after fresh external discovery. The
-    // sweep is resumable/oldest-first, so trimming its per-run window does not
-    // lose coverage; it simply leaves enough serverless budget for broad feeds.
+    // Continue the owned-employer sweep after the broad current feeds. It is
+    // resumable/oldest-first, so repeated runs still cover the full registry.
     const result = await runCompanyDiscoverySweep({
       limit: sweepLimit,
       concurrency: sweepConcurrency,
