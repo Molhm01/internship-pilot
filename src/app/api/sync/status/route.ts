@@ -9,20 +9,28 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 
 const ACTIVE_TARGET = 500;
+const FRESH_24H_TARGET = 25;
+const FRESH_72H_TARGET = 75;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export async function GET() {
   const denied = await guardSession();
   if (denied) return denied;
-  const lastLog = await prisma.syncLog.findFirst({
-    where: { source: "employer-ats", status: { in: ["success", "error"] } },
-    orderBy: { startedAt: "desc" },
-  });
+  const [lastLog, lastFreshLog] = await Promise.all([
+    prisma.syncLog.findFirst({
+      where: { source: "employer-ats", status: { in: ["success", "error"] } },
+      orderBy: { startedAt: "desc" },
+    }),
+    prisma.syncLog.findFirst({
+      where: { source: "fresh-discovery", status: { in: ["success", "error"] } },
+      orderBy: { startedAt: "desc" },
+    }),
+  ]);
 
   const now = Date.now();
   const recentErrorCount = await prisma.syncLog.count({
     where: {
-      source: "employer-ats",
+      source: { in: ["employer-ats", "fresh-discovery"] },
       status: "error",
       startedAt: { gt: new Date(now - DAY_MS) },
     },
@@ -59,6 +67,8 @@ export async function GET() {
   return NextResponse.json({
     lastSyncAt: lastLog?.finishedAt ?? null,
     lastSyncStatus: lastLog?.status ?? null,
+    lastFreshSyncAt: lastFreshLog?.finishedAt ?? null,
+    lastFreshSyncStatus: lastFreshLog?.status ?? null,
     newJobsLastRun: lastLog?.newJobsCount ?? 0,
     updatedJobsLastRun: lastLog?.updatedJobsCount ?? 0,
     activeCount,
@@ -66,6 +76,9 @@ export async function GET() {
     activeTargetReached: activeCount >= ACTIVE_TARGET,
     fresh24hCount,
     fresh72hCount,
+    fresh24hTarget: FRESH_24H_TARGET,
+    fresh72hTarget: FRESH_72H_TARGET,
+    freshnessTargetReached: fresh24hCount >= FRESH_24H_TARGET && fresh72hCount >= FRESH_72H_TARGET,
     latestSourcePostedAt: latestSourceJob?.sourcePostedAt ?? null,
     verifiedCount,
     needsReviewCount,
