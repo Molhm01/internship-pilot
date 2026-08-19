@@ -1,15 +1,6 @@
 import { cn } from "@/components/ui/cn";
 
-/**
- * AI Match score.
- *
- * The banding (75 / 50) is unchanged from the original MatchScoreBadge so a
- * score keeps the same meaning it always had. What changed is the presentation:
- * a radial readout rather than a coloured pill, and the eligibility verdict is
- * no longer welded to the number — they answer different questions and were
- * being read as one.
- */
-
+/** ATS-style resume-to-job match score. */
 export type MatchTone = "strong" | "moderate" | "weak";
 
 export function matchTone(score: number): MatchTone {
@@ -57,7 +48,7 @@ export function MatchScore({
   return (
     <span
       className={cn("relative inline-flex shrink-0 items-center justify-center", className)}
-      title={label ?? `AI Match score ${score} of 100`}
+      title={label ?? `ATS Match score ${score} of 100`}
     >
       <svg width={box} height={box} className="-rotate-90" aria-hidden>
         <circle
@@ -89,15 +80,11 @@ export function MatchScore({
       >
         {Math.round(clamped)}
       </span>
-      <span className="sr-only">AI Match score {score} of 100</span>
+      <span className="sr-only">ATS Match score {score} of 100</span>
     </span>
   );
 }
 
-/**
- * Eligibility verdict, shown next to but never merged with the score.
- * A high score with a failed eligibility check is a real and important state.
- */
 export function EligibilityTag({
   eligibility,
   className,
