@@ -11,12 +11,32 @@ type UploadedDoc = {
   pageCount: number;
   status: "ok" | "scanned";
   extractedText: string;
+  persisted?: boolean;
+};
+
+type UploadResponse = {
+  document?: UploadedDoc;
+  error?: string;
+  warning?: string;
 };
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+async function readJsonResponse(response: Response): Promise<UploadResponse> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as UploadResponse;
+  } catch {
+    throw new Error(
+      response.ok
+        ? "The resume service returned an invalid response. Please try again."
+        : "The resume service failed before it could return a valid response. Please try again.",
+    );
+  }
 }
 
 export default function ResumeUploader({
@@ -30,11 +50,13 @@ export default function ResumeUploader({
   const [uploading, setUploading] = useState(false);
   const [processed, setProcessed] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function handleFile(file: File) {
     setError(null);
+    setWarning(null);
     setProcessed(false);
 
     if (!file.name.toLowerCase().endsWith(".pdf")) {
@@ -53,14 +75,15 @@ export default function ResumeUploader({
       const formData = new FormData();
       formData.append("file", file);
       const res = await fetch("/api/resume/upload", { method: "POST", body: formData });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error ?? "Could not upload this PDF.");
+      const data = await readJsonResponse(res);
+      if (!res.ok || !data.document) {
+        setError(data.error ?? "Could not process this PDF.");
         return;
       }
 
-      const uploaded = data.document as UploadedDoc;
+      const uploaded = data.document;
       setDoc(uploaded);
+      setWarning(data.warning ?? null);
 
       // Resume submission is the action. As soon as text extraction succeeds,
       // build the candidate profile and queue job matches — no second button.
@@ -68,7 +91,7 @@ export default function ResumeUploader({
         setProcessed(await onAnalyze(uploaded.extractedText));
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error uploading PDF.");
+      setError(err instanceof Error ? err.message : "Network error processing PDF.");
     } finally {
       setUploading(false);
     }
@@ -79,8 +102,9 @@ export default function ResumeUploader({
     setDoc(null);
     setProcessed(false);
     setError(null);
+    setWarning(null);
     if (inputRef.current) inputRef.current.value = "";
-    if (toDelete) {
+    if (toDelete?.id) {
       await fetch(`/api/resume/documents/${toDelete.id}`, { method: "DELETE" }).catch(() => {});
     }
   }
@@ -123,7 +147,7 @@ export default function ResumeUploader({
             disabled={uploading || analyzing}
             className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-dark transition-colors"
           >
-            {uploading ? "Uploading…" : "Choose PDF"}
+            {uploading ? "Processing…" : "Choose PDF"}
           </button>
           <input
             ref={inputRef}
@@ -143,6 +167,12 @@ export default function ResumeUploader({
       {error && (
         <div className="rounded-lg bg-critical-quiet border border-critical-line text-critical text-sm px-4 py-3">
           {error}
+        </div>
+      )}
+
+      {warning && !error && (
+        <div className="rounded-lg bg-caution-quiet border border-caution-line text-caution text-sm px-4 py-3">
+          {warning}
         </div>
       )}
 
@@ -191,7 +221,7 @@ export default function ResumeUploader({
 
           {!analyzing && !processed && !error && (
             <div className="rounded-lg border border-caution-line bg-caution-quiet px-4 py-3 text-sm text-caution">
-              The PDF was uploaded, but its resume profile has not been processed yet. Upload it again to retry.
+              The PDF was read, but its resume profile has not been processed yet. Upload it again to retry.
             </div>
           )}
         </div>
