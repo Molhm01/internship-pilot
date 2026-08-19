@@ -1,8 +1,7 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
-import { ExternalLink, Sparkles, MapPin, CalendarDays, Clock } from "lucide-react";
+import { ExternalLink, MapPin, CalendarDays, Clock } from "lucide-react";
 import { cn } from "@/components/ui/cn";
 import { TrackerStatusBadge } from "./TrackerStatusBadge";
 import { AvailabilityBadge } from "./AvailabilityBadge";
@@ -13,7 +12,6 @@ import {
   openStoredApplicationUrl,
   selectStoredApplicationLinks,
 } from "@/lib/jobs/applicationUrl";
-import { hasUsableJobDescription, requestManualMatch } from "@/lib/matchWorkflow";
 import { initialMatchUiStatus } from "@/lib/matching/initialMatchStatus";
 
 export type JobCardData = {
@@ -50,38 +48,15 @@ export type JobCardData = {
 /**
  * Job card.
  *
- * All behaviour is carried over unchanged from the original component: the
- * posted label still comes from the SOURCE date only (never firstSeenAt), the
- * apply target still comes from selectStoredApplicationLinks, and manual match
- * still runs through requestManualMatch with its own local state.
- *
- * The redesign is structural — quick actions no longer sit inside the card's
- * <Link>, which previously meant every action had to call preventDefault and
- * stopPropagation to avoid navigating. The card body is the link; the action
- * row is its sibling.
+ * Match scoring is infrastructure, not a card action. The current score (or
+ * automatic queue state) is displayed here, while profile changes and new jobs
+ * are scheduled by the server without requiring a Run Match button.
  */
 export function JobCard({ job, className }: { job: JobCardData; className?: string }) {
-  const [latestMatch, setLatestMatch] = useState(job.matchResults?.[0]);
-  const [matching, setMatching] = useState(false);
-  const [matchError, setMatchError] = useState<string | null>(null);
-
+  const latestMatch = job.matchResults?.[0];
   const posted = postedLabel(job);
   const { applicationUrl, sourceListingUrl } = selectStoredApplicationLinks(job);
-  const canRunMatch = hasUsableJobDescription(job.description);
   const automaticMatchStatus = initialMatchUiStatus(job.scoringState, Boolean(latestMatch));
-
-  async function handleRunMatch() {
-    setMatchError(null);
-    setMatching(true);
-    try {
-      const result = await requestManualMatch(job.id);
-      setLatestMatch({ score: result.score, eligibility: result.eligibility });
-    } catch (error) {
-      setMatchError(error instanceof Error ? error.message : "Could not run AI Match.");
-    } finally {
-      setMatching(false);
-    }
-  }
 
   return (
     <article
@@ -109,7 +84,9 @@ export function JobCard({ job, className }: { job: JobCardData; className?: stri
               >
                 {automaticMatchStatus}
               </Badge>
-            ) : null}
+            ) : (
+              <Badge tone="neutral">Awaiting resume</Badge>
+            )}
           </div>
         </div>
 
@@ -147,51 +124,29 @@ export function JobCard({ job, className }: { job: JobCardData; className?: stri
         </div>
       </Link>
 
-      <div className="flex items-center gap-1.5 border-t border-hairline px-3.5 py-2">
-        <button
-          type="button"
-          onClick={() => void handleRunMatch()}
-          disabled={matching || !canRunMatch}
-          title={canRunMatch ? undefined : "A usable job description is required"}
-          className={cn(
-            "inline-flex h-6 items-center gap-1.5 rounded-md border border-line bg-surface px-2",
-            "text-micro font-medium text-secondary transition-colors duration-[120ms] ease-standard",
-            "hover:border-line-strong hover:text-primary",
-            "disabled:cursor-not-allowed disabled:opacity-45",
-          )}
-        >
-          <Sparkles className={cn("size-3", matching && "animate-agent-pulse")} aria-hidden />
-          {matching ? "Matching…" : latestMatch ? "Re-run match" : "Run AI Match"}
-        </button>
-
-        {applicationUrl ? (
-          <button
-            type="button"
-            onClick={() => openStoredApplicationUrl(job)}
-            className="ml-auto inline-flex h-6 items-center gap-1.5 rounded-md border border-accent bg-accent px-2 text-micro font-medium text-inverse transition-colors duration-[120ms] ease-standard hover:bg-accent-hover"
-          >
-            Apply
-            <ExternalLink className="size-3" aria-hidden />
-          </button>
-        ) : sourceListingUrl ? (
-          <button
-            type="button"
-            onClick={() =>
-              window.open(sourceListingUrl, "_blank", "noopener,noreferrer")
-            }
-            title="The official employer application page has not been resolved yet."
-            className="ml-auto inline-flex h-6 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-micro font-medium text-secondary transition-colors duration-[120ms] ease-standard hover:border-line-strong hover:text-primary"
-          >
-            Source listing
-            <ExternalLink className="size-3" aria-hidden />
-          </button>
-        ) : null}
-      </div>
-
-      {matchError && (
-        <p className="border-t border-critical-line bg-critical-quiet px-3.5 py-1.5 text-micro text-critical" role="alert">
-          {matchError}
-        </p>
+      {(applicationUrl || sourceListingUrl) && (
+        <div className="flex items-center justify-end gap-1.5 border-t border-hairline px-3.5 py-2">
+          {applicationUrl ? (
+            <button
+              type="button"
+              onClick={() => openStoredApplicationUrl(job)}
+              className="inline-flex h-6 items-center gap-1.5 rounded-md border border-accent bg-accent px-2 text-micro font-medium text-inverse transition-colors duration-[120ms] ease-standard hover:bg-accent-hover"
+            >
+              Apply
+              <ExternalLink className="size-3" aria-hidden />
+            </button>
+          ) : sourceListingUrl ? (
+            <button
+              type="button"
+              onClick={() => window.open(sourceListingUrl, "_blank", "noopener,noreferrer")}
+              title="The official employer application page has not been resolved yet."
+              className="inline-flex h-6 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-micro font-medium text-secondary transition-colors duration-[120ms] ease-standard hover:border-line-strong hover:text-primary"
+            >
+              Source listing
+              <ExternalLink className="size-3" aria-hidden />
+            </button>
+          ) : null}
+        </div>
       )}
     </article>
   );
