@@ -23,17 +23,19 @@ export default function ResumeUploader({
   onAnalyze,
   analyzing,
 }: {
-  onAnalyze: (text: string) => void | Promise<void>;
+  onAnalyze: (text: string) => Promise<boolean>;
   analyzing: boolean;
 }) {
   const [doc, setDoc] = useState<UploadedDoc | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [processed, setProcessed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function handleFile(file: File) {
     setError(null);
+    setProcessed(false);
 
     if (!file.name.toLowerCase().endsWith(".pdf")) {
       setError("Only PDF files are accepted. Please choose a .pdf file.");
@@ -63,7 +65,7 @@ export default function ResumeUploader({
       // Resume submission is the action. As soon as text extraction succeeds,
       // build the candidate profile and queue job matches — no second button.
       if (uploaded.status === "ok" && uploaded.extractedText.trim().length >= 30) {
-        await onAnalyze(uploaded.extractedText);
+        setProcessed(await onAnalyze(uploaded.extractedText));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error uploading PDF.");
@@ -75,6 +77,7 @@ export default function ResumeUploader({
   async function handleRemove() {
     const toDelete = doc;
     setDoc(null);
+    setProcessed(false);
     setError(null);
     if (inputRef.current) inputRef.current.value = "";
     if (toDelete) {
@@ -174,17 +177,23 @@ export default function ResumeUploader({
             </button>
           </div>
 
-          <div
-            className={`rounded-lg border px-4 py-3 text-sm ${
-              analyzing
-                ? "border-accent-line bg-accent/5 text-accent-text"
-                : "border-verified-line bg-verified-quiet text-verified"
-            }`}
-          >
-            {analyzing
-              ? "Analyzing your resume and preparing automatic job matches…"
-              : "Resume submitted. Your internship match scores update automatically."}
-          </div>
+          {analyzing && (
+            <div className="rounded-lg border border-accent-line bg-accent/5 px-4 py-3 text-sm text-accent-text">
+              Analyzing your resume and preparing automatic job matches…
+            </div>
+          )}
+
+          {!analyzing && processed && (
+            <div className="rounded-lg border border-verified-line bg-verified-quiet px-4 py-3 text-sm text-verified">
+              Resume submitted. Your internship match scores update automatically.
+            </div>
+          )}
+
+          {!analyzing && !processed && !error && (
+            <div className="rounded-lg border border-caution-line bg-caution-quiet px-4 py-3 text-sm text-caution">
+              The PDF was uploaded, but its resume profile has not been processed yet. Upload it again to retry.
+            </div>
+          )}
         </div>
       )}
     </section>
