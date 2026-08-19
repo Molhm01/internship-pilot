@@ -7,7 +7,7 @@ import {
   analyzeResumeForAutomaticScoring,
   replaceResumeDerivedEvidence,
 } from "@/lib/resume/autoProfile";
-import { scheduleAutomaticScoresForUser } from "@/lib/matching/automaticScoring";
+import { queueEntireCatalogForResume } from "@/lib/matching/resumeUploadScoring";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -59,9 +59,6 @@ export const POST = withUser(async (req, user) => {
 
   let extraction;
   try {
-    // pdf.js takes ownership of (transfers/detaches) the buffer it's given,
-    // so extraction runs on a copy — `bytes` itself still needs to be
-    // written to disk unchanged afterward.
     extraction = await extractPdfText(bytes.slice());
   } catch (err) {
     if (err instanceof PdfExtractionError) {
@@ -106,12 +103,9 @@ export const POST = withUser(async (req, user) => {
       automaticProfile = { status: "ready", factCount: profile.factCount };
 
       const origin = new URL(req.url).origin;
-      // Queue every active job after the response is safe to send. The first
-      // scoring worker is then kicked immediately; the live 5-minute engine
-      // keeps draining the same durable queue afterwards.
       after(async () => {
         try {
-          const scheduled = await scheduleAutomaticScoresForUser(user.id);
+          const scheduled = await queueEntireCatalogForResume(user.id);
           console.info(JSON.stringify({
             event: "resume-first-ats-scoring",
             stage: "queued",
@@ -130,9 +124,6 @@ export const POST = withUser(async (req, user) => {
         }
       });
     } catch (error) {
-      // The PDF is still stored successfully. The previous scoring profile is
-      // left active until this resume can be analyzed successfully; we never
-      // switch the user to partially extracted evidence.
       automaticProfile = {
         status: "failed",
         error: error instanceof Error
