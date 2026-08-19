@@ -23,11 +23,10 @@ export default function ResumeUploader({
   onAnalyze,
   analyzing,
 }: {
-  onAnalyze: (text: string) => void;
+  onAnalyze: (text: string) => void | Promise<void>;
   analyzing: boolean;
 }) {
   const [doc, setDoc] = useState<UploadedDoc | null>(null);
-  const [text, setText] = useState("");
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -57,8 +56,15 @@ export default function ResumeUploader({
         setError(data.error ?? "Could not upload this PDF.");
         return;
       }
-      setDoc(data.document);
-      setText(data.document.extractedText ?? "");
+
+      const uploaded = data.document as UploadedDoc;
+      setDoc(uploaded);
+
+      // Resume submission is the action. As soon as text extraction succeeds,
+      // build the candidate profile and queue job matches — no second button.
+      if (uploaded.status === "ok" && uploaded.extractedText.trim().length >= 30) {
+        await onAnalyze(uploaded.extractedText);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error uploading PDF.");
     } finally {
@@ -69,7 +75,6 @@ export default function ResumeUploader({
   async function handleRemove() {
     const toDelete = doc;
     setDoc(null);
-    setText("");
     setError(null);
     if (inputRef.current) inputRef.current.value = "";
     if (toDelete) {
@@ -81,12 +86,18 @@ export default function ResumeUploader({
     e.preventDefault();
     setDragActive(false);
     const file = e.dataTransfer.files?.[0];
-    if (file) handleFile(file);
+    if (file) void handleFile(file);
   }
 
   return (
     <section className="bg-surface rounded-lg border border-hairline p-6 space-y-4">
-      <h2 className="font-medium text-primary">1. Upload your resume (PDF)</h2>
+      <div>
+        <h2 className="font-medium text-primary">Upload your resume</h2>
+        <p className="mt-1 text-sm text-tertiary">
+          One PDF is enough. Internship Pilot extracts your resume profile and automatically scores
+          every active internship against it.
+        </p>
+      </div>
 
       {!doc && (
         <div
@@ -106,7 +117,7 @@ export default function ResumeUploader({
           <button
             type="button"
             onClick={() => inputRef.current?.click()}
-            disabled={uploading}
+            disabled={uploading || analyzing}
             className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-dark transition-colors"
           >
             {uploading ? "Uploading…" : "Choose PDF"}
@@ -119,13 +130,10 @@ export default function ResumeUploader({
             data-testid="pdf-file-input"
             onChange={(e) => {
               const file = e.target.files?.[0];
-              if (file) handleFile(file);
+              if (file) void handleFile(file);
             }}
           />
-          <p className="text-xs text-faint mt-4">
-            PDF only, up to 10 MB. Extracted entirely on your computer — nothing is uploaded
-            anywhere else.
-          </p>
+          <p className="text-xs text-faint mt-4">PDF only, up to 10 MB.</p>
         </div>
       )}
 
@@ -138,7 +146,7 @@ export default function ResumeUploader({
       {doc && doc.status === "scanned" && (
         <div className="space-y-3">
           <div className="rounded-lg bg-caution-quiet border border-caution-line text-caution text-sm px-4 py-3">
-            This PDF appears to be scanned. Text could not be extracted.
+            This PDF appears to be scanned. Text could not be extracted, so it cannot be used for automatic matching yet.
           </div>
           <div className="text-xs text-tertiary">
             {doc.filename} · {formatBytes(doc.sizeBytes)} · {doc.pageCount} page
@@ -157,23 +165,26 @@ export default function ResumeUploader({
               📄 {doc.filename} · {formatBytes(doc.sizeBytes)} · {doc.pageCount} page
               {doc.pageCount === 1 ? "" : "s"}
             </span>
-            <button onClick={handleRemove} className="shrink-0 text-accent-text hover:underline">
-              Remove / upload a different PDF
+            <button
+              onClick={handleRemove}
+              disabled={analyzing}
+              className="shrink-0 text-accent-text hover:underline disabled:opacity-40"
+            >
+              Upload a different resume
             </button>
           </div>
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            rows={14}
-            className="w-full rounded-lg border border-line p-4 text-sm leading-relaxed font-mono focus:outline-none focus:ring-2 focus:ring-brand/40 focus:border-accent-line"
-          />
-          <button
-            onClick={() => onAnalyze(text)}
-            disabled={analyzing || text.trim().length < 30}
-            className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-accent-dark transition-colors"
+
+          <div
+            className={`rounded-lg border px-4 py-3 text-sm ${
+              analyzing
+                ? "border-accent-line bg-accent/5 text-accent-text"
+                : "border-verified-line bg-verified-quiet text-verified"
+            }`}
           >
-            {analyzing ? "Analyzing… (can take a minute)" : "Analyze Resume"}
-          </button>
+            {analyzing
+              ? "Analyzing your resume and preparing automatic job matches…"
+              : "Resume submitted. Your internship match scores update automatically."}
+          </div>
         </div>
       )}
     </section>
