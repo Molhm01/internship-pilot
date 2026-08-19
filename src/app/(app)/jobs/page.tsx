@@ -2,7 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Plus, RotateCcw, Sparkles, SlidersHorizontal, X } from "lucide-react";
+import { Plus, RotateCcw, SlidersHorizontal, X } from "lucide-react";
 import { JobCard, type JobCardData } from "@/components/product/JobCard";
 import SyncStatusPanel from "@/components/SyncStatusPanel";
 import SchedulerHealthPanel from "@/components/SchedulerHealthPanel";
@@ -22,7 +22,6 @@ import {
 } from "@/lib/jobs/jobsApi";
 import {
   fetchBulkScoreStatus,
-  runBulkScoreScheduling,
   startBulkScoreStatusPolling,
 } from "@/lib/matching/bulkScoreClient";
 import type { BulkInitialMatchStatus } from "@/lib/matching/bulkInitialMatch";
@@ -63,9 +62,6 @@ type JobCounts = {
 
 const PAGE_SIZE = 60;
 
-// useSearchParams makes this subtree client-rendered, so it must sit inside a
-// Suspense boundary for the rest of the route to prerender (Next.js App Router
-// requirement, see docs/01-app/.../use-search-params.md).
 export default function JobsPage() {
   return (
     <Suspense
@@ -94,16 +90,10 @@ function JobsPageContent() {
   const [counts, setCounts] = useState<JobCounts | null>(null);
   const [countsError, setCountsError] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [bulkQueueing, setBulkQueueing] = useState(false);
-  const [bulkMessage, setBulkMessage] = useState<string | null>(null);
   const [bulkError, setBulkError] = useState<string | null>(null);
   const [bulkStatus, setBulkStatus] = useState<BulkInitialMatchStatus | null>(null);
   const lastSettledCount = useRef<number | null>(null);
 
-  // The selected sort lives in the URL, not in component state, so it survives
-  // a reload, a shared link, and a back/forward navigation. Filters live in
-  // React state and are rebuilt on every change — the sort is applied on top of
-  // whatever query they produce, so changing a filter never resets it.
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -157,12 +147,10 @@ function JobsPageContent() {
     setLoadingMore(true);
     setFetchError(null);
     try {
-      // Paging keeps the SAME sort — the next page is the next slice of one
-      // consistent order, never a differently-ordered batch appended on top.
       const data = await fetchJobsPage<JobCardData>(queryFor(jobs.length));
       const fetched = data.jobs;
       setJobs((prev) =>
-        Array.from(new Map([...prev, ...fetched].map((j) => [j.id, j])).values())
+        Array.from(new Map([...prev, ...fetched].map((job) => [job.id, job])).values())
       );
       setTotal(data.total);
     } catch (err) {
@@ -187,8 +175,8 @@ function JobsPageContent() {
   }, [applyBulkStatus]);
 
   useEffect(() => {
-    loadJobs();
-    loadCounts();
+    void loadJobs();
+    void loadCounts();
   }, [loadJobs, loadCounts]);
 
   useEffect(() => {
@@ -197,10 +185,6 @@ function JobsPageContent() {
     });
   }, [refreshBulkStatus]);
 
-  // Automatic scoring can start on the server after this page was already
-  // opened. Keep a cheap status watch alive while the tab is visible so a new
-  // queue is noticed without a manual reload; cards/counts are re-fetched only
-  // when work actually settles.
   useEffect(() => startBulkScoreStatusPolling({
     fetchStatus: fetchBulkScoreStatus,
     onStatus: applyBulkStatus,
@@ -208,21 +192,6 @@ function JobsPageContent() {
     intervalMs: 15_000,
     keepWatchingWhenIdle: true,
   }), [applyBulkStatus]);
-
-  const handleScoreAllUnscored = useCallback(async () => {
-    setBulkError(null);
-    setBulkMessage(null);
-    await runBulkScoreScheduling({
-      setScheduling: setBulkQueueing,
-      onSuccess: (result) => {
-        setBulkMessage(`Queued ${result.queued} jobs for scoring.`);
-        void Promise.all([refreshBulkStatus(), loadCounts()]).catch((error) => {
-          setBulkError(error instanceof Error ? error.message : "Scoring progress is unavailable.");
-        });
-      },
-      onError: setBulkError,
-    });
-  }, [loadCounts, refreshBulkStatus]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -261,7 +230,7 @@ function JobsPageContent() {
     <PageBody>
       <PageHeader
         title="Discover"
-        description="Every legitimate discovered internship in one feed, ordered by when the source says it was posted. Availability is carried on each card rather than hiding jobs from the list."
+        description="Every legitimate discovered internship in one feed. Upload one resume and Internship Pilot automatically scores each active job against your current resume profile."
         meta={
           counts && (
             <>
@@ -281,27 +250,14 @@ function JobsPageContent() {
               <SlidersHorizontal className="size-3.5" aria-hidden />
               Filters
             </Button>
-            <Button size="md" onClick={() => setShowForm((v) => !v)}>
+            <Button size="md" onClick={() => setShowForm((value) => !value)}>
               <Plus className="size-3.5" aria-hidden />
               Add job
-            </Button>
-            <Button
-              size="md"
-              variant="primary"
-              onClick={() => void handleScoreAllUnscored()}
-              disabled={bulkQueueing}
-            >
-              <Sparkles
-                className={cn("size-3.5", (bulkQueueing || scoringActive) && "animate-agent-pulse")}
-                aria-hidden
-              />
-              {bulkQueueing ? "Queuing…" : "Score unscored"}
             </Button>
           </>
         }
       />
 
-      {/* ------------------------------------------------------- readout */}
       {counts && (
         <Panel flush className="mb-4">
           <MetricRow className="px-4 py-1">
@@ -310,7 +266,7 @@ function JobsPageContent() {
             <Metric label="Source listed" value={counts.sourceListed.toLocaleString()} tone="info" />
             <Metric label="Pending" value={counts.verificationPending.toLocaleString()} tone="caution" />
             <Metric label="Scored" value={counts.scored.toLocaleString()} />
-            <Metric label="Unscored" value={counts.unscored.toLocaleString()} tone="caution" />
+            <Metric label="Awaiting match" value={counts.unscored.toLocaleString()} tone="caution" />
             <Metric label="Eligible" value={counts.eligibilityPass.toLocaleString()} tone="positive" />
             <Metric label="Ineligible" value={counts.eligibilityFail.toLocaleString()} tone="critical" />
             <Metric label="Closed" value={counts.closedConfirmed.toLocaleString()} tone="critical" />
@@ -325,11 +281,10 @@ function JobsPageContent() {
         </Notice>
       )}
 
-      {/* Bulk scoring progress only appears while there is something to report. */}
       {bulkStatus && scoringActive && (
         <Panel flush tone="accent" className="mb-4">
           <MetricRow className="px-4 py-1">
-            <Metric label="Unscored" value={bulkStatus.totalUnscored} tone="caution" />
+            <Metric label="Awaiting match" value={bulkStatus.totalUnscored} tone="caution" />
             <Metric label="Queued" value={bulkStatus.queued} tone="info" />
             <Metric label="Running" value={bulkStatus.running} tone="accent" />
             <Metric label="Completed" value={bulkStatus.completed} tone="positive" />
@@ -338,16 +293,10 @@ function JobsPageContent() {
         </Panel>
       )}
 
-      {bulkMessage && (
-        <Notice tone="positive" className="mb-4">
-          {bulkMessage}
-        </Notice>
-      )}
       {bulkError && (
-        <ErrorState title="Scoring" message={bulkError} className="mb-4" />
+        <ErrorState title="Automatic scoring" message={bulkError} className="mb-4" />
       )}
 
-      {/* -------------------------------------------------------- toolbar */}
       <div className="mb-4 flex flex-wrap items-center gap-2 border-y border-hairline py-2">
         <label className="flex items-center gap-2 text-micro font-medium uppercase tracking-[0.075em] text-tertiary">
           Sort
@@ -393,9 +342,7 @@ function JobsPageContent() {
       {showForm && (
         <Panel className="mb-4">
           <form onSubmit={handleSubmit} className="space-y-3">
-            <p className="text-small font-medium text-primary">
-              Add a job manually
-            </p>
+            <p className="text-small font-medium text-primary">Add a job manually</p>
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Job title *">
                 <Input required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
@@ -440,7 +387,6 @@ function JobsPageContent() {
         <SchedulerHealthPanel />
       </div>
 
-      {/* --------------------------------------------------------- results */}
       {fetchError && (
         <ErrorState
           title="Jobs unavailable"
