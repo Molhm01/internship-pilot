@@ -35,7 +35,7 @@ export default function ResumeFactsSection() {
     void loadApproved();
   }, [loadApproved]);
 
-  async function handleAnalyze(resumeText: string) {
+  async function handleAnalyze(resumeText: string): Promise<boolean> {
     setAnalyzeError(null);
     setSuccessMessage(null);
     setAnalyzing(true);
@@ -48,7 +48,7 @@ export default function ResumeFactsSection() {
       const data = await res.json();
       if (!res.ok) {
         setAnalyzeError(data.error ?? "Something went wrong processing your resume.");
-        return;
+        return false;
       }
 
       setSuccessMessage(
@@ -56,8 +56,10 @@ export default function ResumeFactsSection() {
           ?? `Resume profile updated with ${(data.facts ?? []).length} facts. Internship matches will refresh automatically.`,
       );
       await loadApproved();
+      return true;
     } catch (err) {
       setAnalyzeError(err instanceof Error ? err.message : "Network error");
+      return false;
     } finally {
       setAnalyzing(false);
     }
