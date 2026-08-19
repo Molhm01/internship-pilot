@@ -42,6 +42,12 @@ export type JobCardData = {
   workplaceType?: string | null;
   compensation?: string | null;
   scoringState?: string | null;
+  matchScore?: number | null;
+  eligibilityStatus?: string | null;
+  // Historical MatchResults may still be present in the API payload for audit
+  // and job-detail use. The card deliberately ignores them: current display
+  // state lives in UserJobState and is cleared as soon as a replacement resume
+  // becomes active.
   matchResults?: { score: number; eligibility: string }[];
 };
 
@@ -50,7 +56,12 @@ export type JobCardData = {
  * per-card run button in the normal workflow anymore.
  */
 export function JobCard({ job, className }: { job: JobCardData; className?: string }) {
-  const latestMatch = job.matchResults?.[0];
+  const hasCurrentScore = Number.isInteger(job.matchScore)
+    && job.matchScore! >= 0
+    && job.matchScore! <= 100;
+  const latestMatch = hasCurrentScore
+    ? { score: job.matchScore!, eligibility: job.eligibilityStatus ?? "Unknown" }
+    : undefined;
   const posted = postedLabel(job);
   const { applicationUrl, sourceListingUrl } = selectStoredApplicationLinks(job);
   const automaticMatchStatus = initialMatchUiStatus(job.scoringState, Boolean(latestMatch));
