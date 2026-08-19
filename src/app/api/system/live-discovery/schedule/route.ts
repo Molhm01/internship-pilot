@@ -3,7 +3,10 @@ import { guardSession } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
 
-const QSTASH_API = "https://qstash.upstash.io/v2";
+const DEFAULT_QSTASH_APIS = [
+  "https://qstash.upstash.io/v2",
+  "https://qstash-us-east-1.upstash.io/v2",
+] as const;
 const SCHEDULE_ID = "internship-pilot-live-discovery";
 const SCHEDULE_CRON = "*/5 * * * *";
 
@@ -18,6 +21,20 @@ function productionBaseUrl(): string | null {
   return normalized.replace(/\/$/, "");
 }
 
+function normalizeQstashApi(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, "");
+  return trimmed.endsWith("/v2") ? trimmed : `${trimmed}/v2`;
+}
+
+function qstashApis(): string[] {
+  const configured = process.env.QSTASH_URL?.trim();
+  const candidates = [
+    ...(configured ? [normalizeQstashApi(configured)] : []),
+    ...DEFAULT_QSTASH_APIS,
+  ];
+  return [...new Set(candidates)];
+}
+
 function config() {
   const token = process.env.QSTASH_TOKEN;
   const cronSecret = process.env.CRON_SECRET;
@@ -25,17 +42,41 @@ function config() {
   return { token, cronSecret, baseUrl };
 }
 
+async function isRegionMismatch(response: Response): Promise<boolean> {
+  if (response.ok) return false;
+  const detail = await response.clone().text().catch(() => "");
+  return /not found in this region|correct endpoint/i.test(detail);
+}
+
+/**
+ * QStash tokens are regional. The global qstash.upstash.io endpoint currently
+ * maps to EU, while US accounts use qstash-us-east-1.upstash.io. A token sent
+ * to the wrong region returns a specific "not found in this region" response.
+ *
+ * Prefer an explicit QSTASH_URL when one is configured, otherwise try the
+ * documented EU/default and US endpoints. We retry only on that exact regional
+ * mismatch; normal 4xx/5xx responses are returned immediately so a real API
+ * problem is never hidden by endpoint fallback.
+ */
 async function qstash(path: string, init: RequestInit = {}) {
   const { token } = config();
   if (!token) throw new Error("QSTASH_TOKEN is not configured.");
-  return fetch(`${QSTASH_API}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(init.headers ?? {}),
-    },
-    cache: "no-store",
-  });
+
+  let lastResponse: Response | null = null;
+  for (const api of qstashApis()) {
+    const response = await fetch(`${api}${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(init.headers ?? {}),
+      },
+      cache: "no-store",
+    });
+    lastResponse = response;
+    if (!(await isRegionMismatch(response))) return response;
+  }
+
+  return lastResponse!;
 }
 
 export async function GET() {
