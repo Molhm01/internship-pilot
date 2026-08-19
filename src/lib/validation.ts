@@ -11,6 +11,27 @@ export const resumeAnalysisResponseSchema = z.object({
   facts: z.array(candidateFactSchema),
 });
 
+export const resumeAnalysisResponseJsonSchema: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["facts"],
+  properties: {
+    facts: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["type", "content"],
+        properties: {
+          type: { type: "string", enum: [...FACT_TYPES] },
+          content: { type: "string" },
+          detail: { type: "string" },
+        },
+      },
+    },
+  },
+};
+
 export type CandidateFact = z.infer<typeof candidateFactSchema>;
 
 const skillItemSchema = z.object({
@@ -90,9 +111,6 @@ function qualificationTokens(value: string): string[] {
 function allowedFactTypes(qualification: string): Set<string> | null {
   const value = qualification.toLowerCase();
   if (/\b(?:work\s+authori[sz]ation|authori[sz]ed\s+to\s+work|citizenship|visa|sponsorship|security\s+clearance|clearance\s+eligible|work\s+permit)\b/.test(value)) {
-    // ResumeFact has no authorization category. These facts belong in the
-    // explicitly confirmed application profile and must never be inferred
-    // from resume prose.
     return new Set();
   }
   if (/\b(?:gpa|grade point average)\b/.test(value)) return new Set(["gpa"]);
@@ -138,11 +156,6 @@ function requiresExactEvidence(qualification: string): boolean {
     || /\b(?:certification|certified|license|licensed|years?|yrs?)\b/i.test(qualification);
 }
 
-// Grounding safety net: any skill claimed as "supported" must cite at least one
-// real approved-fact id, and that fact's text must actually contain a
-// reasonable overlap with the claimed skill. Otherwise it gets downgraded to
-// "needs confirmation" rather than trusted outright — the model's word alone
-// is never enough for the highest-confidence bucket.
 export function enforceGrounding(
   result: MatchResponse,
   validFactIds: Set<string>,
@@ -235,8 +248,6 @@ export function enforceGrounding(
     eligibilityReason,
     explanation,
     tailoringPreview,
-    // Hard safety net: the model must never recommend applying to a job that
-    // fails an explicit eligibility requirement, regardless of what it output.
     recommendation: result.eligibility === "Fail" ? "Skip" : result.recommendation,
   };
 }
