@@ -20,9 +20,6 @@ export async function POST(request: Request) {
   }
 
   if (!hasGeminiApiKey()) {
-    // This is an intentionally inactive feature, not a scheduler failure. Keep
-    // the shared GitHub maintenance workflow green until the deployment owner
-    // has explicitly configured a cloud model key.
     return NextResponse.json(
       {
         ok: true,
@@ -59,7 +56,10 @@ export async function POST(request: Request) {
   after(async () => {
     try {
       const result = await runAutomaticScoringSweep({
-        maxItems: 24,
+        // With the 5-minute live-discovery cadence this can process roughly
+        // 480 scores/hour at full throughput while keeping only two concurrent
+        // model requests and a hard function time budget.
+        maxItems: 40,
         maxRuntimeMs: 210_000,
         concurrency: 2,
       });

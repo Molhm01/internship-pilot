@@ -10,8 +10,13 @@ type UploadedDoc = {
   sizeBytes: number;
   pageCount: number;
   status: "ok" | "scanned";
-  extractedText: string;
 };
+
+type AutomaticProfile =
+  | { status: "ready"; factCount: number }
+  | { status: "failed"; error: string }
+  | { status: "not_applicable" }
+  | { status: "scanned" };
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -20,14 +25,12 @@ function formatBytes(bytes: number): string {
 }
 
 export default function ResumeUploader({
-  onAnalyze,
-  analyzing,
+  onProcessed,
 }: {
-  onAnalyze: (text: string) => void;
-  analyzing: boolean;
+  onProcessed?: () => void | Promise<void>;
 }) {
   const [doc, setDoc] = useState<UploadedDoc | null>(null);
-  const [text, setText] = useState("");
+  const [automaticProfile, setAutomaticProfile] = useState<AutomaticProfile | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -35,6 +38,7 @@ export default function ResumeUploader({
 
   async function handleFile(file: File) {
     setError(null);
+    setAutomaticProfile(null);
 
     if (!file.name.toLowerCase().endsWith(".pdf")) {
       setError("Only PDF files are accepted. Please choose a .pdf file.");
@@ -58,7 +62,10 @@ export default function ResumeUploader({
         return;
       }
       setDoc(data.document);
-      setText(data.document.extractedText ?? "");
+      setAutomaticProfile(data.automaticProfile ?? null);
+      if (data.automaticProfile?.status === "ready") {
+        await onProcessed?.();
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error uploading PDF.");
     } finally {
@@ -69,7 +76,7 @@ export default function ResumeUploader({
   async function handleRemove() {
     const toDelete = doc;
     setDoc(null);
-    setText("");
+    setAutomaticProfile(null);
     setError(null);
     if (inputRef.current) inputRef.current.value = "";
     if (toDelete) {
@@ -81,12 +88,17 @@ export default function ResumeUploader({
     e.preventDefault();
     setDragActive(false);
     const file = e.dataTransfer.files?.[0];
-    if (file) handleFile(file);
+    if (file) void handleFile(file);
   }
 
   return (
     <section className="bg-surface rounded-lg border border-hairline p-6 space-y-4">
-      <h2 className="font-medium text-primary">1. Upload your resume (PDF)</h2>
+      <div>
+        <h2 className="font-medium text-primary">Upload your resume</h2>
+        <p className="mt-1 text-sm text-secondary">
+          That&apos;s it. Internship Pilot extracts only facts written in the PDF and automatically scores your resume against every active job.
+        </p>
+      </div>
 
       {!doc && (
         <div
@@ -109,7 +121,7 @@ export default function ResumeUploader({
             disabled={uploading}
             className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-dark transition-colors"
           >
-            {uploading ? "Uploading…" : "Choose PDF"}
+            {uploading ? "Uploading and analyzing…" : "Choose PDF"}
           </button>
           <input
             ref={inputRef}
@@ -119,12 +131,11 @@ export default function ResumeUploader({
             data-testid="pdf-file-input"
             onChange={(e) => {
               const file = e.target.files?.[0];
-              if (file) handleFile(file);
+              if (file) void handleFile(file);
             }}
           />
           <p className="text-xs text-faint mt-4">
-            PDF only, up to 10 MB. Extracted entirely on your computer — nothing is uploaded
-            anywhere else.
+            PDF only, up to 10 MB. The PDF is stored in your Internship Pilot account; extracted text is used by the configured AI scorer only to build evidence and compare your resume with job descriptions.
           </p>
         </div>
       )}
@@ -135,45 +146,31 @@ export default function ResumeUploader({
         </div>
       )}
 
-      {doc && doc.status === "scanned" && (
-        <div className="space-y-3">
-          <div className="rounded-lg bg-caution-quiet border border-caution-line text-caution text-sm px-4 py-3">
-            This PDF appears to be scanned. Text could not be extracted.
-          </div>
-          <div className="text-xs text-tertiary">
-            {doc.filename} · {formatBytes(doc.sizeBytes)} · {doc.pageCount} page
-            {doc.pageCount === 1 ? "" : "s"}
-          </div>
-          <button onClick={handleRemove} className="text-sm text-accent-text hover:underline">
-            Remove and upload a different PDF
-          </button>
-        </div>
-      )}
-
-      {doc && doc.status === "ok" && (
+      {doc && (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-4 text-xs text-tertiary">
             <span className="truncate">
               📄 {doc.filename} · {formatBytes(doc.sizeBytes)} · {doc.pageCount} page
               {doc.pageCount === 1 ? "" : "s"}
             </span>
-            <button onClick={handleRemove} className="shrink-0 text-accent-text hover:underline">
-              Remove / upload a different PDF
+            <button onClick={() => void handleRemove()} className="shrink-0 text-accent-text hover:underline">
+              Upload a different resume
             </button>
           </div>
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            rows={14}
-            className="w-full rounded-lg border border-line p-4 text-sm leading-relaxed font-mono focus:outline-none focus:ring-2 focus:ring-brand/40 focus:border-accent-line"
-          />
-          <button
-            onClick={() => onAnalyze(text)}
-            disabled={analyzing || text.trim().length < 30}
-            className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-accent-dark transition-colors"
-          >
-            {analyzing ? "Analyzing… (can take a minute)" : "Analyze Resume"}
-          </button>
+
+          {doc.status === "scanned" || automaticProfile?.status === "scanned" ? (
+            <div className="rounded-lg bg-caution-quiet border border-caution-line text-caution text-sm px-4 py-3">
+              This PDF appears to be scanned, so its text could not be extracted. Upload a text-based PDF to enable automatic ATS scoring.
+            </div>
+          ) : automaticProfile?.status === "ready" ? (
+            <div className="rounded-lg bg-positive-quiet border border-positive-line text-positive text-sm px-4 py-3">
+              Resume ready. {automaticProfile.factCount} literal resume facts were extracted. ATS scoring is now queued automatically for every active internship, and future jobs will be scored too.
+            </div>
+          ) : automaticProfile?.status === "failed" ? (
+            <div className="rounded-lg bg-critical-quiet border border-critical-line text-critical text-sm px-4 py-3">
+              The PDF uploaded successfully, but automatic resume analysis could not finish: {automaticProfile.error} Your previous successfully processed resume remains the active scoring profile.
+            </div>
+          ) : null}
         </div>
       )}
     </section>
