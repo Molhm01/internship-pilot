@@ -1,3 +1,4 @@
+import "pdf-parse/worker";
 import { PDFParse } from "pdf-parse";
 
 export const MAX_PDF_SIZE_BYTES = 10 * 1024 * 1024;
