@@ -1,0 +1,36 @@
+name: Production diagnostic temporary
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Capture production responses
+        run: |
+          set +e
+          mkdir -p diagnostic
+          for endpoint in api/health/catalog api/jobs api/jobs/counts; do
+            safe="$(echo "$endpoint" | tr '/' '-')"
+            curl --silent --show-error --max-time 30 \
+              --dump-header "diagnostic/${safe}.headers.txt" \
+              --output "diagnostic/${safe}.body.txt" \
+              --write-out "%{http_code}\n" \
+              "https://internship-pilot.vercel.app/${endpoint}" \
+              > "diagnostic/${safe}.status.txt" 2> "diagnostic/${safe}.curl-error.txt"
+          done
+          find diagnostic -type f -maxdepth 1 -print -exec sh -c 'echo "--- $1"; cat "$1"; echo' _ {} \;
+
+      - name: Upload production diagnostic
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-api-diagnostic
+          path: diagnostic/
+          retention-days: 1
