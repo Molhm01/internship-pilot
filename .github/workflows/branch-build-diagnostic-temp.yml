@@ -1,0 +1,48 @@
+name: Branch build diagnostic temporary
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install
+        run: npm ci 2>&1 | tee install.log
+      - name: Typecheck
+        id: typecheck
+        continue-on-error: true
+        run: npm run typecheck 2>&1 | tee typecheck.log
+      - name: Build
+        id: build
+        continue-on-error: true
+        run: npm run build 2>&1 | tee build.log
+      - name: Record conclusions
+        if: always()
+        run: |
+          printf 'typecheck=%s\nbuild=%s\n' '${{ steps.typecheck.outcome }}' '${{ steps.build.outcome }}' > conclusions.txt
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: branch-build-diagnostic
+          path: |
+            install.log
+            typecheck.log
+            build.log
+            conclusions.txt
+          retention-days: 1
+      - name: Enforce checks
+        if: steps.typecheck.outcome != 'success' || steps.build.outcome != 'success'
+        run: exit 1
