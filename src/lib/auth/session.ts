@@ -1,6 +1,41 @@
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth/betterAuth";
+import { prisma } from "@/lib/db";
+
+const DEV_BYPASS_EMAIL = "dev-bypass@localhost";
+
+/**
+ * Development-only sign-in bypass (Phase 8 recovery mode).
+ *
+ * When `DEV_AUTH_BYPASS=true` AND the process is not production, every request
+ * is treated as a fixed local development account. Its only purpose is that a
+ * broken auth backend can never lock a developer out of the rest of the app
+ * while they work on something unrelated.
+ *
+ * It is inert in production by construction: the `NODE_ENV === "production"`
+ * guard is checked first and returns before anything else runs, so no
+ * production build can ever satisfy both conditions. It never touches the
+ * password, session, cookie, or OAuth code — production authentication is
+ * completely unchanged. It resolves to a real `User` row (created on demand) so
+ * per-user data ownership still works while the bypass is on.
+ */
+async function devBypassUser(): Promise<SessionUser | null> {
+  if (process.env.NODE_ENV === "production") return null;
+  if (process.env.DEV_AUTH_BYPASS !== "true") return null;
+  const user = await prisma.user.upsert({
+    where: { email: DEV_BYPASS_EMAIL },
+    update: {},
+    create: { email: DEV_BYPASS_EMAIL, name: "Dev Bypass", emailVerified: true },
+  });
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name || "Dev Bypass",
+    image: user.image ?? null,
+    emailVerified: true,
+  };
+}
 
 /**
  * Who is asking.
@@ -26,15 +61,75 @@ export type SessionUser = {
 
 /** The signed-in user, or null. Never throws — callers decide what null means. */
 export async function currentUser(): Promise<SessionUser | null> {
-  const session = await auth.api.getSession({ headers: await headers() });
-  if (!session?.user) return null;
-  return {
-    id: session.user.id,
-    email: session.user.email,
-    name: session.user.name ?? "",
-    image: session.user.image ?? null,
-    emailVerified: Boolean(session.user.emailVerified),
-  };
+  // Dev-only recovery bypass; a no-op in production and when the flag is unset.
+  const bypass = await devBypassUser();
+  if (bypass) return bypass;
+
+  try {
+    const session = await auth.api.getSession({ headers: await headers() });
+    if (session?.user) {
+      return {
+        id: session.user.id,
+        email: session.user.email,
+        name: session.user.name ?? "",
+        image: session.user.image ?? null,
+        emailVerified: Boolean(session.user.emailVerified),
+      };
+    }
+  } catch {
+    // Swallow error if Better Auth fails or is missing secret
+  }
+
+  // Supabase Auth fallback
+  try {
+    const { createServerClient } = await import("@/lib/supabase/server");
+    const supabase = await createServerClient();
+    const {
+      data: { user: supabaseUser },
+    } = await supabase.auth.getUser();
+
+    if (supabaseUser?.email) {
+      const dbUser = await prisma.user.findUnique({
+        where: { email: supabaseUser.email },
+      });
+      if (dbUser) {
+        return {
+          id: dbUser.id,
+          email: dbUser.email,
+          name: dbUser.name ?? "",
+          image: dbUser.image ?? null,
+          emailVerified: Boolean(dbUser.emailVerified),
+        };
+      }
+      const newUser = await prisma.user.create({
+        data: {
+          id: supabaseUser.id,
+          email: supabaseUser.email,
+          name:
+            (supabaseUser.user_metadata?.full_name as string) ||
+            (supabaseUser.user_metadata?.name as string) ||
+            supabaseUser.email.split("@")[0] ||
+            "",
+          image:
+            (supabaseUser.user_metadata?.avatar_url as string) ||
+            (supabaseUser.user_metadata?.picture as string) ||
+            null,
+          emailVerified: true,
+        },
+      });
+      return {
+        id: newUser.id,
+        email: newUser.email,
+        name: newUser.name ?? "",
+        image: newUser.image ?? null,
+        emailVerified: Boolean(newUser.emailVerified),
+      };
+    }
+  } catch {
+    // Swallow Supabase error if unconfigured or invalid session
+  }
+
+  return null;
 }
 
 /** Thrown by `requireUser`; carries the response the route should return. */

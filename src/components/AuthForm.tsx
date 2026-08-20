@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { signIn, signUp } from "@/lib/auth/client";
+import { authErrorMessage, validateAuthInput } from "@/lib/auth/errorMessages";
+import { createBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 /**
  * Sign-up and sign-in share a shape, so they share a component. The only
@@ -49,7 +50,6 @@ export default function AuthForm({
   /** False when the deployment has no Google credentials configured. */
   googleEnabled?: boolean;
 }) {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
@@ -62,9 +62,22 @@ export default function AuthForm({
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
+    // Guard against a double-click / repeated submit while a request is inflight.
+    if (busy) return;
 
-    if (signingUp && password !== confirmPassword) {
-      setError("The two passwords do not match.");
+    // Trim the address on both paths so a pasted leading/trailing space cannot
+    // make a real account unreachable (Better Auth lowercases for lookup but
+    // does not trim). Signup and login key off the exact same normalized value.
+    const normalizedEmail = email.trim();
+
+    // Client-side validation first, so obvious problems get an instant, specific
+    // message instead of a round trip.
+    const validationError = validateAuthInput(
+      { email: normalizedEmail, password, name, confirmPassword: signingUp ? confirmPassword : undefined },
+      mode,
+    );
+    if (validationError) {
+      setError(validationError);
       return;
     }
 
@@ -72,22 +85,28 @@ export default function AuthForm({
     try {
       const result = signingUp
         ? await signUp.email({
-            email,
+            email: normalizedEmail,
             password,
             // Better Auth requires a name. Falling back to the local part of
             // the address is better than storing an empty heading.
-            name: name.trim() || email.split("@")[0]!,
+            name: name.trim() || normalizedEmail.split("@")[0]!,
           })
-        : await signIn.email({ email, password });
+        : await signIn.email({ email: normalizedEmail, password });
 
       if (result.error) {
-        setError(result.error.message ?? "That did not work. Check your details and try again.");
+        // Map the server error to a clear, safe message — never a raw dump.
+        setError(authErrorMessage(result.error, mode));
         return;
       }
-      router.push("/dashboard");
-      router.refresh();
-    } catch {
-      setError("Could not reach Internship Pilot. Is the site still running?");
+      // A hard navigation rather than router.push: the session cookie is set on
+      // this very response, and a client-side transition can render the
+      // protected route before the cookie is readable, bouncing the user back
+      // to /login. A full navigation guarantees the server sees the new session
+      // on the first load of /dashboard.
+      window.location.assign("/dashboard");
+    } catch (caught) {
+      // Network-level failure (no HTTP response). Keep it non-technical.
+      setError(authErrorMessage({ status: 0, message: caught instanceof Error ? caught.message : undefined }, mode));
     } finally {
       setBusy(false);
     }
@@ -97,8 +116,22 @@ export default function AuthForm({
     setError(null);
     setBusy(true);
     try {
-      // A full-page redirect to Google; the callback returns to /dashboard.
-      await signIn.social({ provider: "google", callbackURL: "/dashboard" });
+      if (isSupabaseConfigured()) {
+        const supabase = createBrowserClient();
+        const { error: supabaseError } = await supabase.auth.signInWithOAuth({
+          provider: "google",
+          options: {
+            redirectTo: `${window.location.origin}/auth/callback`,
+          },
+        });
+        if (supabaseError) {
+          setError(supabaseError.message);
+          setBusy(false);
+        }
+      } else {
+        // A full-page redirect to Google; the callback returns to /dashboard.
+        await signIn.social({ provider: "google", callbackURL: "/dashboard" });
+      }
     } catch {
       setError("Google sign-in could not be started. Try again, or use your email and password.");
       setBusy(false);
@@ -116,27 +149,23 @@ export default function AuthForm({
           : "Welcome back."}
       </p>
 
-      {googleEnabled && (
-        <>
-          <button
-            type="button"
-            onClick={() => void continueWithGoogle()}
-            disabled={busy}
-            className="mt-8 flex w-full items-center justify-center gap-2.5 rounded-lg border border-hairline bg-surface px-4 py-2.5 text-sm font-medium text-primary hover:bg-surface-hover disabled:opacity-40"
-          >
-            <GoogleMark />
-            Continue with Google
-          </button>
+      <button
+        type="button"
+        onClick={() => void continueWithGoogle()}
+        disabled={busy}
+        className="mt-8 flex w-full items-center justify-center gap-2.5 rounded-lg border border-hairline bg-surface px-4 py-2.5 text-sm font-medium text-primary hover:bg-surface-hover disabled:opacity-40"
+      >
+        <GoogleMark />
+        Continue with Google
+      </button>
 
-          <div className="my-6 flex items-center gap-3" aria-hidden="true">
-            <span className="h-px flex-1 bg-hairline" />
-            <span className="text-xs uppercase tracking-wider text-tertiary">or</span>
-            <span className="h-px flex-1 bg-hairline" />
-          </div>
-        </>
-      )}
+      <div className="my-6 flex items-center gap-3" aria-hidden="true">
+        <span className="h-px flex-1 bg-hairline" />
+        <span className="text-xs uppercase tracking-wider text-tertiary">or</span>
+        <span className="h-px flex-1 bg-hairline" />
+      </div>
 
-      <form onSubmit={submit} className={`space-y-4 ${googleEnabled ? "" : "mt-8"}`}>
+      <form onSubmit={submit} className="space-y-4">
         {signingUp && (
           <label className="block">
             <span className="text-sm font-medium text-secondary">Your name</span>

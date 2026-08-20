@@ -1,3 +1,4 @@
+import os from "node:os";
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { nextCookies } from "better-auth/next-js";
@@ -67,6 +68,64 @@ function baseUrl(): string {
   return "http://localhost:3000";
 }
 
+/**
+ * Origins Better Auth will accept a sign-in / sign-up request from.
+ *
+ * Better Auth rejects any request whose `Origin` is not its `baseURL` with
+ * `INVALID_ORIGIN` — a CSRF defence. The failure this fixes: the dev server is
+ * reachable at three hosts (`localhost`, `127.0.0.1`, and the LAN IP it prints
+ * as "Network:"), but only `baseURL` (localhost) was trusted, so signing in
+ * from `127.0.0.1` or the LAN address failed with "Invalid origin" — which the
+ * form surfaces as "That did not work". Account creation and login both break
+ * there; this trusts every local host the same server answers on.
+ *
+ * Production stays strict: only `baseURL` and any explicit
+ * `BETTER_AUTH_TRUSTED_ORIGINS` (comma-separated) are trusted — no LAN or
+ * loopback widening on a deployed origin.
+ */
+function localTrustedOrigins(): string[] {
+  const origins = new Set<string>();
+  const base = baseUrl();
+  origins.add(base);
+
+  const extra = optional("BETTER_AUTH_TRUSTED_ORIGINS");
+  if (extra) for (const o of extra.split(",").map((s) => s.trim()).filter(Boolean)) origins.add(o);
+
+  // Production on Vercel is legitimately reachable at more than one host: the
+  // stable production domain (`VERCEL_PROJECT_PRODUCTION_URL`) AND the
+  // deployment-specific URL (`VERCEL_URL`). If `baseURL` is the stable domain
+  // but a request arrives on the deployment URL (or vice versa), Better Auth
+  // rejects it with INVALID_ORIGIN — the exact "inconsistent in production"
+  // failure. Trust both, taken ONLY from Vercel's own injected env vars (never
+  // from an arbitrary, spoofable Host header).
+  for (const host of [optional("VERCEL_PROJECT_PRODUCTION_URL"), optional("VERCEL_URL")]) {
+    if (host) origins.add(`https://${host.replace(/^https?:\/\//, "").replace(/\/+$/, "")}`);
+  }
+
+  if (process.env.NODE_ENV !== "production") {
+    let port = "3000";
+    try {
+      port = new URL(base).port || "3000";
+    } catch {
+      /* keep default */
+    }
+    origins.add(`http://localhost:${port}`);
+    origins.add(`http://127.0.0.1:${port}`);
+    // Every non-internal IPv4 the machine holds — i.e. the "Network:" URL(s)
+    // the Next dev server advertises — so signing in on the LAN address works.
+    try {
+      for (const list of Object.values(os.networkInterfaces())) {
+        for (const iface of list ?? []) {
+          if (iface.family === "IPv4" && !iface.internal) origins.add(`http://${iface.address}:${port}`);
+        }
+      }
+    } catch {
+      /* interface enumeration is best-effort */
+    }
+  }
+  return [...origins];
+}
+
 const googleClientId = optional("GOOGLE_CLIENT_ID");
 const googleClientSecret = optional("GOOGLE_CLIENT_SECRET");
 
@@ -84,6 +143,14 @@ const buildAuth = () =>
     // would be a session-forgery kit.
     secret: required("BETTER_AUTH_SECRET"),
     baseURL: baseUrl(),
+    // Accept sign-in/sign-up from every host this same server answers on
+    // (localhost / 127.0.0.1 / LAN in dev), so "Invalid origin" cannot block
+    // login when the app is opened on a host other than exactly `baseURL`.
+    trustedOrigins: localTrustedOrigins(),
+    // In development, surface Better Auth's own errors (e.g. why a sign-in was
+    // rejected) instead of a silent 500 that the form can only show as a
+    // generic message. Quiet in production.
+    logger: { level: process.env.NODE_ENV === "production" ? "error" : "debug" },
     database: prismaAdapter(prisma, { provider: "postgresql" }),
 
     emailAndPassword: {

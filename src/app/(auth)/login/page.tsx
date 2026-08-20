@@ -7,5 +7,9 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Log in — Internship Pilot" };
 
 export default function LoginPage() {
-  return <AuthForm mode="login" googleEnabled={googleAuthConfigured} />;
+  const supabaseConfigured = Boolean(
+    process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+  );
+  return <AuthForm mode="login" googleEnabled={supabaseConfigured || googleAuthConfigured} />;
 }
+

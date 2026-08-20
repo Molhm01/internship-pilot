@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { signOut } from "@/lib/auth/client";
+import { createBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 /**
  * Signing out is a POST performed by the auth client, so it cannot be triggered
@@ -15,10 +16,25 @@ export default function LogoutPage() {
   const [done, setDone] = useState(false);
 
   useEffect(() => {
-    void signOut().finally(() => {
+    async function doSignOut() {
+      try {
+        if (isSupabaseConfigured()) {
+          const supabase = createBrowserClient();
+          await supabase.auth.signOut();
+        }
+      } catch {
+        // Swallow
+      }
+      try {
+        await signOut();
+      } catch {
+        // Swallow
+      }
       setDone(true);
       router.refresh();
-    });
+    }
+
+    void doSignOut();
   }, [router]);
 
   return (

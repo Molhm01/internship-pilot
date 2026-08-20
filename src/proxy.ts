@@ -25,7 +25,7 @@ import { getSessionCookie } from "better-auth/cookies";
  */
 
 /** Reachable without an account. Everything else is the signed-in workspace. */
-const PUBLIC_PATHS = ["/", "/login", "/signup"];
+const PUBLIC_PATHS = ["/", "/login", "/signup", "/auth/callback"];
 
 function isPublic(pathname: string): boolean {
   if (PUBLIC_PATHS.includes(pathname)) return true;
@@ -35,12 +35,34 @@ function isPublic(pathname: string): boolean {
   return false;
 }
 
+/**
+ * Development-only auth recovery (Phase 8). When DEV_AUTH_BYPASS=true AND the
+ * process is not production, the cookie gate is skipped so a broken auth
+ * backend cannot lock a developer out of the workspace. Inert in production by
+ * construction — the NODE_ENV check is first — and it pairs with the matching
+ * branch in `currentUser()`, which hands routes a real dev user so ownership
+ * still works. Production authentication is untouched.
+ */
+function devBypassEnabled(): boolean {
+  return process.env.NODE_ENV !== "production" && process.env.DEV_AUTH_BYPASS === "true";
+}
+
+function hasSessionCookie(request: NextRequest): boolean {
+  if (getSessionCookie(request)) return true;
+  for (const cookie of request.cookies.getAll()) {
+    if (cookie.name.startsWith("sb-") && cookie.name.endsWith("-auth-token")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
   if (isPublic(pathname)) return NextResponse.next();
+  if (devBypassEnabled()) return NextResponse.next();
 
-  const cookie = getSessionCookie(request);
-  if (cookie) return NextResponse.next();
+  if (hasSessionCookie(request)) return NextResponse.next();
 
   // API routes get a 401 rather than a redirect: an HTML login page is a
   // useless response to `fetch("/api/jobs")`, and a 302 to it turns a clear

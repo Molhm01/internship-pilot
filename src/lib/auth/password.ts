@@ -28,7 +28,10 @@ const KEY_LENGTH = 64;
 /** scrypt needs roughly 128 * N * r bytes; give it headroom. */
 const MAX_MEMORY = 256 * N * R;
 
-export const MINIMUM_PASSWORD_LENGTH = 10;
+// Canonical value lives in the client-safe constants module; re-exported here
+// so existing server imports keep working.
+export { MINIMUM_PASSWORD_LENGTH } from "@/lib/auth/constants";
+import { MINIMUM_PASSWORD_LENGTH } from "@/lib/auth/constants";
 
 /** Encoded as `scrypt$N$r$p$salt$hash`, so parameters can change over time. */
 export async function hashPassword(password: string): Promise<string> {
