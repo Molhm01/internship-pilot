@@ -5,6 +5,7 @@ import type { AtsJob } from "@/lib/ats/types";
 import {
   isAggregatorUrl,
   isValidOfficialApplicationUrl,
+  resolveOfficialJobDestination,
 } from "@/lib/applications/officialDestination";
 import { promoteCanonicalDirectJob } from "@/lib/jobs/activeFeed";
 import { inferResolvedSource } from "@/lib/sync/discoveryResolution";
@@ -137,6 +138,16 @@ function nextRetryAt(attempts: number): Date {
   return new Date(Date.now() + minutes * 60 * 1000);
 }
 
+function isInternListSourcePage(value: string | null): value is string {
+  if (!value) return false;
+  try {
+    const host = new URL(value).hostname.toLowerCase().replace(/^www\./, "");
+    return host === "intern-list.com" || host === "jobright.ai";
+  } catch {
+    return false;
+  }
+}
+
 function asAtsJob(
   signal: SupplementalRadarSignal,
   applyUrl: string,
@@ -219,6 +230,41 @@ async function resolveSignal(
   }
 
   const config = findCompanyConfig(signal.company, companies, exactMap);
+
+  // Intern List itself is an approved radar. Its public detail page can contain
+  // the outbound original posting even for an employer that has never appeared
+  // in our Company table. Use the existing guarded destination resolver here,
+  // but ONLY for Intern List/Jobright pages. Personal LinkedIn/Indeed/etc.
+  // signals deliberately do not cause Internship Pilot to crawl those services.
+  if (
+    signal.source === "intern-list-public"
+    && isInternListSourcePage(signal.sourceUrl)
+  ) {
+    try {
+      const destination = await resolveOfficialJobDestination(
+        {
+          sourceListingUrl: signal.sourceUrl,
+          employerCareerUrl: config?.careersUrl ?? null,
+        },
+        fetch,
+        new Date(),
+        { followSourceListings: true },
+      );
+      const official = destination.resolutionStatus === "RESOLVED"
+        && destination.officialApplicationUrl
+        && !isAggregatorUrl(destination.officialApplicationUrl)
+        ? destination.officialApplicationUrl
+        : null;
+      if (official) {
+        const saved = await persistOfficialSignal(signal, asAtsJob(signal, official));
+        return { state: "resolved", jobId: saved.jobId, outcome: saved.outcome, error: null };
+      }
+    } catch {
+      // Continue to the employer-board matching path. The queue keeps the
+      // signal durable if neither route can resolve it on this attempt.
+    }
+  }
+
   if (!config || !config.atsType || config.atsType === "unknown") {
     return {
       state: "retry",
@@ -416,7 +462,8 @@ export async function processSupplementalRadarQueue(limit = 80): Promise<{
 
   // Radar signals are only hints. They may resolve through ANY company whose
   // official ATS configuration we already know; the signal itself never makes
-  // an aggregator URL trusted.
+  // an aggregator URL trusted. Intern List signals get one additional approved
+  // route: their public detail page may reveal the outbound original posting.
   const companies: CompanyForListing[] = await prisma.company.findMany({
     where: { monitoringStatus: "active" },
     select: {
