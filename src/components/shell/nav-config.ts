@@ -35,8 +35,8 @@ export type NavGroup = {
  * Authenticated navigation.
  *
  * Grouped by what the user is doing rather than by which subsystem owns the
- * route. The old flat ten-item list mixed the daily loop (discover, apply) with
- * rarely-touched data sources (approved employers) and gave them equal weight.
+ * route. The resume is the primary candidate input; the larger application
+ * autofill profile remains an optional child route reached from /profile.
  */
 export const NAV_GROUPS: NavGroup[] = [
   {
@@ -46,7 +46,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { href: "/jobs", label: "Discover", icon: Compass, prefix: true },
       { href: "/tracker", label: "Applications", icon: Layers },
       { href: "/documents", label: "Documents", icon: FileText },
-      { href: "/profile", label: "Profile", icon: UserRound },
+      { href: "/profile", label: "Resume", icon: UserRound, prefix: true },
     ],
   },
   {
