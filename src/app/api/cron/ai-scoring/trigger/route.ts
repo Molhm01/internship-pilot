@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { hasGeminiApiKey } from "@/lib/gemini";
 import { runAutomaticScoringSweep } from "@/lib/matching/automaticScoring";
 import { hydrateMissingDescriptionsForScoring } from "@/lib/matching/jobDescriptionHydration";
+import { requeueStaleFailedScores } from "@/lib/matching/recoverFailedScores";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -66,6 +67,10 @@ export async function POST(request: Request) {
         concurrency: 4,
       });
 
+      // Provider/database interruptions must not strand a job forever. Retry a
+      // small cooled-down batch of terminal failures on each hosted sweep.
+      const recovered = await requeueStaleFailedScores({ maxItems: 16 });
+
       const result = await runAutomaticScoringSweep({
         // With the 5-minute live-discovery cadence this can process roughly
         // 480 scores/hour at full throughput while keeping only two concurrent
@@ -78,6 +83,7 @@ export async function POST(request: Request) {
         event: "automatic-ai-scoring",
         stage: "completed",
         descriptions,
+        recovered,
         ...result,
       }));
     } catch (error) {
