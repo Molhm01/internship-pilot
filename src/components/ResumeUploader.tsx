@@ -2,10 +2,11 @@
 
 import { useRef, useState } from "react";
 
-// Vercel Functions reject request bodies above 4.5 MB before our route runs.
-// Keep browser uploads comfortably below that boundary until the resume flow
-// moves to direct Blob client uploads.
-const MAX_WEB_UPLOAD_BYTES = 4 * 1024 * 1024;
+// The server-side PDF parser accepts 10 MB. Hosted Vercel request bodies are
+// smaller than that, so the browser keeps the hosted safety cap while allowing
+// the full local limit during development on localhost.
+const MAX_HOSTED_UPLOAD_BYTES = 4 * 1024 * 1024;
+const MAX_LOCAL_UPLOAD_BYTES = 10 * 1024 * 1024;
 
 type UploadedDoc = {
   id: string | null;
@@ -33,6 +34,14 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function currentUploadLimitBytes(): number {
+  if (typeof window === "undefined") return MAX_HOSTED_UPLOAD_BYTES;
+  const host = window.location.hostname.toLowerCase();
+  return host === "localhost" || host === "127.0.0.1"
+    ? MAX_LOCAL_UPLOAD_BYTES
+    : MAX_HOSTED_UPLOAD_BYTES;
 }
 
 async function readUploadResponse(response: Response): Promise<UploadResponse> {
@@ -74,9 +83,11 @@ export default function ResumeUploader({
       setError("Only PDF files are accepted. Please choose a .pdf file.");
       return;
     }
-    if (file.size > MAX_WEB_UPLOAD_BYTES) {
+
+    const uploadLimit = currentUploadLimitBytes();
+    if (file.size > uploadLimit) {
       setError(
-        `This file is ${(file.size / (1024 * 1024)).toFixed(1)} MB. Export or compress the resume PDF to under 4 MB, then upload it again.`,
+        `This file is ${(file.size / (1024 * 1024)).toFixed(1)} MB. The current upload limit is ${Math.round(uploadLimit / (1024 * 1024))} MB. Export or compress the resume PDF, then upload it again.`,
       );
       return;
     }
@@ -167,7 +178,7 @@ export default function ResumeUploader({
             }}
           />
           <p className="text-xs text-faint mt-4">
-            PDF only, up to 4 MB on the hosted site. Extracted text is used only to build your resume evidence and compare it with job descriptions.
+            PDF only. Local development accepts up to 10 MB. Extracted text is used only to build your resume evidence and compare it with job descriptions.
           </p>
         </div>
       )}
