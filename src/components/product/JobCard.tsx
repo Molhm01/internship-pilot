@@ -65,6 +65,8 @@ export function JobCard({ job, className }: { job: JobCardData; className?: stri
   const posted = postedLabel(job);
   const { applicationUrl, sourceListingUrl } = selectStoredApplicationLinks(job);
   const automaticMatchStatus = initialMatchUiStatus(job.scoringState, Boolean(latestMatch));
+  const automaticWorkActive = automaticMatchStatus === "Scoring"
+    || automaticMatchStatus === "Preparing job details";
 
   return (
     <article
@@ -91,7 +93,7 @@ export function JobCard({ job, className }: { job: JobCardData; className?: stri
             ) : automaticMatchStatus ? (
               <Badge
                 tone={automaticMatchStatus === "Scoring delayed" ? "caution" : "info"}
-                dot={automaticMatchStatus === "Scoring"}
+                dot={automaticWorkActive}
               >
                 {automaticMatchStatus}
               </Badge>

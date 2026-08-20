@@ -37,13 +37,13 @@ function greeting(date = new Date()): string {
   return "Good evening";
 }
 
-/**
- * Dashboard.
- *
- * Every number here is read from the same APIs the rest of the app uses — there
- * are no illustrative figures. When a value is unavailable the tile says so
- * rather than showing a zero, because a fabricated zero is worse than a gap.
- */
+function currentScore(job: JobCardData): number | null {
+  return Number.isInteger(job.matchScore) && job.matchScore! >= 0 && job.matchScore! <= 100
+    ? job.matchScore!
+    : null;
+}
+
+/** Dashboard values come from the same current per-user state as Discover. */
 export function DashboardClient() {
   const [counts, setCounts] = useState<JobCounts | null>(null);
   const [recent, setRecent] = useState<JobCardData[]>([]);
@@ -64,7 +64,7 @@ export function DashboardClient() {
       ]);
       setCounts(countsResult);
       setRecent(newest.jobs);
-      setStrong(byMatch.jobs.filter((job) => (job.matchResults?.[0]?.score ?? 0) >= 75));
+      setStrong(byMatch.jobs.filter((job) => (currentScore(job) ?? -1) >= 75));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not load your workspace.");
     } finally {
@@ -82,7 +82,7 @@ export function DashboardClient() {
         title={`${greeting()}.`}
         description={
           counts
-            ? `${counts.active.toLocaleString()} active internships tracked. ${counts.unscored.toLocaleString()} still unscored.`
+            ? `${counts.active.toLocaleString()} active internships tracked. ${counts.scored.toLocaleString()} currently matched to your resume.`
             : "Loading your workspace…"
         }
         actions={
@@ -129,7 +129,7 @@ export function DashboardClient() {
         <div className="space-y-8">
           <Section
             title="Strong matches"
-            description="Scored 75 or above by the local model."
+            description="Current-resume ATS matches scored 75 or above."
             actions={
               <Link
                 href="/jobs?sort=match"
@@ -144,13 +144,13 @@ export function DashboardClient() {
             ) : strong.length === 0 ? (
               <EmptyState
                 title="No strong matches yet"
-                description="Run AI Match on your discovered internships to see which ones fit your profile."
+                description="Upload your resume once. Internship Pilot scores jobs automatically as their job descriptions become available."
                 action={
                   <Link
-                    href="/jobs"
+                    href="/profile"
                     className="inline-flex h-7 items-center rounded-md border border-line bg-surface px-2.5 text-small text-primary hover:bg-n-150"
                   >
-                    Go to Discover
+                    Resume profile
                   </Link>
                 }
               />
@@ -172,7 +172,7 @@ export function DashboardClient() {
             ) : recent.length === 0 ? (
               <EmptyState
                 title="Nothing discovered yet"
-                description="Run a sync to pull internships from your approved sources."
+                description="Automatic discovery will add internships from your approved sources."
               />
             ) : (
               <ul className="divide-y divide-hairline border-y border-hairline">
@@ -190,8 +190,8 @@ export function DashboardClient() {
               <ActionRow
                 href="/profile"
                 icon={UserRound}
-                title="Complete your profile"
-                body="The Agent can only answer from facts stored here."
+                title="Resume profile"
+                body="Upload or replace the one resume used for automatic ATS matching."
               />
               <ActionRow
                 href="/documents"
@@ -203,7 +203,7 @@ export function DashboardClient() {
                 href="/agent"
                 icon={Compass}
                 title="Open the Agent"
-                body="Review runs and answer pending questions."
+                body="Review runs and answer pending application questions."
               />
             </div>
           </Section>
@@ -211,16 +211,16 @@ export function DashboardClient() {
           {counts && counts.unscored > 0 && (
             <Panel tone="caution">
               <p className="text-small font-medium text-primary">
-                {counts.unscored.toLocaleString()} internships are unscored
+                {counts.unscored.toLocaleString()} internships are awaiting a current ATS score
               </p>
               <p className="mt-1 text-small text-secondary">
-                AI Match has not run on these yet, so their fit is unknown.
+                Matching is automatic. Internship Pilot is scoring queued jobs and preparing missing official job descriptions in the background.
               </p>
               <Link
                 href="/jobs"
                 className="mt-3 inline-flex h-7 items-center rounded-md border border-line bg-surface px-2.5 text-small text-primary transition-colors hover:bg-n-150"
               >
-                Score them
+                View Discover
               </Link>
             </Panel>
           )}
@@ -232,7 +232,7 @@ export function DashboardClient() {
 
 function JobRow({ job }: { job: JobCardData }) {
   const posted = postedLabel(job);
-  const match = job.matchResults?.[0];
+  const score = currentScore(job);
   return (
     <li>
       <Link
@@ -250,10 +250,10 @@ function JobRow({ job }: { job: JobCardData }) {
           <AvailabilityBadge status={job.verificationStatus} className="hidden sm:inline-flex" />
         )}
         <span className="shrink-0 font-mono text-micro text-faint tabular">{posted.text}</span>
-        {match ? (
-          <MatchScore score={match.score} size="sm" />
+        {score !== null ? (
+          <MatchScore score={score} size="sm" />
         ) : (
-          <Badge tone="neutral">Unscored</Badge>
+          <Badge tone="neutral">Awaiting ATS</Badge>
         )}
       </Link>
     </li>

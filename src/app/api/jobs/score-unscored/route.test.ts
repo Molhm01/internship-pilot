@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const scheduleAllUnscoredActiveJobs = vi.fn();
 const getBulkInitialMatchStatus = vi.fn();
+const jobCount = vi.fn();
 
 class BulkInitialMatchError extends Error {
   constructor(
@@ -17,6 +18,12 @@ vi.mock("@/lib/matching/bulkInitialMatch", () => ({
   BulkInitialMatchError,
   scheduleAllUnscoredActiveJobs: (...args: unknown[]) => scheduleAllUnscoredActiveJobs(...args),
   getBulkInitialMatchStatus: (...args: unknown[]) => getBulkInitialMatchStatus(...args),
+}));
+
+vi.mock("@/lib/db", () => ({
+  prisma: {
+    job: { count: (...args: unknown[]) => jobCount(...args) },
+  },
 }));
 
 describe("bulk AI Match routes", () => {
@@ -86,6 +93,30 @@ describe("bulk AI Match routes", () => {
     expect(await response.json()).toEqual({
       ok: true,
       status: { totalUnscored: 6, queued: 2, running: 1, completed: 9, failed: 3 },
+    });
+  });
+
+  it("falls back to current per-user scored counts when queue telemetry fails", async () => {
+    getBulkInitialMatchStatus.mockRejectedValue(new BulkInitialMatchError(
+      "BULK_SCORE_QUERY_FAILED",
+      "queue status query",
+      500,
+    ));
+    jobCount.mockResolvedValueOnce(1_134).mockResolvedValueOnce(102);
+
+    const { GET } = await import("./status/route");
+    const response = await GET(new Request("http://localhost/"), {});
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      degraded: true,
+      status: {
+        totalUnscored: 1_032,
+        queued: 0,
+        running: 0,
+        completed: 102,
+        failed: 0,
+      },
     });
   });
 });
