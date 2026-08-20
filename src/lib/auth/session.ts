@@ -24,7 +24,14 @@ export type SessionUser = {
   emailVerified: boolean;
 };
 
-/** The signed-in user, or null. Never throws — callers decide what null means. */
+/**
+ * The signed-in user, or null.
+ *
+ * Authentication/database infrastructure errors are allowed to throw here so
+ * the route wrapper can distinguish "not signed in" from "the session store is
+ * unavailable". Treating the latter as a logged-out user hides production
+ * schema/configuration failures behind a misleading 401.
+ */
 export async function currentUser(): Promise<SessionUser | null> {
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session?.user) return null;
@@ -55,6 +62,63 @@ export function unauthorizedResponse(): NextResponse {
   );
 }
 
+type SessionInfrastructureCode =
+  | "AUTH_NOT_CONFIGURED"
+  | "DATABASE_URL_MISSING"
+  | "DATABASE_SCHEMA_NOT_READY"
+  | "DATABASE_UNAVAILABLE"
+  | "SESSION_LOOKUP_FAILED";
+
+function errorCode(error: unknown): string | null {
+  if (!error || typeof error !== "object" || !("code" in error)) return null;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && code ? code : null;
+}
+
+/**
+ * Convert an auth/session infrastructure crash into a safe machine-readable
+ * response. No database URL, SQL text, cookie, email address, or provider body
+ * is returned to the browser. The exact exception remains server-side only.
+ */
+function sessionInfrastructureResponse(error: unknown): NextResponse {
+  const message = error instanceof Error ? error.message : String(error);
+  const prismaCode = errorCode(error);
+  let code: SessionInfrastructureCode = "SESSION_LOOKUP_FAILED";
+  let publicMessage = "The signed-in session could not be loaded. Please try again shortly.";
+
+  if (/BETTER_AUTH_SECRET.*not set/i.test(message)) {
+    code = "AUTH_NOT_CONFIGURED";
+    publicMessage = "Authentication is not configured for this deployment.";
+  } else if (/DATABASE_URL.*not set|DATABASE_URL_MISSING/i.test(message)) {
+    code = "DATABASE_URL_MISSING";
+    publicMessage = "The production database is not connected to this deployment.";
+  } else if (
+    prismaCode === "P2021"
+    || prismaCode === "P2022"
+    || /table .* does not exist|relation .* does not exist|column .* does not exist/i.test(message)
+  ) {
+    code = "DATABASE_SCHEMA_NOT_READY";
+    publicMessage = "The production database schema is behind the deployed application. A database migration is required.";
+  } else if (
+    (prismaCode?.startsWith("P1") ?? false)
+    || /ECONNREFUSED|ECONNRESET|ETIMEDOUT|connection.*(?:closed|timeout|refused)|too many connections/i.test(message)
+  ) {
+    code = "DATABASE_UNAVAILABLE";
+    publicMessage = "The production database is temporarily unavailable.";
+  }
+
+  console.error("[auth] session infrastructure failure", {
+    code,
+    errorName: error instanceof Error ? error.name : typeof error,
+    prismaCode: prismaCode ?? "NONE",
+  });
+
+  return NextResponse.json(
+    { error: publicMessage, code },
+    { status: 503, headers: { "cache-control": "no-store" } },
+  );
+}
+
 /**
  * A signed-in user, or a thrown 401.
  *
@@ -71,7 +135,8 @@ export async function requireUser(): Promise<SessionUser> {
 
 /**
  * Wraps a route handler so `requireUser()` inside it becomes a 401 rather than
- * a 500.
+ * a 500. Infrastructure failures become a sanitized 503 instead of escaping as
+ * an opaque framework error.
  *
  * ```ts
  * export const GET = withUser(async (_request, user) => {
@@ -92,14 +157,14 @@ export function withUser<Context = unknown>(
       user = await requireUser();
     } catch (error) {
       if (error instanceof UnauthenticatedError) return error.response;
-      throw error;
+      return sessionInfrastructureResponse(error);
     }
     return handler(request, user, context);
   };
 }
 
 /**
- * A 401 response, or null when the caller is signed in.
+ * A 401 response, an infrastructure 503, or null when the caller is signed in.
  *
  * The non-throwing form, for routes that operate on shared data and so have no
  * owner to thread through a wrapper:
@@ -108,14 +173,14 @@ export function withUser<Context = unknown>(
  * const denied = await guardSession();
  * if (denied) return denied;
  * ```
- *
- * `requireUser()` throws, which is right inside `withUser` where the wrapper
- * catches it, and wrong at the top of a bare handler where an uncaught throw
- * becomes a 500. An authentication failure must read as 401.
  */
 export async function guardSession(): Promise<NextResponse | null> {
-  const user = await currentUser();
-  return user ? null : unauthorizedResponse();
+  try {
+    const user = await currentUser();
+    return user ? null : unauthorizedResponse();
+  } catch (error) {
+    return sessionInfrastructureResponse(error);
+  }
 }
 
 /**
