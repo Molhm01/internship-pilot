@@ -2,6 +2,7 @@ import { after, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { hasGeminiApiKey } from "@/lib/gemini";
 import { runAutomaticScoringSweep } from "@/lib/matching/automaticScoring";
+import { hydrateMissingDescriptionsForScoring } from "@/lib/matching/jobDescriptionHydration";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -55,6 +56,16 @@ export async function POST(request: Request) {
 
   after(async () => {
     try {
+      // A job cannot receive a defensible ATS score without an actual job
+      // description. Before every scoring drain, hydrate a bounded batch of
+      // missing descriptions from verified employer/ATS URLs using plain HTTP
+      // (serverless-safe; no Playwright dependency). Newly hydrated jobs are
+      // picked up by prepareAutomaticScoringQueues in the same sweep.
+      const descriptions = await hydrateMissingDescriptionsForScoring({
+        maxItems: 20,
+        concurrency: 4,
+      });
+
       const result = await runAutomaticScoringSweep({
         // With the 5-minute live-discovery cadence this can process roughly
         // 480 scores/hour at full throughput while keeping only two concurrent
@@ -63,7 +74,12 @@ export async function POST(request: Request) {
         maxRuntimeMs: 210_000,
         concurrency: 2,
       });
-      console.info(JSON.stringify({ event: "automatic-ai-scoring", stage: "completed", ...result }));
+      console.info(JSON.stringify({
+        event: "automatic-ai-scoring",
+        stage: "completed",
+        descriptions,
+        ...result,
+      }));
     } catch (error) {
       console.error("[automatic-ai-scoring] hosted sweep failed", {
         errorCode:
