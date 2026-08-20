@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { withUser } from "@/lib/auth/session";
 import { readJobAlertProviderStatus } from "@/lib/radar/jobAlertRadar";
-import { getSupplementalRadarHealth } from "@/lib/sync/supplementalRadarQueue";
+import { getSupplementalRadarHealthFast } from "@/lib/sync/radarQueueHealth";
 
 export const runtime = "nodejs";
 
@@ -29,7 +29,9 @@ export const GET = withUser(async (_request, user) => {
       select: { emailAddress: true, lastSyncAt: true, connectedAt: true },
     }),
     readJobAlertProviderStatus(user.id),
-    getSupplementalRadarHealth(),
+    // Keep queue counting in Postgres. The old implementation transferred and
+    // JSON-parsed up to 10,000 AppSetting rows on every Settings refresh.
+    getSupplementalRadarHealthFast(),
     prisma.appSetting.findUnique({ where: { key: "liveDiscovery:cursor:jobright-fresh" } }),
     prisma.appSetting.findUnique({ where: { key: "liveDiscovery:cursor:direct-radar" } }),
     prisma.syncLog.findFirst({

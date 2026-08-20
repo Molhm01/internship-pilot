@@ -4,22 +4,69 @@ import { runLiveDirectRadar } from "@/lib/sync/liveDirectRadar";
 import { pruneTerminalLiveDiscoveryEvents } from "@/lib/sync/liveDiscoveryMaintenance";
 import {
   enqueueJobrightFreshSignals,
-  getLiveDiscoveryQueueHealth,
   processLiveDiscoveryQueue,
 } from "@/lib/sync/liveDiscoveryQueue";
 import {
   enqueueInternListPublicRadar,
-  getSupplementalRadarHealth,
   processSupplementalRadarQueue,
 } from "@/lib/sync/supplementalRadarQueue";
+import {
+  getLiveDiscoveryQueueHealthFast,
+  getSupplementalRadarHealthFast,
+} from "@/lib/sync/radarQueueHealth";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
+
+// The timestamped Jobright/direct lanes are small deltas and stay on the
+// 5-minute live cadence. The deep Intern List crawl is intentionally broader;
+// running a 1,500-row crawl and a 10k-row queue scan every five minutes is both
+// unnecessary and hostile to a serverless database. Keep high recall, but run
+// the expensive catalogue lane on its own slower cadence.
+const INTERN_LIST_DEEP_CRAWL_INTERVAL_MS = 30 * MINUTE_MS;
+const SUPPLEMENTAL_DRAIN_INTERVAL_MS = 10 * MINUTE_MS;
+const INTERN_LIST_CURSOR_KEY = "supplementalRadar:cursor:intern-list-public";
+const SUPPLEMENTAL_DRAIN_CURSOR_KEY = "liveDiscovery:cursor:supplemental-drain";
 
 function percentile(values: number[], pct: number): number | null {
   if (values.length === 0) return null;
   const sorted = [...values].sort((a, b) => a - b);
   const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * pct) - 1));
   return sorted[index] ?? null;
+}
+
+function parsedDateFromSetting(value: string | null | undefined, field: string): Date | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    const raw = parsed[field];
+    if (typeof raw !== "string") return null;
+    const date = new Date(raw);
+    return Number.isNaN(date.getTime()) ? null : date;
+  } catch {
+    return null;
+  }
+}
+
+async function deepInternListCrawlDue(now: Date): Promise<boolean> {
+  const row = await prisma.appSetting.findUnique({ where: { key: INTERN_LIST_CURSOR_KEY } });
+  const lastCheckedAt = parsedDateFromSetting(row?.value, "lastCheckedAt");
+  return !lastCheckedAt || now.getTime() - lastCheckedAt.getTime() >= INTERN_LIST_DEEP_CRAWL_INTERVAL_MS;
+}
+
+async function supplementalDrainDue(now: Date): Promise<boolean> {
+  const row = await prisma.appSetting.findUnique({ where: { key: SUPPLEMENTAL_DRAIN_CURSOR_KEY } });
+  const lastRunAt = parsedDateFromSetting(row?.value, "lastRunAt");
+  return !lastRunAt || now.getTime() - lastRunAt.getTime() >= SUPPLEMENTAL_DRAIN_INTERVAL_MS;
+}
+
+async function markSupplementalDrain(now: Date): Promise<void> {
+  const value = JSON.stringify({ version: 1, lastRunAt: now.toISOString() });
+  await prisma.appSetting.upsert({
+    where: { key: SUPPLEMENTAL_DRAIN_CURSOR_KEY },
+    create: { key: SUPPLEMENTAL_DRAIN_CURSOR_KEY, value },
+    update: { value },
+  });
 }
 
 export async function getLiveDiscoveryHealth() {
@@ -58,8 +105,10 @@ export async function getLiveDiscoveryHealth() {
       take: 250,
       select: { sourcePostedAt: true, firstSeenAt: true },
     }),
-    getLiveDiscoveryQueueHealth(),
-    getSupplementalRadarHealth(),
+    // Database-side aggregates return a handful of integers instead of pulling
+    // 2k + 10k JSON queue records into every health/status invocation.
+    getLiveDiscoveryQueueHealthFast(),
+    getSupplementalRadarHealthFast(),
     prisma.syncLog.findFirst({
       where: { source: "live-discovery", status: "success" },
       orderBy: { finishedAt: "desc" },
@@ -117,32 +166,57 @@ export async function runLiveDiscoveryCycle(options: {
   internListJobs?: number;
 } = {}) {
   const startedAt = Date.now();
+  const now = new Date();
   const atsCheckLimit = Math.max(1, Math.min(options.atsCheckLimit ?? 40, 100));
   const queueProcessLimit = Math.max(1, Math.min(options.queueProcessLimit ?? 80, 200));
   const directRadarLimit = Math.max(1, Math.min(options.directRadarLimit ?? 250, 500));
   const internListPages = Math.max(1, Math.min(options.internListPages ?? 12, 30));
   const internListJobs = Math.max(1, Math.min(options.internListJobs ?? 1_500, 3_000));
 
-  // Three independent radar lanes run in parallel:
-  // 1) Jobright's freshest timestamped technical minisites,
-  // 2) public indexes that already expose official URLs,
-  // 3) a much deeper crawl of Intern List's public technical collection.
-  // None of the aggregator lanes is trusted as the final destination; queued
-  // signals must resolve to an employer ATS before entering Discover.
+  const [crawlDue, drainDue] = await Promise.all([
+    deepInternListCrawlDue(now),
+    supplementalDrainDue(now),
+  ]);
+
+  // Fresh timestamped sources remain five-minute lanes. Deep Intern List keeps
+  // the same 12-page/1,500-row recall target, just not five-minute repetition.
   const [enqueue, directRadar, internListRadar] = await Promise.all([
     enqueueJobrightFreshSignals(),
     runLiveDirectRadar(directRadarLimit),
-    enqueueInternListPublicRadar({
-      maxPages: internListPages,
-      maxJobs: internListJobs,
-      concurrency: 6,
-    }),
+    crawlDue
+      ? enqueueInternListPublicRadar({
+          maxPages: internListPages,
+          maxJobs: internListJobs,
+          concurrency: 6,
+        })
+      : Promise.resolve({
+          skipped: "cadence" as const,
+          sourceFetched: 0,
+          pagesFetched: 0,
+          pagesFailed: 0,
+          maxPagesReached: false,
+          maxJobsReached: false,
+          considered: 0,
+          enqueued: 0,
+          alreadyQueued: 0,
+        }),
   ]);
 
-  const [queue, supplementalQueue] = await Promise.all([
-    processLiveDiscoveryQueue(queueProcessLimit),
-    processSupplementalRadarQueue(queueProcessLimit),
-  ]);
+  const queue = await processLiveDiscoveryQueue(queueProcessLimit);
+  const supplementalQueue = drainDue
+    ? await processSupplementalRadarQueue(Math.min(200, Math.max(queueProcessLimit, 120)))
+    : {
+        skipped: "cadence" as const,
+        due: 0,
+        processed: 0,
+        resolved: 0,
+        retried: 0,
+        abandoned: 0,
+        newCount: 0,
+        updatedCount: 0,
+      };
+  if (drainDue) await markSupplementalDrain(now);
+
   const ats = await runCompanyDiscoveryBatch(atsCheckLimit);
   const prunedTerminalEvents = await pruneTerminalLiveDiscoveryEvents();
 
