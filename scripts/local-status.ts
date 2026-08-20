@@ -14,10 +14,11 @@ async function main() {
   console.log("Internship Pilot — local status");
   console.log("=".repeat(50));
   line("Repository", REPO_ROOT);
-  line("Database path", databasePath());
-  line("URL", BASE_URL);
 
   const lock = readLock();
+  line("Database", lock?.databaseDisplay ?? databasePath());
+  line("URL", BASE_URL);
+
   const owner = describePortOwner(WEB_PORT);
   const health = await serverHealth();
 
