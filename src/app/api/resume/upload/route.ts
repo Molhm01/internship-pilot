@@ -12,6 +12,13 @@ import { queueEntireCatalogForResume } from "@/lib/matching/resumeUploadScoring"
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
+function safeErrorCode(error: unknown): string {
+  if (error && typeof error === "object" && "code" in error) {
+    return String((error as { code: unknown }).code);
+  }
+  return error instanceof Error ? error.name : "UNKNOWN_ERROR";
+}
+
 async function triggerHostedScoring(origin: string) {
   const secret = process.env.CRON_SECRET;
   if (!secret) return;
@@ -48,7 +55,18 @@ export const POST = withUser(async (req, user) => {
     );
   }
 
-  const bytes = new Uint8Array(await file.arrayBuffer());
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(await file.arrayBuffer());
+  } catch (error) {
+    console.error("[resume-upload] request body could not be read", {
+      errorCode: safeErrorCode(error),
+    });
+    return NextResponse.json(
+      { error: "The uploaded PDF could not be read. Please try the upload again." },
+      { status: 400 },
+    );
+  }
 
   if (!hasPdfMagicBytes(bytes)) {
     return NextResponse.json(
@@ -60,33 +78,74 @@ export const POST = withUser(async (req, user) => {
   let extraction;
   try {
     extraction = await extractPdfText(bytes.slice());
-  } catch (err) {
-    if (err instanceof PdfExtractionError) {
-      return NextResponse.json({ error: err.message }, { status: 422 });
+  } catch (error) {
+    if (error instanceof PdfExtractionError) {
+      return NextResponse.json({ error: error.message }, { status: 422 });
     }
-    throw err;
+    console.error("[resume-upload] PDF extraction failed", {
+      errorCode: safeErrorCode(error),
+    });
+    return NextResponse.json(
+      { error: "The resume parser could not open this PDF. Please export it again as a standard text-based PDF." },
+      { status: 500 },
+    );
   }
 
   const status = extraction.scanned ? "scanned" : "ok";
 
-  const created = await prisma.resumeDocument.create({
-    data: {
-      userId: user.id,
-      kind,
-      filename: file.name,
-      sizeBytes: file.size,
-      pageCount: extraction.pageCount,
-      storagePath: "",
-      extractedText: extraction.text,
-      status,
-    },
-  });
+  // The original PDF is useful for later application/document workflows, but
+  // durable Blob storage is not a prerequisite for ATS matching. A resume can
+  // still become the active scoring profile from its extracted text when Blob
+  // storage is temporarily unavailable or not configured for this deployment.
+  let doc: Awaited<ReturnType<typeof prisma.resumeDocument.create>> | null = null;
+  let storageWarning: string | null = null;
 
-  const storagePath = await saveResumePdf(user.id, created.id, bytes);
-  const doc = await prisma.resumeDocument.update({
-    where: { id: created.id },
-    data: { storagePath },
-  });
+  try {
+    doc = await prisma.resumeDocument.create({
+      data: {
+        userId: user.id,
+        kind,
+        filename: file.name,
+        sizeBytes: file.size,
+        pageCount: extraction.pageCount,
+        storagePath: "",
+        extractedText: extraction.text,
+        status,
+      },
+    });
+  } catch (error) {
+    console.error("[resume-upload] database row creation failed", {
+      errorCode: safeErrorCode(error),
+    });
+    return NextResponse.json(
+      { error: "Internship Pilot could not save the resume record. Please try again." },
+      { status: 503 },
+    );
+  }
+
+  try {
+    const storagePath = await saveResumePdf(user.id, doc.id, bytes);
+    doc = await prisma.resumeDocument.update({
+      where: { id: doc.id },
+      data: { storagePath },
+    });
+  } catch (error) {
+    console.warn("[resume-upload] durable PDF storage unavailable", {
+      kind,
+      errorCode: safeErrorCode(error),
+    });
+
+    await prisma.resumeDocument.delete({ where: { id: doc.id } }).catch(() => undefined);
+    doc = null;
+    storageWarning = "The resume was processed for ATS matching, but the original PDF was not stored on this deployment.";
+
+    if (kind === "coverLetter") {
+      return NextResponse.json(
+        { error: "Cover-letter storage is not configured for this deployment yet." },
+        { status: 503 },
+      );
+    }
+  }
 
   let automaticProfile:
     | { status: "ready"; factCount: number }
@@ -94,11 +153,11 @@ export const POST = withUser(async (req, user) => {
     | { status: "not_applicable" }
     | { status: "scanned" } = { status: "not_applicable" };
 
-  if (kind === "resume" && doc.status === "scanned") {
+  if (kind === "resume" && status === "scanned") {
     automaticProfile = { status: "scanned" };
   } else if (kind === "resume") {
     try {
-      const facts = await analyzeResumeForAutomaticScoring(doc.extractedText);
+      const facts = await analyzeResumeForAutomaticScoring(extraction.text);
       const profile = await replaceResumeDerivedEvidence(user.id, facts);
       automaticProfile = { status: "ready", factCount: profile.factCount };
 
@@ -136,15 +195,17 @@ export const POST = withUser(async (req, user) => {
   return NextResponse.json(
     {
       document: {
-        id: doc.id,
-        kind: doc.kind,
-        filename: doc.filename,
-        sizeBytes: doc.sizeBytes,
-        pageCount: doc.pageCount,
-        status: doc.status,
+        id: doc?.id ?? null,
+        kind,
+        filename: file.name,
+        sizeBytes: file.size,
+        pageCount: extraction.pageCount,
+        status,
+        persisted: Boolean(doc),
       },
       automaticProfile,
+      warning: storageWarning,
     },
-    { status: 201 },
+    { status: 201, headers: { "cache-control": "no-store" } },
   );
 });
