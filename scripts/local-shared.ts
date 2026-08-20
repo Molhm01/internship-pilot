@@ -12,6 +12,19 @@ import path from "node:path";
 export const REPO_ROOT = process.cwd();
 export const WEB_PORT = Number(process.env.PORT ?? 3000);
 export const BASE_URL = `http://localhost:${WEB_PORT}`;
+
+// Canonical local Prisma Postgres instance. `npm run local` owns choosing this
+// local database for development, so a stale/suspended cloud DATABASE_URL in
+// .env can never accidentally send local development traffic to a paid service.
+export const LOCAL_PRISMA_NAME = "internship-pilot";
+export const LOCAL_PRISMA_HTTP_PORT = 51213;
+export const LOCAL_PRISMA_DB_PORT = 51214;
+export const LOCAL_PRISMA_SHADOW_DB_PORT = 51215;
+export const LOCAL_DATABASE_URL =
+  `postgres://postgres:postgres@localhost:${LOCAL_PRISMA_DB_PORT}/template1?sslmode=disable&connection_limit=10&connect_timeout=0&max_idle_connection_lifetime=0&pool_timeout=0&socket_timeout=0`;
+export const LOCAL_SHADOW_DATABASE_URL =
+  `postgres://postgres:postgres@localhost:${LOCAL_PRISMA_SHADOW_DB_PORT}/template1?sslmode=disable&connection_limit=10&connect_timeout=0&max_idle_connection_lifetime=0&pool_timeout=0&socket_timeout=0`;
+
 const LOCK_DIR = path.join(REPO_ROOT, ".internship-pilot");
 const LOCK_FILE = path.join(LOCK_DIR, "local.json");
 
@@ -103,10 +116,18 @@ export async function waitForHealthy(timeoutMs = 60_000): Promise<boolean> {
   return false;
 }
 
+// Redacted display only. Never print credentials into the terminal/status UI.
 export function databasePath(): string {
-  const url = process.env.DATABASE_URL ?? "file:./dev.db";
+  const url = process.env.DATABASE_URL ?? LOCAL_DATABASE_URL;
+  if (/^postgres(?:ql)?:\/\//i.test(url)) {
+    try {
+      const parsed = new URL(url);
+      return `${parsed.protocol}//${parsed.hostname}${parsed.port ? `:${parsed.port}` : ""}${parsed.pathname}`;
+    } catch {
+      return "PostgreSQL (connection URL configured)";
+    }
+  }
+
   const rel = url.replace(/^file:/, "");
-  // The libsql datasource resolves file: URLs relative to the working
-  // directory (repo root), where dev.db actually lives.
   return path.isAbsolute(rel) ? rel : path.join(REPO_ROOT, rel.replace(/^\.\//, ""));
 }
