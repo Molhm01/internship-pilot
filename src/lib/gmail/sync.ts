@@ -5,6 +5,8 @@ import { getValidAccessToken } from "./account";
 import { listRecentMessageIds, fetchMessage, type FetchedEmail } from "./client";
 import { logAudit } from "@/lib/applications/audit";
 import { notifyWindows } from "./notify";
+import { ingestJobAlertEmail } from "@/lib/radar/jobAlertRadar";
+import { processSupplementalRadarQueue } from "@/lib/sync/supplementalRadarQueue";
 
 // Only these classifications correspond to a forward tracker-status change;
 // the rest (recruiter-message/info-request/status-update/unknown) are
@@ -140,6 +142,23 @@ export async function applyProcessedEmail(
   }
 }
 
+async function storeJobAlertEmail(email: FetchedEmail, userId: string, provider: string): Promise<void> {
+  await prisma.trackedEmail.create({
+    data: {
+      userId,
+      gmailMessageId: email.gmailMessageId,
+      threadId: email.threadId,
+      subject: email.subject,
+      fromAddress: email.fromAddress,
+      snippet: email.snippet,
+      receivedAt: email.receivedAt,
+      classification: "job-alert",
+      matchedJobId: null,
+      matchMethod: `radar:${provider}`,
+    },
+  });
+}
+
 export type SyncSummary = { checked: number; classified: number; newAssessments: number; errors: number; skipped: "not_connected" | null };
 
 /**
@@ -184,6 +203,7 @@ export async function syncGmailInbox(userId: string): Promise<SyncSummary> {
 
   const summary: SyncSummary = { checked: 0, classified: 0, newAssessments: 0, errors: 0, skipped: null };
   const candidates = await loadJobMatchCandidates();
+  let radarEnqueued = 0;
 
   try {
     const ids = await listRecentMessageIds(accessToken, sinceEpochSeconds);
@@ -196,6 +216,19 @@ export async function syncGmailInbox(userId: string): Promise<SyncSummary> {
         if (existing) continue;
 
         const email = await fetchMessage(accessToken, id);
+
+        // LinkedIn/Handshake/Indeed/Glassdoor/ZipRecruiter are treated as
+        // discovery radars, never as trusted job databases. The alert is parsed
+        // into title/company signals, then the radar queue independently finds
+        // the employer's official ATS posting before anything enters Discover.
+        const radar = await ingestJobAlertEmail(email, userId);
+        if (radar.detected && radar.provider) {
+          await storeJobAlertEmail(email, userId, radar.provider);
+          radarEnqueued += radar.enqueued;
+          summary.classified++;
+          continue;
+        }
+
         const result = await processEmail(email, candidates);
         await applyProcessedEmail(email, result, userId);
         summary.classified++;
@@ -206,6 +239,13 @@ export async function syncGmailInbox(userId: string): Promise<SyncSummary> {
     }
   } catch {
     summary.errors++;
+  }
+
+  // "Check now" should not make the user wait for the next scheduler tick.
+  // Keep this intentionally small; the regular live-discovery worker continues
+  // draining the durable queue every few minutes.
+  if (radarEnqueued > 0) {
+    await processSupplementalRadarQueue(Math.min(20, radarEnqueued)).catch(() => undefined);
   }
 
   await prisma.gmailAccount.update({ where: { userId }, data: { lastSyncAt: new Date() } });
