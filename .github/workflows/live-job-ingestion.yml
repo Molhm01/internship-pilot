@@ -6,7 +6,9 @@ on:
       - main
   schedule:
     # Avoid the top of the hour, when GitHub says scheduled workflows are more
-    # likely to be delayed. This runs twice an hour on the default branch.
+    # likely to be delayed. This is also a fallback for the 5-minute QStash
+    # radar: even if QStash is not configured, the high-recall radar still runs
+    # twice an hour on the production branch.
     - cron: "7,37 * * * *"
   workflow_dispatch:
 
@@ -20,13 +22,36 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 12
     steps:
       - name: Wait for the production deployment on main pushes
         if: github.event_name == 'push'
         run: |
           echo "Waiting for Vercel to move the stable production alias to this main commit..."
           sleep 75
+
+      - name: Run the high-recall source radar
+        env:
+          CRON_SECRET: ${{ secrets.INTERNSHIP_PILOT_CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "Missing repository Actions secret: INTERNSHIP_PILOT_CRON_SECRET"
+            exit 1
+          fi
+
+          echo "Starting Jobright / Intern List / direct-feed radar..."
+          response="$(curl --silent --show-error \
+            --max-time 220 \
+            --request POST \
+            --header "Authorization: Bearer $CRON_SECRET" \
+            --write-out "\n%{http_code}" \
+            https://internship-pilot.vercel.app/api/cron/live-discovery || true)"
+          body="$(printf '%s\n' "$response" | sed '$d')"
+          status="$(printf '%s\n' "$response" | tail -n 1)"
+          echo "$body"
+          if [ -z "$status" ] || [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            echo "Radar returned HTTP ${status:-unknown}; continuing to the employer sweep."
+          fi
 
       - name: Run the real employer ingestion sweep
         env:

@@ -17,6 +17,22 @@ const LiveDiscoverySettings = dynamic(
   },
 );
 
+const RadarSourcesSettings = dynamic(
+  () => import("@/components/settings/RadarSourcesSettings"),
+  {
+    ssr: false,
+    loading: () => <p className="mt-8 text-sm text-tertiary">Loading radar sources…</p>,
+  },
+);
+
+const GmailConnectionPanel = dynamic(
+  () => import("@/components/GmailConnectionPanel"),
+  {
+    ssr: false,
+    loading: () => <p className="mt-8 text-sm text-tertiary">Loading Gmail connection…</p>,
+  },
+);
+
 type Identity = {
   name: string;
   email: string;
@@ -83,6 +99,10 @@ export default function SettingsClient({ googleEnabled }: { googleEnabled: boole
         googleEnabled={googleEnabled}
       />
       <LiveDiscoverySettings />
+      <RadarSourcesSettings />
+      <div className="mt-8">
+        <GmailConnectionPanel />
+      </div>
     </>
   );
 }

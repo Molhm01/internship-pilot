@@ -34,8 +34,12 @@ function headerValue(headers: Array<{ name: string; value: string }>, name: stri
 
 export async function listRecentMessageIds(accessToken: string, afterEpochSeconds: number): Promise<string[]> {
   const q = `after:${afterEpochSeconds}`;
+  // Job-alert radars can generate many messages in a short window. Twenty-five
+  // was enough for application-status tracking but could silently skip alerts
+  // when several providers were connected at once. Gmail supports up to 500;
+  // 100 keeps the request bounded while leaving ample headroom.
   const res = await fetch(
-    `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=25&q=${encodeURIComponent(q)}`,
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=100&q=${encodeURIComponent(q)}`,
     { headers: { Authorization: `Bearer ${accessToken}` } },
   );
   if (!res.ok) throw new Error(`Gmail API error listing messages (status ${res.status}).`);
