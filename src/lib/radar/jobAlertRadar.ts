@@ -229,11 +229,11 @@ export async function ingestJobAlertEmail(
     company: job.company,
     location: job.location || null,
     sourceUrl: cleanSourceUrl(job.sourceUrl, email.bodyText),
-    // The alert receipt time is a discovery timestamp, not a claimed employer
-    // posting timestamp. Keeping the wording explicit prevents it from being
-    // mistaken for an official source-posted date.
-    sourcePostedAt: email.receivedAt,
-    sourcePostedText: `Seen in ${provider} job alert`,
+    // Email receipt time is only when Internship Pilot heard the signal. It is
+    // deliberately NOT persisted as the employer's posting date; when the
+    // official ATS resolves the role, its own timestamp wins instead.
+    sourcePostedAt: null,
+    sourcePostedText: null,
   }));
   const queued = await enqueueSupplementalRadarSignals(signals, email.receivedAt);
   await updateProviderStatus(userId, provider, signals.length, queued.enqueued, email.receivedAt);
