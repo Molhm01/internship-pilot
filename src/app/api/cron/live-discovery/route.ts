@@ -22,10 +22,10 @@ function isAuthorized(request: Request): boolean {
   return request.headers.get("authorization") === `Bearer ${secret}`;
 }
 
-function triggerScoringDrain(request: Request) {
+function triggerBackgroundRoute(request: Request, pathname: string, label: string) {
   const secret = process.env.CRON_SECRET;
-  if (!secret || !hasGeminiApiKey()) return;
-  const url = new URL("/api/cron/ai-scoring/trigger", request.url).toString();
+  if (!secret) return;
+  const url = new URL(pathname, request.url).toString();
   after(async () => {
     try {
       await fetch(url, {
@@ -34,11 +34,22 @@ function triggerScoringDrain(request: Request) {
         cache: "no-store",
       });
     } catch (error) {
-      console.error("[live-discovery] could not trigger ATS scoring drain", {
+      console.error(`[live-discovery] could not trigger ${label}`, {
         error: error instanceof Error ? error.message : String(error),
       });
     }
   });
+}
+
+function triggerAncillaryWorkers(request: Request) {
+  // Gmail alert ingestion is a separate Vercel invocation so a large mailbox
+  // cannot consume the discovery function's runtime budget. The endpoint
+  // returns 202 immediately and does its own bounded/incremental mailbox work.
+  triggerBackgroundRoute(request, "/api/cron/gmail-radar/trigger", "Gmail radar sync");
+
+  if (hasGeminiApiKey()) {
+    triggerBackgroundRoute(request, "/api/cron/ai-scoring/trigger", "ATS scoring drain");
+  }
 }
 
 async function handler(request: Request) {
@@ -60,8 +71,9 @@ async function handler(request: Request) {
     select: { startedAt: true },
   });
   if (running) {
-    // Even if discovery itself is already running, keep scoring independent.
-    triggerScoringDrain(request);
+    // Even if discovery itself is already running, keep scoring and personal
+    // job-alert radar ingestion independent.
+    triggerAncillaryWorkers(request);
     return NextResponse.json(
       { ok: true, skipped: "already_running", runningSince: running.startedAt.toISOString() },
       { status: 202, headers: { "cache-control": "no-store" } },
@@ -84,10 +96,10 @@ async function handler(request: Request) {
       },
     });
 
-    // One 5-minute QStash schedule now drives both responsibilities without
-    // coupling their runtimes: discovery returns normally, then a separate
-    // Vercel invocation drains the durable per-user ATS scoring queue.
-    triggerScoringDrain(request);
+    // One live-discovery schedule now fans out to two independent hosted
+    // responsibilities without coupling their runtimes: Gmail alert ingestion
+    // and durable per-user ATS scoring.
+    triggerAncillaryWorkers(request);
 
     return NextResponse.json(result, {
       headers: { "cache-control": "no-store, max-age=0" },
