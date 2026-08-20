@@ -32,6 +32,11 @@ function isPublic(pathname: string): boolean {
   // Better Auth's own endpoints, including the OAuth callback the browser is
   // redirected to by Google before any session exists.
   if (pathname.startsWith("/api/auth")) return true;
+  // The extension compatibility/local-supervisor health handshake is
+  // intentionally public and returns only version/build constants. `npm run
+  // local` uses this endpoint before any user has signed in, so protecting it
+  // creates a false startup timeout even while the server is healthy.
+  if (pathname === "/api/extension/health") return true;
   // Aggregate-only production health/coverage diagnostics. These endpoints
   // expose counts/timestamps only — never user data, job details, credentials,
   // or secrets.
