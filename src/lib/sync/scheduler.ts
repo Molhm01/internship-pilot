@@ -14,16 +14,15 @@ const DAY = 24 * HOUR;
 const WEEK = 7 * DAY;
 
 // Poll cadences. Individual Company rows carry their OWN nextCheckAt (5 min /
-// 15-30 min staggered / daily, per Milestone 4) — companyDiscovery's 5-minute
-// poll just checks "is anything due yet", it doesn't mean every company is
-// hit every 5 minutes.
-// Strict discovery boundary: internships may only be discovered from the
-// approved_engineering_employers.csv allowlist (via companyDiscovery) and
-// Intern List (via internList). USAJOBS was removed from the scheduler for
-// this reason — the code path still exists (src/lib/ats/usajobs.ts) but is
-// never called automatically any more.
+// 15-30 min staggered / daily) — companyDiscovery's 5-minute poll just checks
+// "is anything due yet", it doesn't mean every company is hit every 5 minutes.
+//
+// Local development now uses PostgreSQL rather than SQLite, so there is no
+// reason to defer the first discovery pass for an hour to avoid a file-level
+// write lock. We run one bounded bootstrap pass on server startup, then continue
+// on the normal cadence below.
 const SCHEDULES = {
-  internList: { label: "Intern List sync", intervalMs: HOUR },
+  internList: { label: "Intern List sync", intervalMs: 30 * MINUTE },
   csvSync: { label: "CSV allowlist sync", intervalMs: 30 * MINUTE },
   queue: { label: "Verification queue", intervalMs: 2 * MINUTE },
   companyDiscovery: { label: "Company Watchlist poll", intervalMs: 5 * MINUTE },
@@ -39,7 +38,11 @@ function log(message: string) {
   console.log(`[scheduler] ${new Date().toISOString()} ${message}`);
 }
 
-async function runIfNotPaused<T>(name: keyof typeof SCHEDULES, task: () => Promise<T>, summarize: (r: T) => { summary: string; newJobs?: number; errors?: number }) {
+async function runIfNotPaused<T>(
+  name: keyof typeof SCHEDULES,
+  task: () => Promise<T>,
+  summarize: (r: T) => { summary: string; newJobs?: number; errors?: number },
+) {
   const { label, intervalMs } = SCHEDULES[name];
   await scheduleNextTick(name, label, intervalMs);
 
@@ -60,35 +63,30 @@ async function runIfNotPaused<T>(name: keyof typeof SCHEDULES, task: () => Promi
   }
 }
 
-// Runs entirely inside the Next.js server process — there is no separate
-// cron/worker. Started once from instrumentation.ts when the server boots, and
-// only on a local install: see the note there on why a serverless runtime does
-// not get these timers. All scheduling state (Company.nextCheckAt, Job rows,
-// AppSetting ticks) lives in the database, so a restart just resumes from where
-// the database says things are due — nothing is lost, and nothing gets
-// double-processed.
+// Runs entirely inside the Next.js server process — there is no separate local
+// cron/worker. Started once from instrumentation.ts when the local server boots.
+// All durable scheduling state lives in Postgres, so a restart resumes from the
+// database instead of starting a second copy of the same work.
 export function startScheduler() {
   if (globalThis.__internshipPilotSchedulerStarted) return;
   globalThis.__internshipPilotSchedulerStarted = true;
 
-  log("starting persistent scheduler (survives restarts — all state is in the database)");
+  log("starting persistent scheduler (all state is durable in Postgres)");
 
-  // Resume only durable INITIAL work created at new-job ingestion. The worker
-  // rechecks for an existing valid MatchResult before calling the model, so
-  // startup never scans or automatically rescores the existing job table.
+  // Resume durable ATS work immediately, then check again every 30 seconds.
   triggerInitialAiMatchWorker();
   setInterval(() => triggerInitialAiMatchWorker(), 30 * 1000);
 
-  const run = () =>
+  const runInternList = () =>
     runIfNotPaused(
       "internList",
       () => runDiscoverySync(),
-      (r) => ({ summary: `${r.status}, new=${r.newJobsCount}, updated=${r.updatedJobsCount}`, newJobs: r.newJobsCount, errors: r.status === "error" ? 1 : 0 }),
+      (r) => ({
+        summary: `${r.status}, new=${r.newJobsCount}, updated=${r.updatedJobsCount}`,
+        newJobs: r.newJobsCount,
+        errors: r.status === "error" ? 1 : 0,
+      }),
     );
-  // Startup only registers the scheduler. Discovery begins on its cadence so
-  // it cannot monopolize SQLite while the application worker acquires and
-  // recovers its queue during a service restart.
-  setInterval(run, SCHEDULES.internList.intervalMs);
 
   const runCsvSync = () =>
     runIfNotPaused(
@@ -96,76 +94,80 @@ export function startScheduler() {
       () => syncApprovedEmployersFromCsv(),
       (r) =>
         r.ran
-          ? { summary: `${r.totalRows} row(s): ${r.created} created, ${r.updated} updated, ${r.deallowlisted} de-allowlisted` }
+          ? {
+              summary: `${r.totalRows} row(s): ${r.created} created, ${r.updated} updated, ${r.deallowlisted} de-allowlisted`,
+            }
           : { summary: "skipped (data/approved_engineering_employers.csv not found yet)" },
     );
-  setInterval(runCsvSync, SCHEDULES.csvSync.intervalMs);
 
-  setInterval(
-    () =>
-      runIfNotPaused(
-        "queue",
-        () => runQueueBatch(),
-        (s) => ({
-          summary: `verified=${s.verified} needsReview=${s.needsReview} closed=${s.closed} quarantined=${s.quarantined} scored=${s.scored} errors=${s.errors}`,
-          errors: s.errors,
-        }),
-      ),
-    SCHEDULES.queue.intervalMs,
-  );
+  const runVerificationQueue = () =>
+    runIfNotPaused(
+      "queue",
+      () => runQueueBatch(),
+      (s) => ({
+        summary: `verified=${s.verified} needsReview=${s.needsReview} closed=${s.closed} quarantined=${s.quarantined} scored=${s.scored} errors=${s.errors}`,
+        errors: s.errors,
+      }),
+    );
 
-  setInterval(
-    () =>
-      runIfNotPaused(
-        "companyDiscovery",
-        () => runCompanyDiscoveryBatch(8),
-        (r) => ({
-          summary: `checked=${r.checked}`,
-          newJobs: r.results.reduce((sum, c) => sum + c.newCount, 0),
-          errors: r.results.filter((c) => c.status === "error").length,
-        }),
-      ),
-    SCHEDULES.companyDiscovery.intervalMs,
-  );
+  const runCompanyDiscovery = () =>
+    runIfNotPaused(
+      "companyDiscovery",
+      () => runCompanyDiscoveryBatch(8),
+      (r) => ({
+        summary: `checked=${r.checked}`,
+        newJobs: r.results.reduce((sum, c) => sum + c.newCount, 0),
+        errors: r.results.filter((c) => c.status === "error").length,
+      }),
+    );
 
-  setInterval(
-    () =>
-      runIfNotPaused(
-        "nearbyWeekly",
-        () => runNearbyFirmSearch(),
-        (r) => ({ summary: r.configured ? `discovered=${r.discovered}, promoted=${r.promoted}` : "skipped (GOOGLE_PLACES_API_KEY not configured)" }),
-      ),
-    SCHEDULES.nearbyWeekly.intervalMs,
-  );
+  const runNearby = () =>
+    runIfNotPaused(
+      "nearbyWeekly",
+      () => runNearbyFirmSearch(),
+      (r) => ({
+        summary: r.configured
+          ? `discovered=${r.discovered}, promoted=${r.promoted}`
+          : "skipped (GOOGLE_PLACES_API_KEY not configured)",
+      }),
+    );
 
-  setInterval(
-    () =>
-      runIfNotPaused(
-        "gmail",
-        () => syncAllConnectedGmailInboxes(),
-        (r) =>
-          r.skipped === "not_connected"
-            ? { summary: "skipped (Gmail not connected)" }
-            : { summary: `checked=${r.checked} classified=${r.classified} newAssessments=${r.newAssessments} errors=${r.errors}`, errors: r.errors },
-      ),
-    SCHEDULES.gmail.intervalMs,
-  );
-  if (isGmailConfigured()) {
+  const runGmail = () =>
     runIfNotPaused(
       "gmail",
       () => syncAllConnectedGmailInboxes(),
       (r) =>
         r.skipped === "not_connected"
           ? { summary: "skipped (Gmail not connected)" }
-          : { summary: `checked=${r.checked} classified=${r.classified} newAssessments=${r.newAssessments} errors=${r.errors}`, errors: r.errors },
+          : {
+              summary: `checked=${r.checked} classified=${r.classified} newAssessments=${r.newAssessments} errors=${r.errors}`,
+              errors: r.errors,
+            },
     );
-  }
 
-  // Register "next run" for schedules whose first real tick is far away, so
-  // the health panel shows something sensible immediately on boot. Awaited
-  // sequentially — each schedule now has its own row (see schedulerState.ts)
-  // so this isn't strictly required for correctness any more, but there's no
-  // reason to open five concurrent writes at startup either.
+  setInterval(runInternList, SCHEDULES.internList.intervalMs);
+  setInterval(runCsvSync, SCHEDULES.csvSync.intervalMs);
+  setInterval(runVerificationQueue, SCHEDULES.queue.intervalMs);
+  setInterval(runCompanyDiscovery, SCHEDULES.companyDiscovery.intervalMs);
+  setInterval(runNearby, SCHEDULES.nearbyWeekly.intervalMs);
+  setInterval(runGmail, SCHEDULES.gmail.intervalMs);
+
+  // Local Postgres can safely handle a bounded bootstrap pass while the server
+  // is up. This makes a fresh local database useful immediately: sync the
+  // allowlist if present, ingest the current Intern List radar, inspect due
+  // company boards, then verify what was just discovered. Each step is awaited
+  // in sequence so startup does not fan out a burst of competing discovery jobs.
+  void (async () => {
+    await runCsvSync();
+    await runInternList();
+    await runCompanyDiscovery();
+    await runVerificationQueue();
+    if (isGmailConfigured()) await runGmail();
+  })();
+
+  // Register next-run metadata for every schedule so the health panel has useful
+  // timestamps even before the first interval fires. These writes are tiny and
+  // independent of the actual bootstrap work above.
   void (async () => {
     for (const name of Object.keys(SCHEDULES) as (keyof typeof SCHEDULES)[]) {
       await scheduleNextTick(name, SCHEDULES[name].label, SCHEDULES[name].intervalMs);
