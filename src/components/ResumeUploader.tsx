@@ -2,14 +2,18 @@
 
 import { useRef, useState } from "react";
 
-const MAX_SIZE_BYTES = 10 * 1024 * 1024;
+// Vercel Functions reject request bodies above 4.5 MB before our route runs.
+// Keep browser uploads comfortably below that boundary until the resume flow
+// moves to direct Blob client uploads.
+const MAX_WEB_UPLOAD_BYTES = 4 * 1024 * 1024;
 
 type UploadedDoc = {
-  id: string;
+  id: string | null;
   filename: string;
   sizeBytes: number;
   pageCount: number;
   status: "ok" | "scanned";
+  persisted?: boolean;
 };
 
 type AutomaticProfile =
@@ -18,10 +22,34 @@ type AutomaticProfile =
   | { status: "not_applicable" }
   | { status: "scanned" };
 
+type UploadResponse = {
+  document?: UploadedDoc;
+  automaticProfile?: AutomaticProfile;
+  warning?: string | null;
+  error?: string;
+};
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+async function readUploadResponse(response: Response): Promise<UploadResponse> {
+  const text = await response.text();
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text) as UploadResponse;
+  } catch {
+    if (response.status === 413) {
+      return {
+        error: "This PDF is too large for the hosted upload endpoint. Export or compress it to under 4 MB and try again.",
+      };
+    }
+    return {
+      error: `The resume service failed before it could return a valid response${response.status ? ` (HTTP ${response.status})` : ""}. Please try again.`,
+    };
+  }
 }
 
 export default function ResumeUploader({
@@ -31,6 +59,7 @@ export default function ResumeUploader({
 }) {
   const [doc, setDoc] = useState<UploadedDoc | null>(null);
   const [automaticProfile, setAutomaticProfile] = useState<AutomaticProfile | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -38,15 +67,16 @@ export default function ResumeUploader({
 
   async function handleFile(file: File) {
     setError(null);
+    setWarning(null);
     setAutomaticProfile(null);
 
     if (!file.name.toLowerCase().endsWith(".pdf")) {
       setError("Only PDF files are accepted. Please choose a .pdf file.");
       return;
     }
-    if (file.size > MAX_SIZE_BYTES) {
+    if (file.size > MAX_WEB_UPLOAD_BYTES) {
       setError(
-        `This file is ${(file.size / (1024 * 1024)).toFixed(1)} MB, which is over the 10 MB limit. Please choose a smaller PDF.`,
+        `This file is ${(file.size / (1024 * 1024)).toFixed(1)} MB. Export or compress the resume PDF to under 4 MB, then upload it again.`,
       );
       return;
     }
@@ -56,13 +86,14 @@ export default function ResumeUploader({
       const formData = new FormData();
       formData.append("file", file);
       const res = await fetch("/api/resume/upload", { method: "POST", body: formData });
-      const data = await res.json();
-      if (!res.ok) {
+      const data = await readUploadResponse(res);
+      if (!res.ok || !data.document) {
         setError(data.error ?? "Could not upload this PDF.");
         return;
       }
       setDoc(data.document);
       setAutomaticProfile(data.automaticProfile ?? null);
+      setWarning(data.warning ?? null);
       if (data.automaticProfile?.status === "ready") {
         await onProcessed?.();
       }
@@ -77,9 +108,10 @@ export default function ResumeUploader({
     const toDelete = doc;
     setDoc(null);
     setAutomaticProfile(null);
+    setWarning(null);
     setError(null);
     if (inputRef.current) inputRef.current.value = "";
-    if (toDelete) {
+    if (toDelete?.id) {
       await fetch(`/api/resume/documents/${toDelete.id}`, { method: "DELETE" }).catch(() => {});
     }
   }
@@ -135,7 +167,7 @@ export default function ResumeUploader({
             }}
           />
           <p className="text-xs text-faint mt-4">
-            PDF only, up to 10 MB. The PDF is stored in your Internship Pilot account; extracted text is used by the configured AI scorer only to build evidence and compare your resume with job descriptions.
+            PDF only, up to 4 MB on the hosted site. Extracted text is used only to build your resume evidence and compare it with job descriptions.
           </p>
         </div>
       )}
@@ -158,6 +190,12 @@ export default function ResumeUploader({
             </button>
           </div>
 
+          {warning && (
+            <div className="rounded-lg bg-caution-quiet border border-caution-line text-caution text-sm px-4 py-3">
+              {warning}
+            </div>
+          )}
+
           {doc.status === "scanned" || automaticProfile?.status === "scanned" ? (
             <div className="rounded-lg bg-caution-quiet border border-caution-line text-caution text-sm px-4 py-3">
               This PDF appears to be scanned, so its text could not be extracted. Upload a text-based PDF to enable automatic ATS scoring.
@@ -168,7 +206,7 @@ export default function ResumeUploader({
             </div>
           ) : automaticProfile?.status === "failed" ? (
             <div className="rounded-lg bg-critical-quiet border border-critical-line text-critical text-sm px-4 py-3">
-              The PDF uploaded successfully, but automatic resume analysis could not finish: {automaticProfile.error} Your previous successfully processed resume remains the active scoring profile.
+              The PDF was read, but automatic resume analysis could not finish: {automaticProfile.error} Your previous successfully processed resume remains the active scoring profile.
             </div>
           ) : null}
         </div>
