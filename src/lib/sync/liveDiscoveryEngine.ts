@@ -7,6 +7,11 @@ import {
   getLiveDiscoveryQueueHealth,
   processLiveDiscoveryQueue,
 } from "@/lib/sync/liveDiscoveryQueue";
+import {
+  enqueueInternListPublicRadar,
+  getSupplementalRadarHealth,
+  processSupplementalRadarQueue,
+} from "@/lib/sync/supplementalRadarQueue";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -26,6 +31,7 @@ export async function getLiveDiscoveryHealth() {
     newest,
     recentJobs,
     queue,
+    supplementalRadar,
     lastLiveRun,
     lastLiveError,
     directRadarCursor,
@@ -53,6 +59,7 @@ export async function getLiveDiscoveryHealth() {
       select: { sourcePostedAt: true, firstSeenAt: true },
     }),
     getLiveDiscoveryQueueHealth(),
+    getSupplementalRadarHealth(),
     prisma.syncLog.findFirst({
       where: { source: "live-discovery", status: "success" },
       orderBy: { finishedAt: "desc" },
@@ -92,6 +99,7 @@ export async function getLiveDiscoveryHealth() {
     sourceLagMinutesP95: percentile(lagsMinutes, 0.95),
     recentLagSampleSize: lagsMinutes.length,
     queue,
+    supplementalRadar,
     directRadar,
     lastLiveDiscoveryAt: lastLiveRun?.finishedAt?.toISOString() ?? null,
     lastLiveNewJobs: lastLiveRun?.newJobsCount ?? 0,
@@ -105,27 +113,36 @@ export async function runLiveDiscoveryCycle(options: {
   atsCheckLimit?: number;
   queueProcessLimit?: number;
   directRadarLimit?: number;
+  internListPages?: number;
+  internListJobs?: number;
 } = {}) {
   const startedAt = Date.now();
   const atsCheckLimit = Math.max(1, Math.min(options.atsCheckLimit ?? 40, 100));
   const queueProcessLimit = Math.max(1, Math.min(options.queueProcessLimit ?? 80, 200));
   const directRadarLimit = Math.max(1, Math.min(options.directRadarLimit ?? 250, 500));
+  const internListPages = Math.max(1, Math.min(options.internListPages ?? 12, 30));
+  const internListJobs = Math.max(1, Math.min(options.internListJobs ?? 1_500, 3_000));
 
-  // Run the two radar lanes in parallel. Jobright/Intern-List signals are
-  // durable-queued because they may need later ATS resolution. Simplify,
-  // Zapply, ApplyGuy and Dreamwork already provide job-specific original URLs,
-  // so their newest deltas can take the direct fast path immediately.
-  const [enqueue, directRadar] = await Promise.all([
+  // Three independent radar lanes run in parallel:
+  // 1) Jobright's freshest timestamped technical minisites,
+  // 2) public indexes that already expose official URLs,
+  // 3) a much deeper crawl of Intern List's public technical collection.
+  // None of the aggregator lanes is trusted as the final destination; queued
+  // signals must resolve to an employer ATS before entering Discover.
+  const [enqueue, directRadar, internListRadar] = await Promise.all([
     enqueueJobrightFreshSignals(),
     runLiveDirectRadar(directRadarLimit),
+    enqueueInternListPublicRadar({
+      maxPages: internListPages,
+      maxJobs: internListJobs,
+      concurrency: 6,
+    }),
   ]);
 
-  // Work the most recent unresolved radar events first, then poll employer ATS
-  // boards that are actually due according to their per-company nextCheckAt
-  // watermark. The company scheduler already uses 5-minute priority checks,
-  // 15-30 minute standard checks, ETag/Last-Modified/content hashes, and failure
-  // backoff, so this is incremental rather than a full 665-company sweep.
-  const queue = await processLiveDiscoveryQueue(queueProcessLimit);
+  const [queue, supplementalQueue] = await Promise.all([
+    processLiveDiscoveryQueue(queueProcessLimit),
+    processSupplementalRadarQueue(queueProcessLimit),
+  ]);
   const ats = await runCompanyDiscoveryBatch(atsCheckLimit);
   const prunedTerminalEvents = await pruneTerminalLiveDiscoveryEvents();
 
@@ -136,8 +153,10 @@ export async function runLiveDiscoveryCycle(options: {
     ok: true,
     durationMs: Date.now() - startedAt,
     enqueue,
+    internListRadar,
     directRadar,
     queue,
+    supplementalQueue,
     prunedTerminalEvents,
     ats: {
       checked: ats.checked,
@@ -146,8 +165,10 @@ export async function runLiveDiscoveryCycle(options: {
       errors: ats.results.filter((row) => row.status === "error").length,
       unsupported: ats.results.filter((row) => row.status === "unsupported").length,
     },
-    newJobs: directRadar.newCount + queue.newCount + atsNew,
-    updatedJobs: directRadar.updatedCount + queue.updatedCount + atsUpdated,
+    newJobs:
+      directRadar.newCount + queue.newCount + supplementalQueue.newCount + atsNew,
+    updatedJobs:
+      directRadar.updatedCount + queue.updatedCount + supplementalQueue.updatedCount + atsUpdated,
     health,
   };
 }
