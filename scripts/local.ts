@@ -1,22 +1,21 @@
-import { spawn, execSync, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, execSync, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import {
   WEB_PORT, BASE_URL, REPO_ROOT,
-  LOCAL_PRISMA_NAME, LOCAL_PRISMA_HTTP_PORT, LOCAL_PRISMA_DB_PORT, LOCAL_PRISMA_SHADOW_DB_PORT,
-  LOCAL_DATABASE_URL, LOCAL_SHADOW_DATABASE_URL,
+  LOCAL_PRISMA_NAME,
   portInUse, describePortOwner, serverHealth,
   readLock, writeLock, clearLock, lockIsStale, pidAlive, waitForHealthy, databasePath,
 } from "./local-shared";
 
 // Canonical one-command local startup for Internship Pilot (npm run local).
-// Starts a LOCAL Prisma Postgres database when needed, applies migrations,
-// verifies the database, starts exactly ONE web+scheduler process and ONE
-// application/browser worker, checks Ollama, waits for health, opens the browser,
-// and shuts the app children down cleanly on Ctrl+C.
+// Starts/reuses a LOCAL Prisma Postgres database, reads the ACTUAL TCP URL that
+// Prisma reports (ports may move when defaults are occupied), applies migrations,
+// verifies the DB, starts exactly ONE web+scheduler process and ONE browser worker,
+// checks Ollama, waits for health, and opens the browser.
 //
-// Crucially, local development never trusts DATABASE_URL from .env. That file
-// may still contain a suspended/paid cloud database URL; this supervisor always
-// overrides it in-memory with the local Prisma Postgres TCP connection.
+// Local development never trusts DATABASE_URL from .env. That file may still
+// contain a suspended/paid cloud database URL; this supervisor replaces it in
+// memory with Prisma Dev's local TCP URL before any app query runs.
 
 const production = process.argv.includes("--production");
 const nextCli = path.join(REPO_ROOT, "node_modules", "next", "dist", "bin", "next");
@@ -36,13 +35,21 @@ function run(cmd: string, args: string[]): number {
   }
 }
 
+function stripAnsi(value: string): string {
+  return value.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+function redactDatabaseUrls(value: string): string {
+  return value.replace(/postgres(?:ql)?:\/\/[^\s]+/gi, "postgres://<local-url-redacted>");
+}
+
 function configureLocalEnvironment(): void {
   if (production) return;
 
-  // Override, do not merely default. A stale cloud DATABASE_URL in .env must
-  // never consume quota or break local development again.
-  process.env.DATABASE_URL = LOCAL_DATABASE_URL;
-  process.env.SHADOW_DATABASE_URL = LOCAL_SHADOW_DATABASE_URL;
+  // Clear inherited/cloud DB settings first. ensureLocalDatabase() injects the
+  // real local URL after Prisma tells us which TCP port the named instance uses.
+  delete process.env.DATABASE_URL;
+  delete process.env.SHADOW_DATABASE_URL;
   process.env.DATABASE_POOL_MAX = "1";
   process.env.INTERNSHIP_PILOT_RUNTIME = "local";
   process.env.DOCUMENT_STORAGE_DRIVER = "local";
@@ -53,36 +60,61 @@ function configureLocalEnvironment(): void {
 async function ensureLocalDatabase(): Promise<void> {
   if (production) return;
 
-  if (await portInUse(LOCAL_PRISMA_DB_PORT)) {
-    log(`Local Prisma Postgres is already listening on port ${LOCAL_PRISMA_DB_PORT}.`);
-    return;
+  log("Starting or reusing local Prisma Postgres…");
+
+  // Do NOT assume 51214. Prisma Dev may reuse a named server that was created
+  // on another port or move to a free port if defaults are occupied. Detached
+  // mode prints the real TCP connection URL; that output is our source of truth.
+  const result = spawnSync(
+    "npx",
+    ["prisma", "dev", "--detach", "--name", LOCAL_PRISMA_NAME],
+    {
+      cwd: REPO_ROOT,
+      env: process.env,
+      encoding: "utf8",
+      windowsHide: true,
+      shell: process.platform === "win32",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+
+  const output = stripAnsi(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+  const match = output.match(/postgres(?:ql)?:\/\/[^\s]+/i);
+
+  if (!match) {
+    console.error("✗ Prisma Dev did not report a local PostgreSQL TCP URL.");
+    if (output.trim()) console.error(redactDatabaseUrls(output.trim()));
+    if (result.error) console.error(result.error.message);
+    process.exit(1);
   }
 
-  log("Starting local Prisma Postgres in the background…");
-  const exit = run("npx", [
-    "prisma", "dev", "--detach",
-    "--name", LOCAL_PRISMA_NAME,
-    "--port", String(LOCAL_PRISMA_HTTP_PORT),
-    "--db-port", String(LOCAL_PRISMA_DB_PORT),
-    "--shadow-db-port", String(LOCAL_PRISMA_SHADOW_DB_PORT),
-  ]);
+  const databaseUrl = match[0];
+  let port: number;
+  try {
+    const parsed = new URL(databaseUrl);
+    port = Number(parsed.port);
+    if (!Number.isFinite(port) || port <= 0) throw new Error("missing TCP port");
+  } catch {
+    console.error("✗ Prisma Dev returned a database URL whose local TCP port could not be read.");
+    process.exit(1);
+  }
 
-  // A named instance may already have been started by another terminal between
-  // our port check and the command. Treat an open DB port as success even when
-  // the CLI reports that race as a non-zero exit.
+  // Inject only into this supervisor + its children. The user's .env remains
+  // untouched, and the suspended cloud DB cannot receive local development traffic.
+  process.env.DATABASE_URL = databaseUrl;
+
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    if (await portInUse(LOCAL_PRISMA_DB_PORT)) {
-      log(`✓ Local Prisma Postgres ready on port ${LOCAL_PRISMA_DB_PORT}.`);
+    if (await portInUse(port)) {
+      log(`✓ Local Prisma Postgres ready on its actual TCP port ${port}.`);
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
 
-  if (exit !== 0) {
-    console.error("✗ Prisma could not start the local database. See the Prisma output above.");
-  } else {
-    console.error(`✗ Local database did not begin listening on port ${LOCAL_PRISMA_DB_PORT} within 30 seconds.`);
+  console.error(`✗ Prisma reported local database port ${port}, but it did not begin listening within 30 seconds.`);
+  if (result.status && result.status !== 0 && output.trim()) {
+    console.error(redactDatabaseUrls(output.trim()));
   }
   process.exit(1);
 }
@@ -121,9 +153,8 @@ async function shutdown(code: number): Promise<void> {
     setTimeout(resolve, 5_000).unref();
   })));
   clearLock();
-  // The detached local database intentionally remains available between runs.
-  // It is local-only and persistent, so the next `npm run local` starts faster
-  // and keeps discovered jobs/profile data instead of recreating an empty DB.
+  // Detached Prisma Dev intentionally remains available between runs; the data
+  // is local and persistent, so the next `npm run local` starts quickly.
   process.exit(code);
 }
 
@@ -169,8 +200,7 @@ async function main(): Promise<void> {
   if (existing) { log("Removing a stale lock from a previous crashed run."); clearLock(); }
 
   // 3. Ensure migrations + Prisma client + a real database query before any
-  // long-running service starts. This turns database setup into part of the one
-  // command rather than a separate manual checklist.
+  // long-running service starts.
   log("Applying migrations (prisma migrate deploy)…");
   if (run("npx", ["prisma", "migrate", "deploy"]) !== 0) {
     console.error("✗ Migration failed against the LOCAL database. See the error above; no cloud database was contacted.");
@@ -191,7 +221,15 @@ async function main(): Promise<void> {
   checkOllama();
 
   // 4. Start exactly one web+scheduler and one application worker.
-  writeLock({ repoRoot: REPO_ROOT, port: WEB_PORT, startedAt: new Date().toISOString(), supervisorPid: process.pid, webPid: null, workerPid: null });
+  writeLock({
+    repoRoot: REPO_ROOT,
+    port: WEB_PORT,
+    startedAt: new Date().toISOString(),
+    supervisorPid: process.pid,
+    webPid: null,
+    workerPid: null,
+    databaseDisplay: databasePath(),
+  });
 
   log("Starting web server + scheduler…");
   const web = startChild("web", [nextCli, production ? "start" : "dev"], (code, signal) => {
@@ -201,8 +239,6 @@ async function main(): Promise<void> {
 
   log("Starting application/browser worker…");
   const startWorker = () => startChild("worker", ["--import", "tsx", "scripts/application-worker.ts"], (code, signal) => {
-    // A worker crash must NOT take the website down. Restart it a couple of
-    // times, then leave the site running without it and explain.
     if (workerRestarts < MAX_WORKER_RESTARTS) {
       workerRestarts++;
       console.error(`[local] application worker exited (${signal ?? `code ${code}`}). Restarting (${workerRestarts}/${MAX_WORKER_RESTARTS})…`);
