@@ -13,17 +13,11 @@ export const REPO_ROOT = process.cwd();
 export const WEB_PORT = Number(process.env.PORT ?? 3000);
 export const BASE_URL = `http://localhost:${WEB_PORT}`;
 
-// Canonical local Prisma Postgres instance. `npm run local` owns choosing this
-// local database for development, so a stale/suspended cloud DATABASE_URL in
-// .env can never accidentally send local development traffic to a paid service.
+// Canonical named Prisma Dev instance. We intentionally do NOT hard-code its
+// TCP ports: Prisma Dev may reuse an existing named instance or select another
+// free port when defaults are occupied. `npm run local` reads the connection
+// URL Prisma actually reports and injects that URL into the app process.
 export const LOCAL_PRISMA_NAME = "internship-pilot";
-export const LOCAL_PRISMA_HTTP_PORT = 51213;
-export const LOCAL_PRISMA_DB_PORT = 51214;
-export const LOCAL_PRISMA_SHADOW_DB_PORT = 51215;
-export const LOCAL_DATABASE_URL =
-  `postgres://postgres:postgres@localhost:${LOCAL_PRISMA_DB_PORT}/template1?sslmode=disable&connection_limit=10&connect_timeout=0&max_idle_connection_lifetime=0&pool_timeout=0&socket_timeout=0`;
-export const LOCAL_SHADOW_DATABASE_URL =
-  `postgres://postgres:postgres@localhost:${LOCAL_PRISMA_SHADOW_DB_PORT}/template1?sslmode=disable&connection_limit=10&connect_timeout=0&max_idle_connection_lifetime=0&pool_timeout=0&socket_timeout=0`;
 
 const LOCK_DIR = path.join(REPO_ROOT, ".internship-pilot");
 const LOCK_FILE = path.join(LOCK_DIR, "local.json");
@@ -35,6 +29,7 @@ export type LocalLock = {
   supervisorPid: number;
   webPid: number | null;
   workerPid: number | null;
+  databaseDisplay?: string;
 };
 
 export function portInUse(port: number): Promise<boolean> {
@@ -117,8 +112,8 @@ export async function waitForHealthy(timeoutMs = 60_000): Promise<boolean> {
 }
 
 // Redacted display only. Never print credentials into the terminal/status UI.
-export function databasePath(): string {
-  const url = process.env.DATABASE_URL ?? LOCAL_DATABASE_URL;
+export function databasePath(url = process.env.DATABASE_URL): string {
+  if (!url) return "Local Prisma Postgres (URL injected by npm run local)";
   if (/^postgres(?:ql)?:\/\//i.test(url)) {
     try {
       const parsed = new URL(url);
