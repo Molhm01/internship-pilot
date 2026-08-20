@@ -1,4 +1,4 @@
-import { createServer } from "node:net";
+import { createConnection } from "node:net";
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -32,12 +32,27 @@ export type LocalLock = {
   databaseDisplay?: string;
 };
 
-export function portInUse(port: number): Promise<boolean> {
+// Readiness/occupancy probe: actually CONNECT to localhost instead of trying
+// to bind 0.0.0.0. The old bind-based test produced a false negative on
+// Windows for Prisma Dev's localhost-only TCP listener: Prisma reported a real
+// DB port (e.g. 51222), but the launcher kept waiting because binding semantics
+// do not reliably answer "can a client connect to this listener?".
+export function portInUse(port: number, timeoutMs = 750): Promise<boolean> {
   return new Promise((resolve) => {
-    const tester = createServer()
-      .once("error", (error: NodeJS.ErrnoException) => resolve(error.code === "EADDRINUSE"))
-      .once("listening", () => tester.close(() => resolve(false)))
-      .listen(port, "0.0.0.0");
+    let settled = false;
+    const socket = createConnection({ host: "localhost", port });
+
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(value);
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
   });
 }
 
