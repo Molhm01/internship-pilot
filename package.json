@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "tsx scripts/start-all.ts",
-    "local": "tsx scripts/local.ts",
+    "local": "tsx scripts/local-entry.ts",
     "local:status": "tsx scripts/local-status.ts",
     "local:stop": "tsx scripts/local-stop.ts",
     "dev:web": "next dev",
