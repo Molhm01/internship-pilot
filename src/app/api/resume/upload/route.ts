@@ -1,13 +1,8 @@
-import { after, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { extractPdfText, hasPdfMagicBytes, MAX_PDF_SIZE_BYTES, PdfExtractionError } from "@/lib/pdf";
 import { saveResumePdf } from "@/lib/resumeStorage";
 import { withUser } from "@/lib/auth/session";
-import {
-  analyzeResumeForAutomaticScoring,
-  replaceResumeDerivedEvidence,
-} from "@/lib/resume/autoProfile";
-import { queueEntireCatalogForResume } from "@/lib/matching/resumeUploadScoring";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -17,16 +12,6 @@ function safeErrorCode(error: unknown): string {
     return String((error as { code: unknown }).code);
   }
   return error instanceof Error ? error.name : "UNKNOWN_ERROR";
-}
-
-async function triggerHostedScoring(origin: string) {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return;
-  await fetch(`${origin}/api/cron/ai-scoring/trigger`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${secret}` },
-    cache: "no-store",
-  }).catch(() => undefined);
 }
 
 export const POST = withUser(async (req, user) => {
@@ -92,12 +77,7 @@ export const POST = withUser(async (req, user) => {
   }
 
   const status = extraction.scanned ? "scanned" : "ok";
-
-  // The original PDF is useful for later application/document workflows, but
-  // durable Blob storage is not a prerequisite for ATS matching. A resume can
-  // still become the active scoring profile from its extracted text when Blob
-  // storage is temporarily unavailable or not configured for this deployment.
-  let doc: Awaited<ReturnType<typeof prisma.resumeDocument.create>> | null = null;
+  let doc: Awaited<ReturnType<typeof prisma.resumeDocument.create>>;
   let storageWarning: string | null = null;
 
   try {
@@ -135,73 +115,35 @@ export const POST = withUser(async (req, user) => {
       errorCode: safeErrorCode(error),
     });
 
-    await prisma.resumeDocument.delete({ where: { id: doc.id } }).catch(() => undefined);
-    doc = null;
-    storageWarning = "The resume was processed for ATS matching, but the original PDF was not stored on this deployment.";
-
     if (kind === "coverLetter") {
+      await prisma.resumeDocument.delete({ where: { id: doc.id } }).catch(() => undefined);
       return NextResponse.json(
         { error: "Cover-letter storage is not configured for this deployment yet." },
         { status: 503 },
       );
     }
+
+    // Resume matching only needs the extracted text. Keep that database row so
+    // local AI analysis can continue even when durable PDF storage is absent.
+    storageWarning = "The resume text was saved for ATS matching, but the original PDF file could not be stored.";
   }
 
-  let automaticProfile:
-    | { status: "ready"; factCount: number }
-    | { status: "failed"; error: string }
-    | { status: "not_applicable" }
-    | { status: "scanned" } = { status: "not_applicable" };
-
-  if (kind === "resume" && status === "scanned") {
-    automaticProfile = { status: "scanned" };
-  } else if (kind === "resume") {
-    try {
-      const facts = await analyzeResumeForAutomaticScoring(extraction.text);
-      const profile = await replaceResumeDerivedEvidence(user.id, facts);
-      automaticProfile = { status: "ready", factCount: profile.factCount };
-
-      const origin = new URL(req.url).origin;
-      after(async () => {
-        try {
-          const scheduled = await queueEntireCatalogForResume(user.id);
-          console.info(JSON.stringify({
-            event: "resume-first-ats-scoring",
-            stage: "queued",
-            userId: user.id,
-            ...scheduled,
-          }));
-          await triggerHostedScoring(origin);
-        } catch (error) {
-          console.error("[resume-first-ats-scoring] automatic queue failed", {
-            userId: user.id,
-            errorCode:
-              error && typeof error === "object" && "code" in error
-                ? String((error as { code: unknown }).code)
-                : "AUTOMATIC_SCORE_QUEUE_FAILED",
-          });
-        }
-      });
-    } catch (error) {
-      automaticProfile = {
-        status: "failed",
-        error: error instanceof Error
-          ? error.message
-          : "Automatic resume analysis failed.",
-      };
-    }
-  }
+  const automaticProfile = kind !== "resume"
+    ? { status: "not_applicable" as const }
+    : status === "scanned"
+      ? { status: "scanned" as const }
+      : { status: "processing" as const };
 
   return NextResponse.json(
     {
       document: {
-        id: doc?.id ?? null,
+        id: doc.id,
         kind,
         filename: file.name,
         sizeBytes: file.size,
         pageCount: extraction.pageCount,
         status,
-        persisted: Boolean(doc),
+        persisted: Boolean(doc.storagePath),
       },
       automaticProfile,
       warning: storageWarning,
