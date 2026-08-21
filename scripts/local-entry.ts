@@ -3,8 +3,10 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 const args = process.argv.slice(2);
 
 const EMBEDDING_ONLY_HINT = /(embed|embedding|nomic|mxbai|all-minilm|snowflake-arctic|bge(?:-|:)|e5(?:-|:))/i;
+// Local text extraction and ATS matching favor fast structured-output models.
+// gpt-oss remains a capable fallback, but should not be the first choice for a
+// one-page resume when a Qwen/Llama/Gemma-class chat model is already installed.
 const CHAT_MODEL_PREFERENCE = [
-  /^gpt-oss(?::|$)/i,
   /^qwen3\.5(?::|$)/i,
   /^qwen3(?::|$)/i,
   /^qwen2\.5(?::|$)/i,
@@ -12,6 +14,7 @@ const CHAT_MODEL_PREFERENCE = [
   /^gemma/i,
   /^mistral/i,
   /^phi/i,
+  /^gpt-oss(?::|$)/i,
   /^deepseek/i,
 ] as const;
 
