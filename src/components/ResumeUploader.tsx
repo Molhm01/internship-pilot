@@ -18,6 +18,7 @@ type UploadedDoc = {
 };
 
 type AutomaticProfile =
+  | { status: "processing" }
   | { status: "ready"; factCount: number }
   | { status: "failed"; error: string }
   | { status: "not_applicable" }
@@ -27,6 +28,13 @@ type UploadResponse = {
   document?: UploadedDoc;
   automaticProfile?: AutomaticProfile;
   warning?: string | null;
+  error?: string;
+};
+
+type AnalyzeResponse = {
+  status?: "ready";
+  factCount?: number;
+  queuedJobs?: number;
   error?: string;
 };
 
@@ -44,20 +52,13 @@ function currentUploadLimitBytes(): number {
     : MAX_HOSTED_UPLOAD_BYTES;
 }
 
-async function readUploadResponse(response: Response): Promise<UploadResponse> {
+async function readJson<T>(response: Response): Promise<T | null> {
   const text = await response.text();
-  if (!text.trim()) return {};
+  if (!text.trim()) return null;
   try {
-    return JSON.parse(text) as UploadResponse;
+    return JSON.parse(text) as T;
   } catch {
-    if (response.status === 413) {
-      return {
-        error: "This PDF is too large for the hosted upload endpoint. Export or compress it to under 4 MB and try again.",
-      };
-    }
-    return {
-      error: `The resume service failed before it could return a valid response${response.status ? ` (HTTP ${response.status})` : ""}. Please try again.`,
-    };
+    return null;
   }
 }
 
@@ -70,9 +71,39 @@ export default function ResumeUploader({
   const [automaticProfile, setAutomaticProfile] = useState<AutomaticProfile | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  async function analyzeUploadedResume(documentId: string) {
+    setAnalyzing(true);
+    setAutomaticProfile({ status: "processing" });
+    try {
+      const res = await fetch("/api/resume/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documentId }),
+      });
+      const data = await readJson<AnalyzeResponse>(res);
+      if (!res.ok || data?.status !== "ready" || typeof data.factCount !== "number") {
+        setAutomaticProfile({
+          status: "failed",
+          error: data?.error ?? `Resume analysis failed${res.status ? ` (HTTP ${res.status})` : ""}.`,
+        });
+        return;
+      }
+      setAutomaticProfile({ status: "ready", factCount: data.factCount });
+      await onProcessed?.();
+    } catch (err) {
+      setAutomaticProfile({
+        status: "failed",
+        error: err instanceof Error ? err.message : "Network error while analyzing the resume.",
+      });
+    } finally {
+      setAnalyzing(false);
+    }
+  }
 
   async function handleFile(file: File) {
     setError(null);
@@ -93,25 +124,35 @@ export default function ResumeUploader({
     }
 
     setUploading(true);
+    let uploaded: UploadResponse | null = null;
     try {
       const formData = new FormData();
       formData.append("file", file);
       const res = await fetch("/api/resume/upload", { method: "POST", body: formData });
-      const data = await readUploadResponse(res);
-      if (!res.ok || !data.document) {
-        setError(data.error ?? "Could not upload this PDF.");
+      uploaded = await readJson<UploadResponse>(res);
+      if (!res.ok || !uploaded?.document) {
+        if (res.status === 413) {
+          setError("This PDF is too large for the current upload endpoint.");
+        } else {
+          setError(uploaded?.error ?? `Could not upload this PDF${res.status ? ` (HTTP ${res.status})` : ""}.`);
+        }
         return;
       }
-      setDoc(data.document);
-      setAutomaticProfile(data.automaticProfile ?? null);
-      setWarning(data.warning ?? null);
-      if (data.automaticProfile?.status === "ready") {
-        await onProcessed?.();
-      }
+      setDoc(uploaded.document);
+      setAutomaticProfile(uploaded.automaticProfile ?? null);
+      setWarning(uploaded.warning ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error uploading PDF.");
+      return;
     } finally {
       setUploading(false);
+    }
+
+    if (
+      uploaded?.document?.id
+      && uploaded.automaticProfile?.status === "processing"
+    ) {
+      await analyzeUploadedResume(uploaded.document.id);
     }
   }
 
@@ -164,7 +205,7 @@ export default function ResumeUploader({
             disabled={uploading}
             className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-dark transition-colors"
           >
-            {uploading ? "Uploading and analyzing…" : "Choose PDF"}
+            {uploading ? "Uploading resume…" : "Choose PDF"}
           </button>
           <input
             ref={inputRef}
@@ -196,7 +237,11 @@ export default function ResumeUploader({
               📄 {doc.filename} · {formatBytes(doc.sizeBytes)} · {doc.pageCount} page
               {doc.pageCount === 1 ? "" : "s"}
             </span>
-            <button onClick={() => void handleRemove()} className="shrink-0 text-accent-text hover:underline">
+            <button
+              onClick={() => void handleRemove()}
+              disabled={analyzing}
+              className="shrink-0 text-accent-text hover:underline disabled:opacity-40"
+            >
               Upload a different resume
             </button>
           </div>
@@ -211,13 +256,17 @@ export default function ResumeUploader({
             <div className="rounded-lg bg-caution-quiet border border-caution-line text-caution text-sm px-4 py-3">
               This PDF appears to be scanned, so its text could not be extracted. Upload a text-based PDF to enable automatic ATS scoring.
             </div>
+          ) : automaticProfile?.status === "processing" ? (
+            <div className="rounded-lg bg-accent/5 border border-accent-line text-secondary text-sm px-4 py-3">
+              Resume uploaded. Local AI is extracting your resume evidence now. This can take a little longer the first time a model loads, but the PDF is already saved.
+            </div>
           ) : automaticProfile?.status === "ready" ? (
             <div className="rounded-lg bg-positive-quiet border border-positive-line text-positive text-sm px-4 py-3">
               Resume ready. {automaticProfile.factCount} literal resume facts were extracted. ATS scoring is now queued automatically for every active internship, and future jobs will be scored too.
             </div>
           ) : automaticProfile?.status === "failed" ? (
             <div className="rounded-lg bg-critical-quiet border border-critical-line text-critical text-sm px-4 py-3">
-              The PDF was read, but automatic resume analysis could not finish: {automaticProfile.error} Your previous successfully processed resume remains the active scoring profile.
+              The PDF was saved, but automatic resume analysis could not finish: {automaticProfile.error}
             </div>
           ) : null}
         </div>
