@@ -119,9 +119,28 @@ jobs:
   extension-agent:
     name: Extension and application-agent gates
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
+    # These fixtures used to run against a copied SQLite dev.db, so this job
+    # declared a DATABASE_URL with no database behind it. They now create their
+    # own users, jobs and runs in a disposable PostgreSQL database, which needs
+    # a real service.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: internship_pilot_agent_audit
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d internship_pilot_agent_audit"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
-      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/audit
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/internship_pilot_agent_audit
+      ISOLATED_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -132,6 +151,8 @@ jobs:
         run: npm ci
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
+      - name: Apply PostgreSQL migrations
+        run: npx prisma migrate deploy
       - name: Generate Prisma client
         run: npx prisma generate
       - name: Build extension
@@ -140,8 +161,10 @@ jobs:
         run: npm run test:extension
       - name: Application DOM fallback
         run: npm run test:application-dom-fallback
-      - name: Application legacy-copy safety
+      - name: Application legacy-row safety
         run: npm run test:application-legacy-copy
+      - name: Production build for the agent contract
+        run: npm run build
       - name: Application agent contract
         run: npm run test:application-agent
       - name: Extension E2E fixture
