@@ -202,8 +202,7 @@ jobs:
           # the pull request.
           echo "--- last 60 lines ---"
           tail -n 60 /tmp/application-agent.log | while IFS= read -r line; do
-            printf "::error::%s
-" "${line}"
+            echo "::error::${line}"
           done
           exit $status
       - name: Extension E2E fixture
