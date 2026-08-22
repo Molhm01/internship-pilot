@@ -32,15 +32,14 @@ async function main() {
   if (lock) {
     line("Supervisor", pidAlive(lock.supervisorPid) ? `RUNNING PID ${lock.supervisorPid}` : "not running");
     line("Web PID (lock)", lock.webPid ? `${lock.webPid} ${pidAlive(lock.webPid) ? "(alive)" : "(dead)"}` : "n/a");
+    line("Scheduler PID", lock.schedulerPid ? `${lock.schedulerPid} ${pidAlive(lock.schedulerPid) ? "(alive)" : "(dead)"}` : "n/a");
     line("Worker PID (lock)", lock.workerPid ? `${lock.workerPid} ${pidAlive(lock.workerPid) ? "(alive)" : "(dead)"}` : "n/a");
     line("Started at", lock.startedAt);
   } else {
     line("Supervisor lock", "none (not started via npm run local, or cleanly stopped)");
   }
 
-  // Scheduler + AI scoring run inside the web process; the browser worker is
-  // the separate worker PID above.
-  line("Scheduler + scoring", health.healthy ? "RUNNING (in web process)" : "STOPPED");
+  line("Scheduler + scoring", lock?.schedulerPid && pidAlive(lock.schedulerPid) ? `RUNNING PID ${lock.schedulerPid}` : "STOPPED");
   line("Application worker", lock?.workerPid && pidAlive(lock.workerPid) ? `RUNNING PID ${lock.workerPid}` : "STOPPED");
 
   // Browser + extension readiness, if the diagnostics endpoint is up.
