@@ -193,8 +193,23 @@ jobs:
       - name: Production build for the agent contract
         run: npm run build
       - name: Application agent contract
-        run: npm run test:application-agent
+        run: |
+          set -o pipefail
+          npm run test:application-agent 2>&1 | tee /tmp/application-agent.log && exit 0
+          status=$?
+          # Surface the reason as annotations. Raw job logs need repository
+          # admin to read, so a failure here was otherwise a bare exit code on
+          # the pull request.
+          echo "--- last 60 lines ---"
+          tail -n 60 /tmp/application-agent.log | while IFS= read -r line; do
+            printf "::error::%s
+" "${line}"
+          done
+          exit $status
       - name: Extension E2E fixture
+        # Runs regardless of the step above: they are independent contracts, and
+        # one failing must not leave the other unreported. The job still fails.
+        if: always()
         run: npm run test:extension-e2e
 
   browser-smoke:
