@@ -28,15 +28,11 @@ export type LocalLock = {
   startedAt: string;
   supervisorPid: number;
   webPid: number | null;
+  schedulerPid?: number | null;
   workerPid: number | null;
   databaseDisplay?: string;
 };
 
-// Readiness/occupancy probe: actually CONNECT to localhost instead of trying
-// to bind 0.0.0.0. The old bind-based test produced a false negative on
-// Windows for Prisma Dev's localhost-only TCP listener: Prisma reported a real
-// DB port (e.g. 51222), but the launcher kept waiting because binding semantics
-// do not reliably answer "can a client connect to this listener?".
 export function portInUse(port: number, timeoutMs = 750): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false;
@@ -100,11 +96,12 @@ export function clearLock(): void {
 // a lock whose processes are alive — that would orphan running services.
 export function lockIsStale(lock: LocalLock | null): boolean {
   if (!lock) return true;
-  return !pidAlive(lock.supervisorPid) && !pidAlive(lock.webPid) && !pidAlive(lock.workerPid);
+  return !pidAlive(lock.supervisorPid)
+    && !pidAlive(lock.webPid)
+    && !pidAlive(lock.schedulerPid)
+    && !pidAlive(lock.workerPid);
 }
 
-// Confirms the server on the port is OUR healthy Internship Pilot, using the
-// versioned extension-health endpoint (never assumes based on the port alone).
 export async function serverHealth(): Promise<{ healthy: boolean; body: Record<string, unknown> | null }> {
   try {
     const res = await fetch(`${BASE_URL}/api/extension/health`, { signal: AbortSignal.timeout(2500) });
