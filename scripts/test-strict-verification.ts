@@ -176,6 +176,30 @@ async function main(): Promise<void> {
       console.log("  NOTE: the external 410 probe was unavailable; asserting the closure rule against the reason-code contract instead.");
       check(unreachable.reasonCode === "NETWORK_FAILURE" && unreachable.availability === "pending", "an unreachable page yields pending/NETWORK_FAILURE, never a closure");
     }
+    console.log("\n6) The stored activeFeed column follows verification transitions");
+    // From the concurrent rebuild of this diagnostic on the same branch: the
+    // pure policy above and the persisted column can drift, so the recompute
+    // that ingestion and re-verification both call is exercised in both
+    // directions.
+    const transitionJob = await prisma.job.create({
+      data: {
+        title: "Electrical Engineering Intern",
+        company: `${FIXTURE_COMPANY_PREFIX} Transition Co`,
+        description: "Fixture used only by the release diagnostic.",
+        source: "greenhouse",
+        url: "https://boards.greenhouse.io/strictverificationaudit/jobs/1",
+        officialApplyUrl: "https://boards.greenhouse.io/strictverificationaudit/jobs/1",
+        verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
+        activeFeed: false,
+      },
+    });
+    check(await recomputeJobActiveFeed(transitionJob.id) === true, "recompute activates a verified direct-source job");
+    check((await prisma.job.findUniqueOrThrow({ where: { id: transitionJob.id } })).activeFeed === true, "the active state was persisted");
+
+    await prisma.job.update({ where: { id: transitionJob.id }, data: { verificationStatus: "Closed" } });
+    check(await recomputeJobActiveFeed(transitionJob.id) === false, "recompute removes a confirmed-closed job from Discover");
+    check((await prisma.job.findUniqueOrThrow({ where: { id: transitionJob.id } })).activeFeed === false, "the closed state was persisted");
+    check((await recheckOfficialUrl("https://strict-verification-does-not-exist.example/jobs/1")).stillOpen === false, "an inconclusive destination is never reported as still open");
   } finally {
     await cleanup();
     await prisma.$disconnect();

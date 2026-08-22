@@ -46,6 +46,8 @@ jobs:
         run: npm ci
       - name: Production dependency vulnerability gate
         run: npm audit --omit=dev --audit-level=high
+      - name: Production dependency architecture gate
+        run: node scripts/audit-production-deps.mjs
       - name: Generate Prisma client
         run: npx prisma generate
       - name: TypeScript typecheck
@@ -115,6 +117,8 @@ jobs:
         run: npm run test:application-multi-user
       - name: Full deterministic Postgres regression runner
         run: npm run test:regression
+      - name: Server-to-agent integration boundary
+        run: npx tsx scripts/test-agent-server-integration.ts
 
   extension-agent:
     name: Extension and application-agent gates
@@ -279,6 +283,26 @@ jobs:
         run: npm run test:strict-verification
       - name: Nearby-firm probe
         run: npm run test:nearby
+
+  autofill-next-phase-boundary:
+    name: Autofill next-phase boundary (not server release blockers)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record deliberately deferred browser-agent behavior
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Deferred to the autofill-agent phase
+          The server release gate proves the extension package, the authenticated
+          health/API surface, per-user ApplicationRun isolation, the server-generated
+          fill-plan boundary, DOM-fallback field filling against a local fixture form,
+          and legacy application-run normalization.
+
+          These behaviors are intentionally the **next phase**, and are not claimed
+          as server-ready:
+          - live Greenhouse/Lever/Ashby/Workday/custom portal autofill
+          - CAPTCHA/MFA pause-and-resume against a real employer portal
+          - real resume/cover-letter attachment and final-submit safety
+          EOF
 
   local-only-boundaries:
     name: Explicit local-only checks (not CI-certified)
