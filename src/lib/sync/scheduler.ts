@@ -10,21 +10,25 @@ import { prepareAutomaticScoringQueues } from "@/lib/matching/automaticScoring";
 import { hydrateMissingDescriptionsForScoring } from "@/lib/matching/jobDescriptionHydration";
 import { requeueStaleFailedScores } from "@/lib/matching/recoverFailedScores";
 import { triggerInitialAiMatchWorker } from "@/lib/matching/initialAiMatchQueue";
+import { runJobrightFreshDiscovery } from "@/lib/sync/jobrightFreshDiscovery";
+import { runMassTechnicalFeedDiscovery } from "@/lib/sync/massTechnicalFeeds";
+import { runExpandedPublicDirectFeedDiscovery } from "@/lib/sync/publicDirectFeedsExpanded";
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const WEEK = 7 * DAY;
 
-// Poll cadences. Individual Company rows carry their OWN nextCheckAt (5 min /
-// 15-30 min staggered / daily) — companyDiscovery's 5-minute poll just checks
-// "is anything due yet", it doesn't mean every company is hit every 5 minutes.
+// Local development has a long-lived Node process, so it can run the same
+// discovery layers that otherwise sit behind hosted cron/manual routes.
 //
-// Local development now uses PostgreSQL rather than SQLite, so there is no
-// reason to defer the first discovery pass for an hour to avoid a file-level
-// write lock. We run one bounded bootstrap pass on server startup, then continue
-// on the normal cadence below.
+// Fresh radar is intentionally frequent: Jobright is a DISCOVERY SIGNAL only;
+// a job becomes an active listing only after the code resolves it to an original
+// employer/ATS destination. Broad feeds already expose job-specific official
+// URLs and keep catalogue depth high without depending on one aggregator.
 const SCHEDULES = {
+  freshRadar: { label: "Fresh engineering radar", intervalMs: 10 * MINUTE },
+  broadRadar: { label: "Broad technical radar", intervalMs: 30 * MINUTE },
   internList: { label: "Intern List sync", intervalMs: 30 * MINUTE },
   csvSync: { label: "CSV allowlist sync", intervalMs: 30 * MINUTE },
   queue: { label: "Verification queue", intervalMs: 2 * MINUTE },
@@ -37,6 +41,7 @@ const SCHEDULES = {
 declare global {
   var __internshipPilotSchedulerStarted: boolean | undefined;
   var __internshipPilotScoringMaintenanceRunning: boolean | undefined;
+  var __internshipPilotBroadRadarRunning: boolean | undefined;
 }
 
 function log(message: string) {
@@ -83,6 +88,54 @@ export function startScheduler() {
   // consuming it continuously without waiting for the next two-minute sweep.
   triggerInitialAiMatchWorker();
   setInterval(() => triggerInitialAiMatchWorker(), 30 * 1000);
+
+  const runFreshRadar = () =>
+    runIfNotPaused(
+      "freshRadar",
+      () => runJobrightFreshDiscovery(200),
+      (r) => ({
+        summary:
+          `signals=${r.sourceFresh}, <24h=${r.freshUnder24h}, <72h=${r.freshUnder72h}, ` +
+          `resolved=${r.directResolved + r.boardResolved}, new=${r.newCount}, updated=${r.updatedCount}, unresolved=${r.unresolved}`,
+        newJobs: r.newCount,
+      }),
+    );
+
+  const runBroadRadar = () =>
+    runIfNotPaused(
+      "broadRadar",
+      async () => {
+        // Avoid starting a second high-throughput public-feed pass when one run
+        // takes longer than the cadence. The following tick will catch up.
+        if (globalThis.__internshipPilotBroadRadarRunning) {
+          return {
+            skipped: true as const,
+            mass: null,
+            direct: null,
+          };
+        }
+
+        globalThis.__internshipPilotBroadRadarRunning = true;
+        try {
+          const mass = await runMassTechnicalFeedDiscovery(1500);
+          const direct = await runExpandedPublicDirectFeedDiscovery(600);
+          return { skipped: false as const, mass, direct };
+        } finally {
+          globalThis.__internshipPilotBroadRadarRunning = false;
+        }
+      },
+      (r) => {
+        if (r.skipped || !r.mass || !r.direct) return { summary: "already running" };
+        const newJobs = r.mass.newCount + r.direct.newCount;
+        const updatedJobs = r.mass.updatedCount + r.direct.updatedCount;
+        return {
+          summary:
+            `source=${r.mass.sourceFetched + r.direct.sourceFetched}, examined=${r.mass.examined + r.direct.examined}, ` +
+            `new=${newJobs}, updated=${updatedJobs}, alreadyActive=${r.mass.alreadyActive + r.direct.alreadyActive}`,
+          newJobs,
+        };
+      },
+    );
 
   const runInternList = () =>
     runIfNotPaused(
@@ -201,6 +254,8 @@ export function startScheduler() {
             },
     );
 
+  setInterval(runFreshRadar, SCHEDULES.freshRadar.intervalMs);
+  setInterval(runBroadRadar, SCHEDULES.broadRadar.intervalMs);
   setInterval(runInternList, SCHEDULES.internList.intervalMs);
   setInterval(runCsvSync, SCHEDULES.csvSync.intervalMs);
   setInterval(runVerificationQueue, SCHEDULES.queue.intervalMs);
@@ -209,13 +264,15 @@ export function startScheduler() {
   setInterval(runNearby, SCHEDULES.nearbyWeekly.intervalMs);
   setInterval(runGmail, SCHEDULES.gmail.intervalMs);
 
-  // Local Postgres can safely handle a bounded bootstrap pass while the server
-  // is up. This makes a fresh local database useful immediately: sync the
-  // allowlist if present, ingest the current Intern List radar, inspect due
-  // company boards, verify what was just discovered, then hydrate + queue ATS
-  // scoring for the ENTIRE active catalogue before the user has to click anything.
+  // A fresh local database should become useful during the SAME work session.
+  // Sync the employer allowlist first, then run the fresh radar, broad official
+  // feeds, the legacy Intern List surface, employer boards and verification.
+  // ATS hydration/scoring runs last so newly ingested jobs immediately enter the
+  // resume-match pipeline without requiring a button click.
   void (async () => {
     await runCsvSync();
+    await runFreshRadar();
+    await runBroadRadar();
     await runInternList();
     await runCompanyDiscovery();
     await runVerificationQueue();
