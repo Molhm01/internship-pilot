@@ -92,6 +92,8 @@ export async function seedFixtureProfile(userId: string, candidate: FixtureCandi
     create: { userId, declineDemographics: true },
     update: { declineDemographics: true },
   });
+  await seedFixtureEvidence(userId);
+
   const education = await prisma.education.findFirst({ where: { userId } });
   if (!education) {
     await prisma.education.create({
@@ -107,4 +109,37 @@ export async function seedFixtureProfile(userId: string, candidate: FixtureCandi
       },
     });
   }
+}
+
+/**
+ * The approved résumé evidence the fixture account applies from.
+ *
+ * Document generation refuses to run for a user with no approved facts, which
+ * is the correct rule — a tailored résumé is assembled from evidence the
+ * applicant confirmed, and there is nothing honest to write without any. So a
+ * fixture that generates documents has to supply that evidence rather than work
+ * around the check.
+ *
+ * The content mirrors the master résumé's own claims, because that is what the
+ * tailoring audit matches against when it decides which keywords a posting may
+ * be answered with: an unsupported requirement stays out of the PDF, and the
+ * fixture only gets the supported ones because these facts exist.
+ */
+export async function seedFixtureEvidence(userId: string): Promise<void> {
+  const existing = await prisma.resumeFact.count({ where: { userId } });
+  if (existing > 0) return;
+
+  const facts: Array<{ type: string; content: string; detail: string }> = [
+    { type: "experience", content: "PC Builder and Repair Technician", detail: "Built 30+ custom PCs and completed 100+ hardware repairs; diagnosed desktop and laptop issues and handled component replacement of RAM, SSDs, GPUs, and cooling." },
+    { type: "skill", content: "Hardware diagnostics", detail: "PC assembly, diagnostics, and component replacement across 5–10 jobs per month at peak." },
+    { type: "project", content: "Air Quality Monitor — VOC Detection", detail: "Sampled MQ-135 sensor data to an OLED display and designed and 3D-printed a ventilated enclosure for the sensor, display, and electronics." },
+    { type: "project", content: "Automated Plant-Watering System", detail: "Soil-moisture sensor readings driving pump cycles, with a 3D printing enclosure design for the sensors, pump, and wiring." },
+    { type: "skill", content: "SolidWorks", detail: "CAD modelling for enclosure design and 3D printing." },
+    { type: "skill", content: "Circuit prototyping", detail: "Breadboarding, analog sensor interfacing, and OLED integration on Arduino." },
+    { type: "education", content: "B.S. Electrical Engineering", detail: "Digital Design, Circuits & Systems I, Differential Equations." },
+  ];
+
+  await prisma.resumeFact.createMany({
+    data: facts.map((fact) => ({ ...fact, userId, status: "approved", source: "manual" })),
+  });
 }
