@@ -19,7 +19,7 @@ import { authClient, linkSocial, signOut, unlinkAccount } from "@/lib/auth/clien
  */
 
 /** Shaped from what the auth client returns, not invented alongside it. */
-type LinkedAccount = { providerId: string };
+type LinkedAccount = { id: string; providerId: string };
 type SessionRow = { id: string; token: string; createdAt: Date; userAgent?: string | null };
 type ExtensionToken = {
   id: string;
@@ -105,7 +105,8 @@ export default function AccountSettings({
     void refresh().catch(() => setError("Could not load your account details."));
   }, [refresh]);
 
-  const googleLinked = accounts?.some((account) => account.providerId === "google") ?? false;
+  const googleAccount = accounts?.find((account) => account.providerId === "google") ?? null;
+  const googleLinked = googleAccount !== null;
   const passwordSet = accounts?.some((account) => account.providerId === "credential") ?? false;
   // The last remaining sign-in method may not be removed; the server refuses
   // it too, and the button should not pretend otherwise.
@@ -124,9 +125,15 @@ export default function AccountSettings({
 
   async function disconnectGoogle() {
     setError(null);
+    if (!googleAccount) {
+      setError("Google is not connected to this account.");
+      return;
+    }
     setBusy(true);
     try {
-      const result = await unlinkAccount({ providerId: "google" });
+      // Better Auth account-specific APIs use the linked account record id,
+      // obtained from listAccounts(). Provider name alone is not a selector.
+      const result = await unlinkAccount({ accountId: googleAccount.id });
       if (result.error) setError(result.error.message ?? "Google could not be disconnected.");
       await refresh();
     } finally {
