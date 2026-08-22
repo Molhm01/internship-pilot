@@ -212,6 +212,12 @@ jobs:
         run: npm run extension:build
       - name: Extension package validation
         run: npm run test:extension
+      - name: Document layout parity with the master reference
+        # Compiles the master resume on this runner and compares it with
+        # templates/master_resume_reference.pdf. Fails loudly and early if the
+        # runner cannot reproduce the master format, instead of surfacing later
+        # as an unexplained QA rejection inside the agent contract.
+        run: npx tsx scripts/inspect-document-layout.ts
       - name: Application DOM fallback
         run: npm run test:application-dom-fallback
       - name: Application legacy-row safety
