@@ -294,4 +294,47 @@ describe("generateDocumentsForJob", () => {
     expect(persisted[1]).toMatchObject({ type: "resume", version: 2, qaStatus: "fail" });
     expect(persisted.some((record) => record.type === "coverLetter")).toBe(false);
   });
+
+  it("falls back to the untailored master when tailoring will not fit on one page", async () => {
+    // The master résumé fills its page with almost no slack, so a longer verb
+    // or an added keyword can push the tailored version onto a second page.
+    // The applicant should still get a résumé — their own, approved, one page —
+    // rather than nothing at all.
+    // A posting the tailoring path actually substitutes a bullet for — the
+    // "problem solving" competency, evidenced by the PC-repair fact. With no
+    // substitutions there is nothing to fall back from, and recompiling the
+    // same content would produce the same overflowing page.
+    findJob.mockResolvedValue({
+      ...job,
+      description: `${job.description} You will troubleshoot and diagnose hardware issues on the bench.`,
+    });
+    findFacts.mockResolvedValue([
+      ...facts,
+      { id: "repairs", type: "experience", content: "PC Builder and Repair Technician", detail: "Completed 100+ hardware repairs; diagnosed desktop and laptop issues and replaced RAM, SSDs and GPUs.", status: "approved" },
+    ]);
+    evaluateResumeFormatPreservation
+      .mockResolvedValueOnce({ status: "fail", issues: ["Master format requires one page; found 2."], generated: {}, reference: {} })
+      .mockResolvedValue({ status: "pass", issues: [], generated: {}, reference: {} });
+
+    // Résumé only: the cover letter is a separate document with its own QA,
+    // and it is not what this is about.
+    const result = await generateDocumentsForJob(job.id, "test-user", { includeCoverLetter: false });
+
+    expect(result.resume.qaStatus).toBe("pass");
+    expect(compileTypst).toHaveBeenCalledTimes(2); // the tailored attempt, then the master fallback
+    const resume = persisted.find((record) => record.type === "resume");
+    expect(resume).toMatchObject({ tailoringStatus: "MASTER_RESUME_FALLBACK" });
+  });
+
+  it("does not fall back when the résumé says the wrong things", async () => {
+    // A content or identity failure is not a formatting problem, and
+    // recompiling the same facts would not fix it.
+    evaluateStrictDocumentQa.mockReturnValueOnce({ status: "fail", issues: ["Unsupported claim detected."] });
+    evaluateResumeFormatPreservation
+      .mockResolvedValueOnce({ status: "fail", issues: ["Master format requires one page; found 2."], generated: {}, reference: {} })
+      .mockResolvedValue({ status: "pass", issues: [], generated: {}, reference: {} });
+
+    await expect(generateDocumentsForJob(job.id, "test-user")).rejects.toThrow("Resume generation failed QA");
+    expect(compileTypst).toHaveBeenCalledTimes(1);
+  });
 });
