@@ -178,6 +178,19 @@ jobs:
         run: npm ci
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
+      - name: Install the fonts the master resume format is compared against
+        # Document QA compares the compiled PDF with
+        # templates/master_resume_reference.pdf — page count, line spacing and
+        # the font set. The reference was produced with the Microsoft core
+        # fonts, so a runner without them substitutes, the metrics change, and
+        # a correct resume is rejected for reasons that are about the machine
+        # rather than the document.
+        run: |
+          echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | sudo debconf-set-selections
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ttf-mscorefonts-installer fontconfig
+          sudo fc-cache -f
+          fc-list | grep -ci "times new roman"
       - name: Install Typst
         # Tailored PDFs are compiled by the Typst binary. Without it the
         # document half of the agent contract cannot run at all, and the whole
