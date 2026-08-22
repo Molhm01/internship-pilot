@@ -165,9 +165,25 @@ export class BrowserManager {
     if (process.env.APPLICATION_WORKER_TEST_ONLY !== "1") throw new Error("Browser test hooks are disabled.");
     const page = this.pausedPages.get(runId);
     if (!page || page.isClosed()) throw new Error("The local mock CAPTCHA page is not retained for this run.");
+
     const current = new URL(page.url());
-    if (!["localhost", "127.0.0.1"].includes(current.hostname) || !current.pathname.startsWith("/mock-ats/")) {
-      throw new Error("CAPTCHA test completion is restricted to local mock ATS pages.");
+    const configuredMockOrigin = process.env.MOCK_ATS_BASE_URL;
+    let isConfiguredMockPage = false;
+    if (configuredMockOrigin) {
+      try {
+        isConfiguredMockPage = current.origin === new URL(configuredMockOrigin).origin;
+      } catch {
+        isConfiguredMockPage = false;
+      }
+    }
+
+    // This hook exists only for the isolated test suite. Require the exact mock
+    // ATS origin issued by that suite rather than trusting an arbitrary localhost
+    // page or a production URL. The mock server now serves fixtures directly at
+    // /ashby-captcha.html instead of under /mock-ats/, so pathname matching was
+    // both stale and weaker than verifying the configured origin.
+    if (!isConfiguredMockPage || !["localhost", "127.0.0.1"].includes(current.hostname)) {
+      throw new Error("CAPTCHA test completion is restricted to the configured local mock ATS server.");
     }
     await page.evaluate(() => {
       document.querySelectorAll(
@@ -267,21 +283,21 @@ export class BrowserManager {
     this.extension = { ready: false, id: null, path: applicationExtensionPath() };
   }
 
-  private async closeUnusedBlankPages(keep: Page): Promise<void> {
-    if (!this.context) return;
-    const retained = new Set(this.pausedPages.values());
-    for (const page of this.context.pages()) {
-      if (page === keep || retained.has(page) || page.isClosed()) continue;
-      if (page.url() === "about:blank") await page.close().catch(() => {});
-    }
-  }
-
   private safeOpenPageCount(): number {
     try {
-      return this.context?.pages().filter((page) => !page.isClosed()).length ?? 0;
+      return this.context?.pages().length ?? 0;
     } catch {
       return 0;
     }
+  }
+
+  private async closeUnusedBlankPages(keep: Page): Promise<void> {
+    const context = this.context;
+    if (!context) return;
+    await Promise.all(context.pages().map(async (page) => {
+      if (page === keep || page.isClosed() || page.url() !== "about:blank") return;
+      await page.close().catch(() => {});
+    }));
   }
 
   private async emitHealth(): Promise<void> {
@@ -289,26 +305,27 @@ export class BrowserManager {
   }
 }
 
-export function isClosedContextError(error: unknown): boolean {
-  return /target page, context or browser has been closed|browser has been closed|context.*closed|browser.*disconnected/i.test(
-    errorMessage(error),
-  );
-}
-
 async function extensionFingerprint(): Promise<string> {
   const root = applicationExtensionPath();
   const hash = createHash("sha256");
-  const files = (await readdir(root)).sort();
-  for (const filename of files) {
-    const fullPath = path.join(root, filename);
-    const details = await stat(fullPath);
-    if (!details.isFile()) continue;
-    hash.update(filename);
-    hash.update(await readFile(fullPath));
+  for (const name of (await readdir(root)).sort()) {
+    const file = path.join(root, name);
+    const metadata = await stat(file).catch(() => null);
+    if (!metadata?.isFile()) continue;
+    hash.update(name);
+    hash.update(await readFile(file));
   }
   return hash.digest("hex");
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isClosedContextError(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("target page, context or browser has been closed")
+    || message.includes("browser has been closed")
+    || message.includes("context closed")
+    || message.includes("target closed");
 }
