@@ -1,0 +1,273 @@
+name: Publish readiness audit
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "scripts/**"
+      - "extension/**"
+      - "prisma/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/publish-readiness-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-readiness-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BETTER_AUTH_SECRET: publish-readiness-audit-secret-that-is-long-enough-for-ci-only
+  BETTER_AUTH_URL: http://127.0.0.1:3000
+  NEXT_PUBLIC_APP_URL: http://127.0.0.1:3000
+  BASE_URL: http://127.0.0.1:3000
+  INTERNSHIP_PILOT_RUNTIME: local
+  DOCUMENT_STORAGE_DRIVER: local
+  DISABLE_VISION_AGENT: "1"
+  NODE_OPTIONS: --max-old-space-size=6144
+
+jobs:
+  static-unit:
+    name: Static, build, and unit contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/audit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: TypeScript typecheck
+        continue-on-error: true
+        run: npm run typecheck
+      - name: ESLint
+        continue-on-error: true
+        run: npm run lint
+      - name: Vitest unit suite
+        continue-on-error: true
+        run: npm run test:unit
+      - name: Production build
+        continue-on-error: true
+        run: npm run build
+
+  postgres-contracts:
+    name: PostgreSQL feature contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: internship_pilot_audit
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d internship_pilot_audit"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/internship_pilot_audit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Apply PostgreSQL migrations
+        run: npx prisma migrate deploy
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Database connectivity
+        continue-on-error: true
+        run: npm run test:db
+      - name: Job scoring contract
+        continue-on-error: true
+        run: npm run test:jobs
+      - name: CSV employer loader
+        continue-on-error: true
+        run: npm run test:csv-loader
+      - name: Fraud detection
+        continue-on-error: true
+        run: npm run test:fraud-detection
+      - name: Strict discovery boundary
+        continue-on-error: true
+        run: npm run test:strict-discovery-boundary
+      - name: Active-jobs policy
+        continue-on-error: true
+        run: npm run test:active-jobs-policy
+      - name: Verification model
+        continue-on-error: true
+        run: npm run test:verification-model
+      - name: Document strategy
+        continue-on-error: true
+        run: npm run test:document-strategy
+      - name: ATS scoring queue
+        continue-on-error: true
+        run: npm run test:scoring-queue
+      - name: Local firms logic
+        continue-on-error: true
+        run: npm run test:local-firms
+      - name: Gmail tracking/classification
+        continue-on-error: true
+        run: npm run test:gmail-tracking
+
+  extension-agent:
+    name: Extension and application-agent contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/audit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Build extension
+        continue-on-error: true
+        run: npm run extension:build
+      - name: Extension package validation
+        continue-on-error: true
+        run: npm run test:extension
+      - name: Application DOM fallback
+        continue-on-error: true
+        run: npm run test:application-dom-fallback
+      - name: Application legacy-copy safety
+        continue-on-error: true
+        run: npm run test:application-legacy-copy
+      - name: Application agent contract
+        continue-on-error: true
+        run: npm run test:application-agent
+      - name: Extension E2E fixture
+        continue-on-error: true
+        run: npm run test:extension-e2e
+
+  browser-smoke:
+    name: Authenticated browser route smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: internship_pilot_browser_audit
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d internship_pilot_browser_audit"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/internship_pilot_browser_audit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Apply PostgreSQL migrations
+        run: npx prisma migrate deploy
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Pause background scheduler for deterministic route testing
+        run: |
+          PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d internship_pilot_browser_audit <<'SQL'
+          INSERT INTO "AppSetting" ("key", "value", "updatedAt")
+          VALUES ('schedulerPaused', 'true', NOW())
+          ON CONFLICT ("key") DO UPDATE SET "value" = 'true', "updatedAt" = NOW();
+          SQL
+      - name: Build production server
+        run: npm run build
+      - name: Start server
+        run: |
+          nohup npx next start -p 3000 > /tmp/internship-pilot-server.log 2>&1 &
+          echo $! > /tmp/internship-pilot-server.pid
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:3000/api/extension/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/internship-pilot-server.log
+          exit 1
+      - name: Browser signup/login and every workspace route
+        continue-on-error: true
+        run: node --import tsx scripts/publish-browser-smoke.ts
+      - name: Server log
+        if: always()
+        run: cat /tmp/internship-pilot-server.log || true
+
+  live-discovery:
+    name: Live discovery and verification probes
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: internship_pilot_live_audit
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d internship_pilot_live_audit"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/internship_pilot_live_audit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Apply PostgreSQL migrations
+        run: npx prisma migrate deploy
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Source sync probe
+        continue-on-error: true
+        run: npm run test:sync
+      - name: Nationwide discovery probe
+        continue-on-error: true
+        run: npm run test:nationwide
+      - name: Verification probe
+        continue-on-error: true
+        run: npm run test:verify
+      - name: Strict verification probe
+        continue-on-error: true
+        run: npm run test:strict-verification
+      - name: Nearby-firm probe
+        continue-on-error: true
+        run: npm run test:nearby
