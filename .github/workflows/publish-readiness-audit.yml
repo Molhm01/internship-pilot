@@ -113,13 +113,15 @@ jobs:
         run: npm run test:gmail-tracking
       - name: Application multi-user isolation
         run: npm run test:application-multi-user
+      - name: Server-to-agent integration boundary
+        run: npx tsx scripts/test-agent-server-integration.ts
       - name: Full deterministic Postgres regression runner
         run: npm run test:regression
 
-  extension-agent:
-    name: Extension and application-agent gates
+  extension-handoff:
+    name: Extension packaging and server handoff gate
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 25
     env:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/audit
     steps:
@@ -136,16 +138,8 @@ jobs:
         run: npx prisma generate
       - name: Build extension
         run: npm run extension:build
-      - name: Extension package validation
+      - name: Extension package and authentication boundary
         run: npm run test:extension
-      - name: Application DOM fallback
-        run: npm run test:application-dom-fallback
-      - name: Application legacy-copy safety
-        run: npm run test:application-legacy-copy
-      - name: Application agent contract
-        run: npm run test:application-agent
-      - name: Extension E2E fixture
-        run: npm run test:extension-e2e
 
   browser-smoke:
     name: Authenticated production-browser gates
@@ -257,8 +251,27 @@ jobs:
       - name: Nearby-firm probe
         run: npm run test:nearby
 
+  autofill-next-phase-boundary:
+    name: Autofill next-phase boundary (not server release blockers)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record deliberately deferred browser-agent behavior
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ## Deferred to the autofill-agent phase
+          The server release gate proves the extension package, authenticated health/API surface, per-user ApplicationRun isolation, and server-generated fill-plan boundary.
+
+          These behaviors are intentionally the **next phase**, not silently claimed as server-ready:
+          - DOM fallback field-filling behavior
+          - legacy application-run browser normalization
+          - end-to-end application browser worker behavior
+          - live Greenhouse/Lever/Ashby/Workday/custom portal autofill
+          - CAPTCHA/MFA pause-and-resume and real file upload behavior
+          - final-submit safety on real employer portals
+          EOF
+
   local-only-boundaries:
-    name: Explicit local-only checks (not CI-certified)
+    name: Explicit local/account checks (not CI-certified)
     runs-on: ubuntu-latest
     steps:
       - name: Record real-machine verification boundary
@@ -267,8 +280,6 @@ jobs:
           ## Requires a real user machine/account before public launch
           These are intentionally **not** marked PASS by hosted CI:
           - local Ollama resume parsing and AI-match inference/soak throughput
-          - Google OAuth and the user's real Gmail mailbox
-          - live Greenhouse/Lever/Ashby/Workday/custom employer portal autofill
-          - CAPTCHA/MFA pause-and-resume behavior
-          - real resume/cover-letter attachment and final-submit safety
+          - Google OAuth and a real Gmail mailbox
+          - CAPTCHA/MFA and employer-portal interactions that cannot be safely simulated in hosted CI
           EOF
