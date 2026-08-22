@@ -10,6 +10,9 @@ import { enqueueApplication, ApplicationAgentError } from "@/lib/applications/qu
 import { setApplicationMode } from "@/lib/applications/settings";
 
 let failures = 0;
+const TEST_EMAIL = "document-strategy-audit@example.test";
+let userId = "";
+
 function check(cond: boolean, msg: string) {
   if (cond) console.log(`  PASS: ${msg}`);
   else { console.error(`  FAIL: ${msg}`); failures++; }
@@ -39,19 +42,33 @@ async function makeJob(overrides: Record<string, unknown>) {
 
 async function makeResume(jobId: string, tailoringStatus: string) {
   return prisma.generatedDocument.create({
-    data: { jobId, type: "resume", version: 1, storagePath: `data/generated/${jobId}/resume-v1.pdf`, qaStatus: "pass", tailoringStatus, identityVerified: true, bulletIdsUsed: "[]" },
+    data: {
+      userId,
+      jobId,
+      type: "resume",
+      version: 1,
+      storagePath: `data/generated/${userId}/${jobId}/resume-v1.pdf`,
+      qaStatus: "pass",
+      tailoringStatus,
+      identityVerified: true,
+      bulletIdsUsed: "[]",
+    },
   });
 }
 
 async function cleanup() {
   await prisma.applicationRun.deleteMany({ where: { job: { company: "Test Strategy Co" } } });
   await prisma.generatedDocument.deleteMany({ where: { job: { company: "Test Strategy Co" } } });
+  await prisma.userJobState.deleteMany({ where: { job: { company: "Test Strategy Co" } } });
   await prisma.job.deleteMany({ where: { company: "Test Strategy Co" } });
+  await prisma.user.deleteMany({ where: { email: TEST_EMAIL } });
 }
 
 async function main() {
-  await setApplicationMode("FILL_TO_SUBMIT");
   await cleanup();
+  const user = await prisma.user.create({ data: { email: TEST_EMAIL, name: "Document Strategy Audit" } });
+  userId = user.id;
+  await setApplicationMode(userId, "FILL_TO_SUBMIT");
 
   console.log("1) jobDescriptionCompleteness classification");
   check(jobDescriptionCompleteness(COMPLETE) === "complete", "complete description → complete");
@@ -71,9 +88,9 @@ async function main() {
   const jobFallback = await makeJob(NONE);
   await makeResume(jobFallback.id, "MASTER_RESUME_FALLBACK");
   try {
-    const res = await enqueueApplication(jobFallback.id);
+    const res = await enqueueApplication(jobFallback.id, userId);
     check(res.queued === true, "run queued with a master-fallback resume");
-    const run = await prisma.applicationRun.findUnique({ where: { id: res.runId } });
+    const run = await prisma.applicationRun.findFirst({ where: { id: res.runId, userId } });
     check(run?.documentStrategy === "EXISTING_APPROVED_DOCUMENT", `documentStrategy recorded (got ${run?.documentStrategy})`);
     check(run?.jobDescriptionCompleteness === "none", `completeness recorded (got ${run?.jobDescriptionCompleteness})`);
     check(!!run?.resumeDocumentId, "a resume document was attached");
@@ -85,7 +102,7 @@ async function main() {
   const jobLegacy = await makeJob({ ...NONE, company: "Test Strategy Co", title: "Legacy Intern" });
   await makeResume(jobLegacy.id, "NOT_TAILORED_NO_JOB_DESCRIPTION");
   try {
-    const res = await enqueueApplication(jobLegacy.id);
+    const res = await enqueueApplication(jobLegacy.id, userId);
     check(res.queued === true || res.status === "queued", "run queued with a legacy NOT_TAILORED resume");
   } catch (err) {
     check(false, `legacy resume should be usable, threw: ${err instanceof Error ? err.message : String(err)}`);
@@ -94,7 +111,7 @@ async function main() {
   console.log("\n6) A job with NO approved resume blocks with NO_APPROVED_DOCUMENT");
   const jobNoDoc = await makeJob({ title: "No Doc Intern" });
   try {
-    await enqueueApplication(jobNoDoc.id);
+    await enqueueApplication(jobNoDoc.id, userId);
     check(false, "should have thrown NO_APPROVED_DOCUMENT");
   } catch (err) {
     check(err instanceof ApplicationAgentError && /No approved resume exists/i.test(err.message), `blocked with NO_APPROVED_DOCUMENT message (got: ${err instanceof Error ? err.message : String(err)})`);
