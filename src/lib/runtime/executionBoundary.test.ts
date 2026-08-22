@@ -143,19 +143,26 @@ describe("the deployed server never assumes its localhost runs Ollama", () => {
   it("routes every server-side model call through the guarded module", async () => {
     // The guard lives in one place on purpose. A caller that talks to Ollama
     // directly would bypass it, so no other server module may name the port.
-    const files = [
+    const modelCallers = [
       "src/lib/matching.ts",
       "src/lib/documents/select.ts",
       "src/lib/documents/bulletLibrary.ts",
       "src/lib/gmail/classify.ts",
       "src/lib/applications/browserAgent.ts",
       "src/lib/applications/diagnostics.ts",
-      "src/app/api/resume/analyze/route.ts",
+      "src/lib/resume/autoProfile.ts",
     ];
-    for (const file of files) {
+    for (const file of modelCallers) {
       const source = await repoFile(file);
       expect(source, `${file} must not build its own Ollama URL`).not.toContain("11434");
       expect(source, `${file} must use the shared Ollama module`).toContain("@/lib/ollama");
+    }
+
+    // Routes delegate inference to the modules above rather than calling the
+    // model themselves. They are still held to the no-own-URL half of the rule.
+    for (const file of ["src/app/api/resume/analyze/route.ts"]) {
+      const source = await repoFile(file);
+      expect(source, `${file} must not build its own Ollama URL`).not.toContain("11434");
     }
   });
 });

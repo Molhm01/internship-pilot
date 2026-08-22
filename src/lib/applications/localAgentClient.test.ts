@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { createApplicationSession, LocalAgentError } from "./localAgentClient";
+import { createApplicationSession } from "./localAgentClient";
 
 // Mock the global fetch function
 global.fetch = vi.fn();
@@ -18,7 +18,7 @@ describe("createApplicationSession (browser client)", () => {
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
       json: vi.fn().mockResolvedValue(mockResponse),
-    } as any);
+    } as unknown as Response);
 
     const result = await createApplicationSession({
       company: "Test Company",
@@ -46,7 +46,7 @@ describe("createApplicationSession (browser client)", () => {
       ok: false,
       status: 500,
       json: vi.fn().mockResolvedValue({ error: "Server Error" }),
-    } as any);
+    } as unknown as Response);
 
     await expect(
       createApplicationSession({
@@ -63,7 +63,7 @@ describe("createApplicationSession (browser client)", () => {
       ok: false,
       status: 401,
       json: vi.fn().mockResolvedValue({ error: "Authentication failed" }),
-    } as any);
+    } as unknown as Response);
 
     await expect(
       createApplicationSession({

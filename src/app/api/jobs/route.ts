@@ -12,6 +12,7 @@ import { withUser } from "@/lib/auth/session";
 import { jobOrderBy, parseJobSort, sortJobs } from "@/lib/jobs/jobSort";
 import { jobsQueryErrorDevDetail, jobsQueryErrorLog } from "@/lib/jobs/jobsQueryError";
 import { parseSourcePostedAt } from "@/lib/sync/sourceDate";
+import { manualEntryVerification } from "@/lib/jobs/manualEntry";
 
 function parseListParam(value: string | null): string[] {
   return value ? value.split(",").map((v) => v.trim()).filter(Boolean) : [];
@@ -273,14 +274,13 @@ export const POST = withUser(async (req, user) => {
     now,
   );
   const destinationData = destinationPersistenceData(destination);
-  let officialEmployerDomain: string | null = null;
-  if (destination.officialApplicationUrl) {
-    try {
-      officialEmployerDomain = new URL(destination.officialApplicationUrl).hostname;
-    } catch {
-      officialEmployerDomain = null;
-    }
-  }
+  // The trust decision and its exact wording are policy, so they come from
+  // src/lib/jobs/manualEntry.ts rather than being written out here.
+  const manualVerification = manualEntryVerification({
+    resolutionStatus: destination.resolutionStatus,
+    officialApplicationUrl: destination.officialApplicationUrl ?? null,
+    enteredAt: now,
+  });
 
   const job = await prisma.job.create({
     data: {
@@ -302,20 +302,7 @@ export const POST = withUser(async (req, user) => {
       sourceCapturedAt: now,
       // Manually entered jobs are trusted by construction — the user pasted
       // them in themselves, so there's nothing to independently verify.
-      verificationStatus:
-        destination.resolutionStatus === "RESOLVED"
-          ? "VERIFIED_OFFICIAL_AT_LAST_CHECK"
-          : "NeedsReview",
-      reasonCode:
-        destination.resolutionStatus === "RESOLVED"
-          ? "MANUAL_ENTRY"
-          : "OFFICIAL_DESTINATION_UNRESOLVED",
-      verificationReason:
-        destination.resolutionStatus === "RESOLVED"
-          ? `Verified on the official employer application page at ${now.toLocaleString()}. (Manually entered by the user — not independently re-checked.)`
-          : "The manually entered URL is not a job-specific employer or ATS application page.",
-      verificationMethod: "manual-entry",
-      officialEmployerDomain,
+      ...manualVerification,
       evidence: JSON.stringify({ manualEntry: true, enteredAt: now.toISOString() }),
       firstSeenAt: now,
       lastSeenAt: now,
@@ -325,10 +312,7 @@ export const POST = withUser(async (req, user) => {
       // the Active feed (unless the company reads as a demo/fixture).
       activeFeed: computeActiveFeed({
         source: "manual",
-        verificationStatus:
-          destination.resolutionStatus === "RESOLVED"
-            ? "VERIFIED_OFFICIAL_AT_LAST_CHECK"
-            : "NeedsReview",
+        verificationStatus: manualVerification.verificationStatus,
         company: company.trim(),
       }),
     },
