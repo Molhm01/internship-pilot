@@ -19,6 +19,7 @@ import {
 
 const production = process.argv.includes("--production");
 const nextCli = path.join(REPO_ROOT, "node_modules", "next", "dist", "bin", "next");
+const WORKSPACE_URL = `${BASE_URL}/jobs`;
 const children: ChildProcess[] = [];
 let stopping = false;
 let workerRestarts = 0;
@@ -181,8 +182,8 @@ async function main(): Promise<void> {
     const health = await serverHealth();
     if (health.healthy) {
       log("Internship Pilot is already running.");
-      log(`Open ${BASE_URL}`);
-      openBrowser(BASE_URL);
+      log(`Open ${WORKSPACE_URL}`);
+      openBrowser(WORKSPACE_URL);
       process.exit(0);
     }
     const owner = describePortOwner(WEB_PORT);
@@ -252,13 +253,15 @@ async function main(): Promise<void> {
   const worker = startWorker();
   updateLockPids(web.pid ?? null, worker.pid ?? null);
 
-  // 5. Wait for health, then open the browser.
+  // 5. Wait for health, then open the signed-in workspace instead of the
+  // marketing/root route. Local development is about testing the product, and
+  // /jobs is the canonical Discover screen where radar + ATS progress is visible.
   log("Waiting for the server to become healthy…");
   const healthy = await waitForHealthy(90_000);
   if (healthy) {
     log(`✓ Internship Pilot is healthy at ${BASE_URL}`);
-    log("Opening the website…");
-    openBrowser(BASE_URL);
+    log(`Opening Discover at ${WORKSPACE_URL}…`);
+    openBrowser(WORKSPACE_URL);
     log("Press Ctrl+C to stop the website + worker. The local database remains available for your next run.");
   } else {
     console.error("[local] Server did not report healthy within 90s. It may still be compiling — check the logs above.");
