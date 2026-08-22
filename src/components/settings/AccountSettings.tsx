@@ -19,7 +19,7 @@ import { authClient, linkSocial, signOut, unlinkAccount } from "@/lib/auth/clien
  */
 
 /** Shaped from what the auth client returns, not invented alongside it. */
-type LinkedAccount = { id: string; providerId: string };
+type LinkedAccount = { id: string; accountId: string; providerId: string };
 type SessionRow = { id: string; token: string; createdAt: Date; userAgent?: string | null };
 type ExtensionToken = {
   id: string;
@@ -131,11 +131,15 @@ export default function AccountSettings({
     }
     setBusy(true);
     try {
-      // `accountId` here is Better Auth's own Account row id — the endpoint
-      // matches on `account.id`, not on the provider's account id — so the
-      // right value is the `id` from listAccounts(). Selecting by provider name
-      // alone would be ambiguous once one provider can be linked twice.
-      const result = await unlinkAccount({ accountId: googleAccount.id });
+      // `providerId` is required and `accountId` narrows it to one specific
+      // link, matched as `account.accountId === accountId` — so it is the
+      // provider's own account id from listAccounts(), not the row id.
+      // (Better Auth 1.7 changes this call to take the row id alone; the
+      // dependency is pinned to 1.6.29, see package.json.)
+      const result = await unlinkAccount({
+        providerId: "google",
+        accountId: googleAccount.accountId,
+      });
       if (result.error) setError(result.error.message ?? "Google could not be disconnected.");
       await refresh();
     } finally {

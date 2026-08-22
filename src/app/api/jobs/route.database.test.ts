@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/lib/db";
 import { Prisma } from "@/generated/prisma/client";
 import { FRESHNESS_FIELDS } from "@/lib/jobs/jobsQueryError";
@@ -57,8 +57,54 @@ async function get(url: string): Promise<{ status: number; body: JobsBody }> {
 
 const ms = (value: string | null): number | null => (value ? new Date(value).getTime() : null);
 
+/**
+ * A small catalogue this suite owns.
+ *
+ * Two of these tests used to assert `count() > 0` and `jobs.length > 1`, which
+ * only held because they were run against a developer's populated database. On
+ * a fresh CI database they asserted against an empty catalogue and failed —
+ * a suite that needs rows must create the rows it needs. The shape matters:
+ * several postings with a known `sourcePostedAt` in a deliberate order, and one
+ * without, so the freshness ordering and the unknown-dates-last rule both have
+ * something to order.
+ */
+const FIXTURE_COMPANY = "Jobs Route Database Fixture";
+const DAY = 24 * 60 * 60 * 1000;
+
+async function seedCatalogue(): Promise<void> {
+  const now = Date.now();
+  const postings: Array<{ suffix: string; sourcePostedAt: Date | null }> = [
+    { suffix: "newest", sourcePostedAt: new Date(now - 1 * DAY) },
+    { suffix: "middle", sourcePostedAt: new Date(now - 8 * DAY) },
+    { suffix: "oldest", sourcePostedAt: new Date(now - 90 * DAY) },
+    { suffix: "undated", sourcePostedAt: null },
+  ];
+  for (const posting of postings) {
+    await prisma.job.create({
+      data: {
+        title: `Fixture ${posting.suffix} intern`,
+        company: FIXTURE_COMPANY,
+        description: "Deterministic fixture posting for the Jobs route database contract.",
+        status: "DISCOVERED",
+        source: "greenhouse",
+        verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
+        activeFeed: true,
+        sourcePostedAt: posting.sourcePostedAt,
+        firstSeenAt: new Date(),
+        lastSeenAt: new Date(),
+      },
+    });
+  }
+}
+
 describe.skipIf(!DATABASE_AVAILABLE)("GET /api/jobs against the live database", () => {
+  beforeAll(async () => {
+    await prisma.job.deleteMany({ where: { company: FIXTURE_COMPANY } });
+    await seedCatalogue();
+  });
+
   afterAll(async () => {
+    await prisma.job.deleteMany({ where: { company: FIXTURE_COMPANY } });
     await prisma.$disconnect();
   });
 
