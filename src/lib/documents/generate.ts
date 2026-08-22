@@ -296,7 +296,11 @@ export async function generateDocumentsForJob(
     throw new DocumentGenerationError("No approved profile facts are available for document generation.");
   }
   const validFactIds = new Set(facts.map((fact) => fact.id));
-  const bullets = (await prisma.resumeBullet.findMany({ orderBy: { createdAt: "asc" } }))
+  // Scoped like the facts above. The fact-id filter below happened to reject
+  // another account's bullets, but that is an accident of cuid uniqueness
+  // rather than an ownership check — this résumé is built only from rows this
+  // user owns.
+  const bullets = (await prisma.resumeBullet.findMany({ where: { userId }, orderBy: { createdAt: "asc" } }))
     .filter((bullet) => {
       const factIds = parseFactIds(bullet.factIds);
       return factIds.length > 0 && factIds.every((factId) => validFactIds.has(factId));
@@ -405,7 +409,10 @@ export async function generateDocumentsForJob(
   });
   const header = { fullName: profile.fullName, email: profile.email, phone: profile.phone, linkedin: profile.linkedin, workAuthorization: profile.workAuthorization, addressCity: profile.addressCity, addressState: profile.addressState };
   currentStage = "resume_generation";
-  const resumeVersion = await prisma.generatedDocument.count({ where: { jobId, type: "resume" } }) + 1;
+  // Per user. Counting every account's documents for this job made one
+  // applicant's version numbers depend on how many other people had applied,
+  // and leaked that count into their own filenames.
+  const resumeVersion = await prisma.generatedDocument.count({ where: { userId, jobId, type: "resume" } }) + 1;
   const resumeSourceRel = `${jobDirRel}/resume-v${resumeVersion}.typ`;
   const resumePdfRel = `${jobDirRel}/resume-v${resumeVersion}.pdf`;
   const resumeSource = buildMasterResumeSource(header, tailoring.content);
@@ -482,7 +489,7 @@ export async function generateDocumentsForJob(
   if (options.includeCoverLetter !== false) {
     currentStage = "cover_letter_generation";
     const paragraphs = buildGroundedCoverLetterParagraphs(generationJob, documentFacts, selectedFactIds);
-    const coverVersion = await prisma.generatedDocument.count({ where: { jobId, type: "coverLetter" } }) + 1;
+    const coverVersion = await prisma.generatedDocument.count({ where: { userId, jobId, type: "coverLetter" } }) + 1;
     const coverSourceRel = `${jobDirRel}/cover-letter-v${coverVersion}.typ`;
     const coverPdfRel = `${jobDirRel}/cover-letter-v${coverVersion}.pdf`;
     const savedLocation = [profile.addressCity, profile.addressState]

@@ -127,7 +127,7 @@ describe("GET /api/jobs", () => {
       },
       // Newest SOURCE posting first — never newest row-insert first.
       orderBy: [
-        { sourcePostedAt: "desc" },
+        { sourcePostedAt: { sort: "desc", nulls: "last" } },
         { sourceRowIndex: "asc" },
         { firstSeenAt: "desc" },
         { id: "desc" },
