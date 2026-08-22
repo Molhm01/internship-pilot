@@ -8,10 +8,6 @@ const webPort = Number(process.env.PORT ?? 3000);
 const children: ChildProcess[] = [];
 let stopping = false;
 
-// The extension is configured to talk to a fixed local address, so we must
-// NOT silently fall back to another port. Instead, detect an occupied port
-// up front and explain exactly what to do — never crash with a raw
-// EADDRINUSE, and never kill unrelated processes automatically.
 function portInUse(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const tester = createServer()
@@ -38,9 +34,7 @@ function describePortOwner(port: number): string {
       const pid = execSync(`lsof -ti tcp:${port} -sTCP:LISTEN`, { encoding: "utf8" }).split(/\r?\n/).find(Boolean);
       if (pid) return `PID ${pid}`;
     }
-  } catch {
-    // Diagnostics are best-effort; fall through to the generic message.
-  }
+  } catch {}
   return "another process";
 }
 
@@ -52,13 +46,7 @@ async function ensurePortFree(): Promise<void> {
       "",
       `✗ Cannot start: port ${webPort} is already in use by ${owner}.`,
       "",
-      "This is almost always a previous Internship Pilot web server that is still running.",
-      "Stop only that process, then start again — for example:",
-      process.platform === "win32"
-        ? `    Get-NetTCPConnection -LocalPort ${webPort} -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess }`
-        : `    lsof -ti tcp:${webPort} -sTCP:LISTEN | xargs kill`,
-      "",
-      "Do NOT kill unrelated Node apps. Internship Pilot will not switch ports,",
+      "Stop that process, then start again. Internship Pilot will not switch ports,",
       `because the Chrome extension is configured to talk to http://localhost:${webPort}.`,
       "",
     ].join("\n"),
@@ -99,11 +87,13 @@ async function shutdown(code: number): Promise<void> {
 process.once("SIGINT", () => void shutdown(0));
 process.once("SIGTERM", () => void shutdown(0));
 
-// Next's instrumentation hook starts the scheduler. This supervisor starts
-// that web process and exactly one standalone application worker together.
+// Keep server-only discovery/Prisma code out of Next's instrumentation bundle.
+// The web server, durable scheduler/scoring worker, and browser worker are three
+// sibling Node processes supervised as one service group.
 async function main(): Promise<void> {
   await ensurePortFree();
-  start("web server + scheduler", [nextCli, production ? "start" : "dev"]);
+  start("web server", [nextCli, production ? "start" : "dev"]);
+  start("scheduler + scoring worker", ["--import", "tsx", "scripts/scheduler-worker.ts"]);
   start("application worker", ["--import", "tsx", "scripts/application-worker.ts"]);
 }
 
