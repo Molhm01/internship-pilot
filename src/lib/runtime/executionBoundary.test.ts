@@ -175,14 +175,20 @@ describe("local-only server capabilities", () => {
     expect(source.indexOf('assertLocalRuntime("typst")')).toBeLessThan(source.indexOf("compileTypst("));
   });
 
-  it("does not register long-lived timers on a cloud runtime", async () => {
-    // The scheduler's setInterval timers assume a process that stays alive.
-    // On a frozen-between-requests function they fire unpredictably and every
-    // cold start would add another set.
+  it("does not register long-lived timers in the web process at all", async () => {
+    // The scheduler's setInterval timers assume a process that stays alive. On
+    // a frozen-between-requests function they fire unpredictably and every cold
+    // start would add another set. Guarding only the cloud runtime turned out
+    // not to be enough: importing the scheduler here also dragged pg's Node
+    // built-ins into the Windows Webpack bundle. The scheduler is now its own
+    // process, so no runtime — local or cloud — starts it from instrumentation.
     const source = await repoFile("src/instrumentation.ts");
 
-    expect(source).toContain("isCloudRuntime()");
-    expect(source.indexOf("isCloudRuntime()")).toBeLessThan(source.indexOf("startScheduler"));
+    expect(source).not.toMatch(/startScheduler\s*\(/);
+    expect(source).not.toMatch(/setInterval\s*\(/);
+    expect(source).toContain("scheduler-worker");
+    // The transitive import-graph guard lives in
+    // src/lib/runtime/instrumentationBoundary.test.ts.
   });
 
   it("does not spawn a child process on a cloud runtime", async () => {

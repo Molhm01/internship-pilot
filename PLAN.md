@@ -96,9 +96,12 @@ scraping, no browser automation, no auto-submission in Phase 1.
   alignment; never fabricates an official URL.
 - `src/lib/sync/discover.ts` / `queue.ts` — discovery sync + a 2-minute queue
   that verifies newly-discovered jobs and re-checks aging "Verified" ones.
-- `src/lib/sync/scheduler.ts` + `src/instrumentation.ts` — starts the schedule
-  once when the Next.js server boots: immediate first sync, hourly discovery,
-  2-minute queue processing.
+- `src/lib/sync/scheduler.ts` + `scripts/scheduler-worker.ts` — the schedule runs
+  in its own Node process, started by `npm run local`, NOT by the Next.js
+  server: immediate first sync, hourly discovery, 2-minute queue processing.
+  `src/instrumentation.ts` deliberately starts nothing; importing the scheduler
+  there dragged pg/pgpass Node built-ins into the Windows Webpack bundle and
+  broke the website build.
 - `src/lib/matching.ts` — the Phase 1 scoring logic, extracted so both the
   manual "Run AI Match" button and the automatic post-verification scoring
   share one implementation.

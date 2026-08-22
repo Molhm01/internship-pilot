@@ -82,6 +82,60 @@ jobs:
       - name: Production build
         run: npm run build
 
+  windows-webpack:
+    name: Windows Webpack compilation gate
+    runs-on: windows-latest
+    timeout-minutes: 40
+    # The regression this job exists for: src/instrumentation.ts imported the
+    # scheduler, which reached @/lib/db -> @prisma/adapter-pg -> pg -> pgpass,
+    # and Windows Webpack tried to resolve the Node built-ins `fs` and `path`
+    # as browser modules. The whole website stopped compiling, and no
+    # Linux/Turbopack job in this workflow noticed. `npm run local` uses
+    # `next dev --webpack` on Windows for dev stability, so this is the bundler
+    # and the platform the local install actually runs on.
+    #
+    # No PostgreSQL service: Windows runners cannot run service containers, and
+    # a Webpack compile does not need a reachable database — a syntactically
+    # valid URL is enough to construct the Prisma client. That is deliberate:
+    # this gate must fail on module resolution, not on connectivity.
+    env:
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:59999/internship_pilot_webpack_gate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install exact dependencies
+        run: npm ci
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Instrumentation import-boundary regression test
+        # Fast and precise: names the offending import chain rather than
+        # leaving a 20-minute Webpack failure to be read backwards.
+        run: npx vitest run src/lib/runtime/instrumentationBoundary.test.ts src/lib/runtime/localProcessArchitecture.test.ts
+      - name: Production build with Webpack
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run build:webpack 2>&1 | tee "$RUNNER_TEMP/webpack-build.log"
+      - name: Fail on any bundler module-resolution error
+        # `next build` exits non-zero on these already; this makes the cause
+        # legible as an annotation instead of a wall of build output, and
+        # catches a future Next release that only warns.
+        if: always()
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/webpack-build.log"
+          [ -f "$log" ] || exit 0
+          if grep -aE "Module not found: Can't resolve '(fs|path|net|tls|dns|child_process|crypto|os|stream)'" "$log"; then
+            grep -aE "Module not found|Can't resolve" "$log" | head -n 8 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            echo "::error::A server-only Node dependency reached the browser/bundler graph. See src/lib/runtime/instrumentationBoundary.test.ts."
+            exit 1
+          fi
+
   postgres-contracts:
     name: PostgreSQL deterministic feature gates
     runs-on: ubuntu-latest

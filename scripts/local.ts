@@ -272,8 +272,12 @@ async function main(): Promise<void> {
         }, 1_500).unref();
         return;
       }
-      console.error("[local] scheduler/scoring worker keeps exiting; stopping because radar and ATS scoring would be unavailable.");
-      void shutdown(code ?? 1);
+      // The website is a separate process and serves everything already in
+      // PostgreSQL without the scheduler. Tearing it down here would turn a
+      // failure of background discovery into a total outage of the product.
+      console.error("[local] scheduler/scoring worker keeps exiting; leaving the website up WITHOUT radar discovery or ATS scoring. Existing jobs and applications still work. Fix the worker, then run `npm run local` again.");
+      scheduler = null;
+      updateLockPids();
     },
   );
 
@@ -308,7 +312,7 @@ async function main(): Promise<void> {
   const healthy = await waitForHealthy(90_000);
   if (healthy) {
     log(`✓ Internship Pilot is healthy at ${BASE_URL}`);
-    log(`✓ Scheduler/scoring worker PID ${scheduler.pid ?? "unknown"}.`);
+    log(`✓ Scheduler/scoring worker PID ${scheduler?.pid ?? "unknown"}.`);
     log(`Opening Discover at ${WORKSPACE_URL}…`);
     openBrowser(WORKSPACE_URL);
     log("Press Ctrl+C to stop the website + scheduler + worker. The local database remains available for your next run.");

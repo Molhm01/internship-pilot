@@ -12,7 +12,8 @@ Skip anything you don't need right now and come back later.
   anything to check — see step 2)
 - Strict verification (Jobs page only ever shows VERIFIED_OFFICIAL_AT_LAST_CHECK postings)
 - Fraud protection (Security Quarantine) and the New Employer Review approval flow
-- The persistent scheduler (runs automatically whenever the app is running)
+- The persistent scheduler (its own Node process, started and stopped alongside
+  the website by `npm run local` / `npm run local:stop`)
 - Resume upload, fact approval, AI Match, document generation
 - Fill To Submit application mode (once you connect a resume + Application Profile)
 

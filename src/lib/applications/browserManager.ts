@@ -322,7 +322,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function isClosedContextError(error: unknown): boolean {
+export function isClosedContextError(error: unknown): boolean {
   const message = errorMessage(error).toLowerCase();
   return message.includes("target page, context or browser has been closed")
     || message.includes("browser has been closed")

@@ -73,8 +73,11 @@ async function runIfNotPaused<T>(
   }
 }
 
-// Runs entirely inside the Next.js server process — there is no separate local
-// cron/worker. Started once from instrumentation.ts when the local server boots.
+// Runs in its own Node process — scripts/scheduler-worker.ts, supervised by
+// `npm run local` alongside the website and the application worker. The Next.js
+// server does NOT start it: importing this module from src/instrumentation.ts
+// pulled @/lib/db -> @prisma/adapter-pg -> pg -> pgpass into Next's bundle, and
+// Windows Webpack then failed to resolve the Node built-ins `fs` and `path`.
 // All durable scheduling state lives in Postgres, so a restart resumes from the
 // database instead of starting a second copy of the same work.
 export function startScheduler() {

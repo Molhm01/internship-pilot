@@ -2,7 +2,10 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { withUser } from "@/lib/auth/session";
 
-export const DEFAULT_FILTER_NAME = "Engineering internships";
+// Not exported: a Next route module may only export route handlers and route
+// config, and `next build` type-checks that contract against its generated
+// route types.
+const DEFAULT_FILTER_NAME = "Engineering internships";
 
 // Electrical, hardware, embedded, electronics, testing, controls,
 // semiconductor and manufacturing/test roles; a 60-mile radius with remote

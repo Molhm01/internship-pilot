@@ -54,7 +54,16 @@ async function ensurePortFree(): Promise<void> {
   process.exit(1);
 }
 
-function start(label: string, args: string[], extraEnv: Record<string, string | undefined> = {}): ChildProcess {
+// `critical: true` means the service group cannot serve the product without
+// this process. Only the web server qualifies: the scheduler and the browser
+// worker are background capabilities, and taking the website down with them
+// would turn a degraded install into a total outage.
+function start(
+  label: string,
+  args: string[],
+  options: { critical: boolean; degradedNote: string },
+  extraEnv: Record<string, string | undefined> = {},
+): ChildProcess {
   const child = spawn(process.execPath, args, {
     cwd: process.cwd(),
     env: { ...process.env, ...extraEnv },
@@ -64,8 +73,13 @@ function start(label: string, args: string[], extraEnv: Record<string, string | 
   children.push(child);
   child.once("exit", (code, signal) => {
     if (stopping) return;
-    console.error(`${label} stopped unexpectedly (${signal ?? `exit ${code ?? 1}`}). Stopping the service group.`);
-    void shutdown(code ?? 1);
+    const how = signal ?? `exit ${code ?? 1}`;
+    if (options.critical) {
+      console.error(`${label} stopped unexpectedly (${how}). Stopping the service group.`);
+      void shutdown(code ?? 1);
+      return;
+    }
+    console.error(`${label} stopped unexpectedly (${how}). ${options.degradedNote}`);
   });
   return child;
 }
@@ -92,9 +106,18 @@ process.once("SIGTERM", () => void shutdown(0));
 // sibling Node processes supervised as one service group.
 async function main(): Promise<void> {
   await ensurePortFree();
-  start("web server", [nextCli, production ? "start" : "dev"]);
-  start("scheduler + scoring worker", ["--import", "tsx", "scripts/scheduler-worker.ts"]);
-  start("application worker", ["--import", "tsx", "scripts/application-worker.ts"]);
+  start("web server", [nextCli, production ? "start" : "dev"], {
+    critical: true,
+    degradedNote: "",
+  });
+  start("scheduler + scoring worker", ["--import", "tsx", "scripts/scheduler-worker.ts"], {
+    critical: false,
+    degradedNote: "The website stays up WITHOUT radar discovery or ATS scoring; queued work is durable in PostgreSQL and resumes on the next start.",
+  });
+  start("application worker", ["--import", "tsx", "scripts/application-worker.ts"], {
+    critical: false,
+    degradedNote: "The website stays up WITHOUT browser autofill. Existing application runs are unaffected.",
+  });
 }
 
 void main();
