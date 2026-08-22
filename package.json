@@ -37,6 +37,7 @@
     "test:application-agent": "tsx scripts/test-application-agent.ts",
     "test:application-dom-fallback": "tsx scripts/test-application-dom-fallback.ts",
     "test:application-legacy-copy": "tsx scripts/test-application-legacy-copy.ts",
+    "test:application-multi-user": "tsx scripts/test-application-multi-user-isolation.ts",
     "test:extension": "tsx scripts/test-extension-package.ts",
     "test:extension-e2e": "tsx scripts/test-extension-e2e.ts",
     "test:regression": "tsx scripts/test-regression-isolated.ts",
