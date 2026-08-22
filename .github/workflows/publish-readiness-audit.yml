@@ -31,7 +31,7 @@ env:
 
 jobs:
   static-unit:
-    name: Static, build, and unit contracts
+    name: Static, dependency, build, and unit gates
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -42,27 +42,25 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Install dependencies
+      - name: Install exact dependencies
         run: npm ci
+      - name: Production dependency vulnerability gate
+        run: npm audit --omit=dev --audit-level=high
       - name: Generate Prisma client
         run: npx prisma generate
       - name: TypeScript typecheck
-        continue-on-error: true
         run: npm run typecheck
       - name: ESLint
-        continue-on-error: true
         run: npm run lint
       - name: Vitest unit suite
-        continue-on-error: true
         run: npm run test:unit
       - name: Production build
-        continue-on-error: true
         run: npm run build
 
   postgres-contracts:
-    name: PostgreSQL feature contracts
+    name: PostgreSQL deterministic feature gates
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     services:
       postgres:
         image: postgres:16
@@ -79,54 +77,47 @@ jobs:
           --health-retries 20
     env:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/internship_pilot_audit
+      CI: "true"
+      ISOLATED_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - name: Install dependencies
+      - name: Install exact dependencies
         run: npm ci
       - name: Apply PostgreSQL migrations
         run: npx prisma migrate deploy
       - name: Generate Prisma client
         run: npx prisma generate
       - name: Database connectivity
-        continue-on-error: true
         run: npm run test:db
-      - name: Job scoring contract
-        continue-on-error: true
-        run: npm run test:jobs
-      - name: CSV employer loader
-        continue-on-error: true
+      - name: CSV parser and 497-row import contract
         run: npm run test:csv-loader
       - name: Fraud detection
-        continue-on-error: true
         run: npm run test:fraud-detection
       - name: Strict discovery boundary
-        continue-on-error: true
         run: npm run test:strict-discovery-boundary
-      - name: Active-jobs policy
-        continue-on-error: true
+      - name: Active-jobs direct-source policy
         run: npm run test:active-jobs-policy
       - name: Verification model
-        continue-on-error: true
         run: npm run test:verification-model
       - name: Document strategy
-        continue-on-error: true
         run: npm run test:document-strategy
       - name: ATS scoring queue
-        continue-on-error: true
         run: npm run test:scoring-queue
       - name: Local firms logic
-        continue-on-error: true
         run: npm run test:local-firms
-      - name: Gmail tracking/classification
-        continue-on-error: true
+      - name: Gmail tracker deterministic contract
         run: npm run test:gmail-tracking
+      - name: Application multi-user isolation
+        run: npm run test:application-multi-user
+      - name: Full deterministic Postgres regression runner
+        run: npm run test:regression
 
   extension-agent:
-    name: Extension and application-agent contracts
+    name: Extension and application-agent gates
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
@@ -137,33 +128,27 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Install dependencies
+      - name: Install exact dependencies
         run: npm ci
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
       - name: Generate Prisma client
         run: npx prisma generate
       - name: Build extension
-        continue-on-error: true
         run: npm run extension:build
       - name: Extension package validation
-        continue-on-error: true
         run: npm run test:extension
       - name: Application DOM fallback
-        continue-on-error: true
         run: npm run test:application-dom-fallback
       - name: Application legacy-copy safety
-        continue-on-error: true
         run: npm run test:application-legacy-copy
       - name: Application agent contract
-        continue-on-error: true
         run: npm run test:application-agent
       - name: Extension E2E fixture
-        continue-on-error: true
         run: npm run test:extension-e2e
 
   browser-smoke:
-    name: Authenticated browser route smoke
+    name: Authenticated production-browser gates
     runs-on: ubuntu-latest
     timeout-minutes: 35
     services:
@@ -188,7 +173,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Install dependencies
+      - name: Install exact dependencies
         run: npm ci
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
@@ -217,17 +202,20 @@ jobs:
           done
           cat /tmp/internship-pilot-server.log
           exit 1
+      - name: Catalog health endpoint returns structured success
+        run: |
+          curl -fsS http://127.0.0.1:3000/api/health/catalog | tee /tmp/catalog-health.json
+          jq -e '.ok == true and (.active | type == "number") and (.freshness.postedWithin24h | type == "number")' /tmp/catalog-health.json
       - name: Browser signup/login and every workspace route
-        continue-on-error: true
         run: node --import tsx scripts/publish-browser-smoke.ts
       - name: Server log
         if: always()
         run: cat /tmp/internship-pilot-server.log || true
 
   live-discovery:
-    name: Live discovery and verification probes
+    name: Live discovery and verification gates
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     services:
       postgres:
         image: postgres:16
@@ -244,30 +232,43 @@ jobs:
           --health-retries 20
     env:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/internship_pilot_live_audit
+      CI: "true"
+      ISOLATED_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - name: Install dependencies
+      - name: Install exact dependencies
         run: npm ci
       - name: Apply PostgreSQL migrations
         run: npx prisma migrate deploy
       - name: Generate Prisma client
         run: npx prisma generate
       - name: Source sync probe
-        continue-on-error: true
         run: npm run test:sync
       - name: Nationwide discovery probe
-        continue-on-error: true
         run: npm run test:nationwide
       - name: Verification probe
-        continue-on-error: true
         run: npm run test:verify
       - name: Strict verification probe
-        continue-on-error: true
         run: npm run test:strict-verification
       - name: Nearby-firm probe
-        continue-on-error: true
         run: npm run test:nearby
+
+  local-only-boundaries:
+    name: Explicit local-only checks (not CI-certified)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record real-machine verification boundary
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ## Requires a real user machine/account before public launch
+          These are intentionally **not** marked PASS by hosted CI:
+          - local Ollama resume parsing and AI-match inference/soak throughput
+          - Google OAuth and the user's real Gmail mailbox
+          - live Greenhouse/Lever/Ashby/Workday/custom employer portal autofill
+          - CAPTCHA/MFA pause-and-resume behavior
+          - real resume/cover-letter attachment and final-submit safety
+          EOF
