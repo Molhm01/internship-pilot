@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
-import { hasUsableJobDescription } from "@/lib/matchWorkflow";
+import { hasUsableJobDescription, matchJobDescriptionText } from "@/lib/matchWorkflow";
 import { scheduleAllUnscoredActiveJobs } from "@/lib/matching/bulkInitialMatch";
+import { normalizeMatchDescription } from "@/lib/matching/input";
 import {
   initialAiMatchWorkerConcurrency,
   processNextInitialAiMatch,
@@ -8,6 +9,8 @@ import {
 } from "@/lib/matching/initialAiMatchQueue";
 import {
   approvedProfileRevision,
+  fingerprintJobDescription,
+  originMatchesJobDescription,
   originMatchesProfile,
   profileRefreshMatchType,
   PROFILE_REFRESH_MATCH_PREFIX,
@@ -30,10 +33,10 @@ function validCurrentScore(value: number | null | undefined): boolean {
 }
 
 /**
- * Ensure every active job with historical score evidence is grounded in the
- * user's CURRENT approved fact fingerprint. Historical MatchResults are the
- * durable source of score history; UserJobState is only the current display
- * copy and can legitimately be null after all approved facts were removed.
+ * Ensure every active job with historical score evidence is grounded in BOTH
+ * the user's current approved-resume fingerprint and the current normalized job
+ * description. Historical MatchResults remain append-only; UserJobState is only
+ * the current display copy and is rebuilt whenever either input changes.
  */
 export async function scheduleProfileRefreshesForUser(
   userId: string,
@@ -114,13 +117,32 @@ export async function scheduleProfileRefreshesForUser(
   for (const job of jobs) {
     const latest = job.matchResults[0];
     const currentStateIsValid = validCurrentScore(job.userStates[0]?.matchScore);
-    if (originMatchesProfile(latest?.origin, revision.hash) && currentStateIsValid) {
+    const usableDescription = hasUsableJobDescription(job);
+    const currentDescriptionHash = usableDescription
+      ? fingerprintJobDescription(normalizeMatchDescription(matchJobDescriptionText(job)))
+      : null;
+    const scoreInputsAreCurrent = Boolean(
+      currentDescriptionHash
+      && originMatchesProfile(latest?.origin, revision.hash)
+      && originMatchesJobDescription(latest?.origin, currentDescriptionHash),
+    );
+
+    if (scoreInputsAreCurrent && currentStateIsValid) {
       alreadyCurrent += 1;
       continue;
     }
-    if (!hasUsableJobDescription(job)) {
+    if (!usableDescription) {
       skippedNoDescription += 1;
       continue;
+    }
+
+    // Do not leave a stale score visible while the current JD/profile pair is
+    // being refreshed. MatchResult history stays untouched for audit/history.
+    if (currentStateIsValid && !scoreInputsAreCurrent) {
+      await prisma.userJobState.updateMany({
+        where: { userId, jobId: job.id },
+        data: { matchScore: null, eligibilityStatus: null, matchedAt: null },
+      });
     }
 
     const existing = job.initialAiMatchJobs[0];
@@ -139,9 +161,8 @@ export async function scheduleProfileRefreshesForUser(
 
     try {
       // A SUCCEEDED row can be safely reused only when its persisted current
-      // state is still current (handled above). If that display copy was later
-      // cleared — or the user explicitly retries a failed revision — recycle
-      // the durable row to rebuild the current score.
+      // state AND both input fingerprints are current (handled above). If the
+      // JD or resume changed, recycle the durable row to rebuild the score.
       const queueWrite = existing
         ? prisma.initialAiMatchJob.update({
           where: { id: existing.id },
@@ -206,9 +227,9 @@ export type AutomaticUserScheduleResult = {
 };
 
 /**
- * Called after a profile mutation as well as by the hosted backstop. This is
- * what makes adding the FIRST approved fact automatically queue all active jobs
- * instead of waiting for the user to press Score unscored.
+ * Called after a profile mutation as well as by the hosted/local backstop. This
+ * makes the first uploaded resume queue all active jobs and keeps every existing
+ * score current when either the resume or the job description changes.
  */
 export async function scheduleAutomaticScoresForUser(
   userId: string,
@@ -227,7 +248,7 @@ export type AutomaticScoringPreparation = {
   refreshQueued: number;
 };
 
-/** Backstop run before every hosted worker: nothing depends on a button click. */
+/** Backstop run before every worker: nothing depends on a button click. */
 export async function prepareAutomaticScoringQueues(): Promise<AutomaticScoringPreparation> {
   const userIds = await usersEligibleForInitialMatch();
   let initialQueued = 0;
@@ -248,7 +269,7 @@ export type AutomaticScoringSweepResult = AutomaticScoringPreparation & {
 };
 
 /**
- * Process a bounded number of durable queue rows inside one Vercel function.
+ * Process a bounded number of durable queue rows inside one hosted function.
  * Each model call has its own timeout; the outer budget prevents a large first
  * deployment/profile refresh from trying to finish hundreds of jobs at once.
  */

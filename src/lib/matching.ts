@@ -16,6 +16,7 @@ import {
 } from "@/lib/matching/input";
 import {
   fingerprintApprovedFacts,
+  fingerprintJobDescription,
   scoreOriginForProfile,
 } from "@/lib/matching/profileFingerprint";
 import { isCloudRuntime } from "@/lib/runtime/deployment";
@@ -62,8 +63,9 @@ function timing(jobId: string, stage: string, durationMs: number, details: Recor
   }));
 }
 
-// The persisted MatchResult origin receives a profile fingerprint suffix inside
-// runMatchForJob. Callers only choose why the run happened.
+// The persisted MatchResult origin receives both the current resume-profile
+// fingerprint and the normalized job-description fingerprint. Callers only
+// choose why the run happened.
 export type MatchOrigin = "MANUAL" | "INITIAL_AUTO" | "PROFILE_AUTO";
 
 function modelFailure(error: unknown): MatchError {
@@ -107,9 +109,9 @@ function modelFailure(error: unknown): MatchError {
  *
  * Local development continues to use Ollama. A cloud deployment uses the
  * server-side Gemini API so scoring can run when the user's computer is off.
- * The exact approved fact set is fingerprinted into MatchResult.origin. That
- * gives the scheduler a migration-free, per-user way to know when a score is
- * stale after the profile changes.
+ * The exact approved fact set AND exact normalized job description are
+ * fingerprinted into MatchResult.origin. The scheduler can therefore prove
+ * whether a displayed score is still current after either input changes.
  */
 export async function runMatchForJob(
   jobId: string,
@@ -164,10 +166,15 @@ export async function runMatchForJob(
   }
 
   const profileHash = fingerprintApprovedFacts(approvedFacts);
-  const effectiveOrigin = scoreOriginForProfile(options.origin ?? "MANUAL", profileHash);
 
   const promptStartedAt = performance.now();
   const description = normalizeMatchDescription(matchJobDescriptionText(job));
+  const jobDescriptionHash = fingerprintJobDescription(description);
+  const effectiveOrigin = scoreOriginForProfile(
+    options.origin ?? "MANUAL",
+    profileHash,
+    jobDescriptionHash,
+  );
   const facts = selectRelevantApprovedFacts(approvedFacts, `${job.title}\n${description}`);
   const prompt = buildCompactMatchPrompt(facts, {
     ...job,
