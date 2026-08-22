@@ -43,7 +43,10 @@ async function main() {
     "detects SmartRecruiters",
   );
   const workday = detectAtsFromText("https://acme.wd1.myworkdayjobs.com/External/job/x");
-  check(workday.atsType === "workday" && workday.atsIdentifier === "acme/External", "detects Workday + tenant/site");
+  check(
+    workday.atsType === "workday" && workday.atsIdentifier === "acme.wd1/External",
+    `detects Workday + exact shard/site (got ${workday.atsIdentifier})`,
+  );
   check(detectAtsFromText("https://acme.taleo.net/careersection/1").atsType === "taleo", "detects Taleo");
   check(detectAtsFromText("https://www.some-random-company.com/careers").atsType === "unknown", "unknown site stays unknown (no false positive)");
 
@@ -69,8 +72,6 @@ async function main() {
   );
   check(first.newCount === 1, `first ingest creates 1 job (got ${first.newCount})`);
 
-  // Same requisition id, different sourceJobId (simulates the board re-listing
-  // the same req under a new internal id) — must dedup by requisitionId.
   const second = await ingestAtsJobs(
     [
       {

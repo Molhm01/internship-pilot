@@ -30,7 +30,13 @@ const MIN_TEXT_LENGTH = 20;
 export async function extractPdfText(bytes: Uint8Array): Promise<PdfExtractionResult> {
   let parser: PDFParse;
   try {
-    parser = new PDFParse({ data: bytes });
+    // A copy, not the caller's array. pdf.js takes ownership of the buffer it
+    // is handed and detaches it while parsing, so a caller that reads its own
+    // bytes again afterwards gets "Cannot perform Construct on a detached
+    // ArrayBuffer". Document generation does exactly that: it compiles a PDF,
+    // extracts the text to run QA and the identity guard over it, and then
+    // writes the same bytes to storage.
+    parser = new PDFParse({ data: new Uint8Array(bytes) });
   } catch (err) {
     throw new PdfExtractionError(
       `Could not open this PDF. It may be corrupted. (${err instanceof Error ? err.message : String(err)})`,

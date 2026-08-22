@@ -4,8 +4,8 @@ import { prisma } from "@/lib/db";
 async function diagnose() {
   console.log("=== Database Diagnosis ===");
   
-  // 1. Check migrations table in dev.db
-  const migrations = await prisma.$queryRawUnsafe<{ id: string; migration_name: string; finished_at: any }[]>(
+  // 1. Check the applied-migration ledger
+  const migrations = await prisma.$queryRawUnsafe<{ id: string; migration_name: string; finished_at: Date | null }[]>(
     `SELECT id, migration_name, finished_at FROM _prisma_migrations ORDER BY finished_at ASC`
   ).catch((e) => {
     console.error("Could not query _prisma_migrations:", e);

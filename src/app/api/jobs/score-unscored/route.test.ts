@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const scheduleAllUnscoredActiveJobs = vi.fn();
 const getBulkInitialMatchStatus = vi.fn();
 const jobCount = vi.fn();
+const scheduleProfileRefreshesForUser = vi.fn();
+const runAutomaticScoringSweep = vi.fn();
 
 class BulkInitialMatchError extends Error {
   constructor(
@@ -20,6 +22,15 @@ vi.mock("@/lib/matching/bulkInitialMatch", () => ({
   getBulkInitialMatchStatus: (...args: unknown[]) => getBulkInitialMatchStatus(...args),
 }));
 
+// The route schedules stale-profile refreshes alongside the initial queue.
+// Left unmocked it reaches the real module, which needs Prisma delegates this
+// suite does not stand up — and the resulting throw made a successful
+// scheduling response look like a 500.
+vi.mock("@/lib/matching/automaticScoring", () => ({
+  scheduleProfileRefreshesForUser: (...args: unknown[]) => scheduleProfileRefreshesForUser(...args),
+  runAutomaticScoringSweep: (...args: unknown[]) => runAutomaticScoringSweep(...args),
+}));
+
 vi.mock("@/lib/db", () => ({
   prisma: {
     job: { count: (...args: unknown[]) => jobCount(...args) },
@@ -27,7 +38,10 @@ vi.mock("@/lib/db", () => ({
 }));
 
 describe("bulk AI Match routes", () => {
-  beforeEach(() => vi.resetAllMocks());
+  beforeEach(() => {
+    vi.resetAllMocks();
+    scheduleProfileRefreshesForUser.mockResolvedValue({ scheduled: 0 });
+  });
 
   it("returns scheduling counts without waiting for a model scorer", async () => {
     scheduleAllUnscoredActiveJobs.mockResolvedValue({

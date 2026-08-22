@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { prisma } from "@/lib/db";
 import { compileTypst, escapeTypstString, typstStringArray } from "@/lib/documents/typst";
 import { extractPdfText } from "@/lib/pdf";
-import { evaluateStrictDocumentQa } from "@/lib/documents/qa";
+import { evaluateStrictDocumentQa, isPageCountIssue } from "@/lib/documents/qa";
 import { evaluatePdfLayoutQa, evaluateResumeFormatPreservation } from "@/lib/documents/layoutQa";
 import { logAudit } from "@/lib/applications/audit";
 import { validateDocumentIdentity } from "@/lib/documents/identityGuard";
@@ -33,6 +33,14 @@ import {
 const GENERATED_DIR_REL = process.env.GENERATED_OUTPUT_DIR ?? "data/generated";
 const TEMPLATE_IMPORT = "/templates";
 const MASTER_RESUME_REFERENCE_REL = "templates/master_resume_reference.pdf";
+/** The untailored master, used as the fallback when tailoring will not fit. */
+const MASTER_CONTENT: ResumeContent = {
+  education: MASTER_EDUCATION,
+  experience: MASTER_EXPERIENCE,
+  projects: MASTER_PROJECTS,
+  skills: MASTER_SKILLS,
+  activities: MASTER_ACTIVITIES,
+};
 function absolute(relativePath: string) { return path.isAbsolute(relativePath) ? relativePath : path.join(/* turbopackIgnore: true */ process.cwd(), relativePath); }
 function s(value: string) { return `"${escapeTypstString(value)}"`; }
 function dict(fields: Record<string, string>) { return `(${Object.entries(fields).map(([key, value]) => `${key}: ${value}`).join(", ")})`; }
@@ -281,6 +289,11 @@ export async function generateDocumentsForJob(
   const profile = await applicationProfileForUser(userId);
   if (!profile?.fullName?.trim()) throw new DocumentGenerationError("Add your full name on the Documents page before generating documents.");
   if (!profile.email?.trim() || !profile.phone?.trim()) throw new DocumentGenerationError("Add both email and telephone to the Candidate Profile before generating documents.");
+  // Held as their own constants: property narrowing does not survive into a
+  // closure, and the résumé is compiled inside one below.
+  const candidateName: string = profile.fullName;
+  const candidateEmail: string = profile.email;
+  const candidatePhone: string = profile.phone;
   progress(jobId, "profile_loaded");
 
   currentStage = "content_selection";
@@ -296,7 +309,11 @@ export async function generateDocumentsForJob(
     throw new DocumentGenerationError("No approved profile facts are available for document generation.");
   }
   const validFactIds = new Set(facts.map((fact) => fact.id));
-  const bullets = (await prisma.resumeBullet.findMany({ orderBy: { createdAt: "asc" } }))
+  // Scoped like the facts above. The fact-id filter below happened to reject
+  // another account's bullets, but that is an accident of cuid uniqueness
+  // rather than an ownership check — this résumé is built only from rows this
+  // user owns.
+  const bullets = (await prisma.resumeBullet.findMany({ where: { userId }, orderBy: { createdAt: "asc" } }))
     .filter((bullet) => {
       const factIds = parseFactIds(bullet.factIds);
       return factIds.length > 0 && factIds.every((factId) => validFactIds.has(factId));
@@ -405,10 +422,12 @@ export async function generateDocumentsForJob(
   });
   const header = { fullName: profile.fullName, email: profile.email, phone: profile.phone, linkedin: profile.linkedin, workAuthorization: profile.workAuthorization, addressCity: profile.addressCity, addressState: profile.addressState };
   currentStage = "resume_generation";
-  const resumeVersion = await prisma.generatedDocument.count({ where: { jobId, type: "resume" } }) + 1;
+  // Per user. Counting every account's documents for this job made one
+  // applicant's version numbers depend on how many other people had applied,
+  // and leaked that count into their own filenames.
+  const resumeVersion = await prisma.generatedDocument.count({ where: { userId, jobId, type: "resume" } }) + 1;
   const resumeSourceRel = `${jobDirRel}/resume-v${resumeVersion}.typ`;
   const resumePdfRel = `${jobDirRel}/resume-v${resumeVersion}.pdf`;
-  const resumeSource = buildMasterResumeSource(header, tailoring.content);
   const unsupportedResumeClaims = validateUnsupportedClaims(
     resumeClaimSources(tailoring.content),
     unsupportedQualifications,
@@ -417,32 +436,109 @@ export async function generateDocumentsForJob(
   if (unsupportedResumeClaims.length) {
     throw unsupportedClaimFailure("resume", unsupportedResumeClaims);
   }
-  const resumeKeywordClassification = keywordClassificationFor(resumeSource);
-  await writeFile(absolute(resumeSourceRel), resumeSource, "utf-8");
-  const resumeCompile = await compileTypst(absolute(resumeSourceRel), absolute(resumePdfRel), absolute(""));
-  if (!resumeCompile.ok) throw new DocumentGenerationError(`Resume compilation failed: ${resumeCompile.stderr}`);
-  const resumeBytes = new Uint8Array(await readFile(absolute(resumePdfRel)));
-  const resumeLayoutBytes = resumeBytes.slice();
-  const resumeExtraction = await extractPdfText(resumeBytes);
-  const resumeQa = evaluateStrictDocumentQa(
-    resumeExtraction.text,
-    ["EDUCATION", "EXPERIENCE", "PROJECTS", "SKILLS", "ACTIVITIES & LEADERSHIP"],
-    [
-      ...tailoring.content.education.flatMap((item) => [item.school, item.degree, item.coursework, item.location, item.dates]),
-      ...tailoring.content.experience.flatMap((item) => [item.title, item.organization, item.location, item.dates, ...item.bullets]),
-      ...tailoring.content.projects.flatMap((item) => [item.title, item.organization, item.location, item.dates, ...item.bullets]),
-      ...tailoring.content.skills.flatMap((group) => group.items),
-      ...tailoring.content.activities,
-    ].filter(Boolean),
-    { kind: "resume", candidateName: profile.fullName, contactValues: [profile.email, profile.phone], requiredHeadings: ["EDUCATION", "EXPERIENCE", "PROJECTS", "SKILLS", "ACTIVITIES & LEADERSHIP"], requiredProjectTitles: tailoring.content.projects.map((x) => x.title), pageCount: resumeExtraction.pageCount, forbiddenText: [/\b(?:TBD|TODO|PLACEHOLDER)\b/i, /Expected\s+Expected/i, ...unsupportedClaimPatterns(unsupportedQualifications)] },
-  );
-  const resumeIdentityIssues = validateDocumentIdentity(resumeExtraction.text, profile);
-  resumeQa.issues.push(...resumeIdentityIssues);
-  const resumeLayoutQa = await evaluatePdfLayoutQa(resumeLayoutBytes, "resume");
-  resumeQa.issues.push(...resumeLayoutQa.issues);
   const referenceResumeBytes = new Uint8Array(await readFile(absolute(MASTER_RESUME_REFERENCE_REL)));
-  const formatQa = await evaluateResumeFormatPreservation(resumeLayoutBytes, referenceResumeBytes);
-  resumeQa.issues.push(...formatQa.issues);
+
+  /** Compile one candidate résumé and run every check that applies to it. */
+  const compileAndCheck = async (content: ResumeContent) => {
+    const source = buildMasterResumeSource(header, content);
+    await writeFile(absolute(resumeSourceRel), source, "utf-8");
+    const compile = await compileTypst(absolute(resumeSourceRel), absolute(resumePdfRel), absolute(""));
+    if (!compile.ok) throw new DocumentGenerationError(`Resume compilation failed: ${compile.stderr}`);
+    const bytes = new Uint8Array(await readFile(absolute(resumePdfRel)));
+    const layoutBytes = bytes.slice();
+    const extraction = await extractPdfText(bytes);
+    const strict = evaluateStrictDocumentQa(
+      extraction.text,
+      ["EDUCATION", "EXPERIENCE", "PROJECTS", "SKILLS", "ACTIVITIES & LEADERSHIP"],
+      [
+        ...content.education.flatMap((item) => [item.school, item.degree, item.coursework, item.location, item.dates]),
+        ...content.experience.flatMap((item) => [item.title, item.organization, item.location, item.dates, ...item.bullets]),
+        ...content.projects.flatMap((item) => [item.title, item.organization, item.location, item.dates, ...item.bullets]),
+        ...content.skills.flatMap((group) => group.items),
+        ...content.activities,
+      ].filter(Boolean),
+      { kind: "resume", candidateName, contactValues: [candidateEmail, candidatePhone], requiredHeadings: ["EDUCATION", "EXPERIENCE", "PROJECTS", "SKILLS", "ACTIVITIES & LEADERSHIP"], requiredProjectTitles: content.projects.map((x) => x.title), pageCount: extraction.pageCount, forbiddenText: [/\b(?:TBD|TODO|PLACEHOLDER)\b/i, /Expected\s+Expected/i, ...unsupportedClaimPatterns(unsupportedQualifications)] },
+    );
+    // Kept apart so the fallback below can tell "this résumé says the wrong
+    // things" from "this résumé does not fit on the page". Collected into a
+    // fresh list rather than pushed onto the object the checker returned: this
+    // runs twice, and mutating a returned value carries the first attempt's
+    // verdict into the second.
+    // The page-count finding comes from strict QA but is a layout fact: the
+    // document did not fit, not that it says the wrong things.
+    const contentIssues = strict.issues.filter((issue) => !isPageCountIssue(issue));
+    const paginationIssues = strict.issues.filter(isPageCountIssue);
+    const identityIssues = validateDocumentIdentity(extraction.text, profile);
+    const layout = await evaluatePdfLayoutQa(layoutBytes, "resume");
+    const format = await evaluateResumeFormatPreservation(layoutBytes, referenceResumeBytes);
+    const layoutIssues = [...paginationIssues, ...layout.issues, ...format.issues];
+    const qa = { status: strict.status, issues: [...contentIssues, ...identityIssues, ...layoutIssues] };
+    return { source, bytes, layoutBytes, extraction, qa, identityIssues, contentIssues, layoutIssues, format, keywordClassification: keywordClassificationFor(source) };
+  };
+
+  let attempt = await compileAndCheck(tailoring.content);
+  let storedTailoringStatus: string = tailoring.audit.status;
+
+  /**
+   * A tailored résumé that runs onto a second page is not usable, and neither
+   * is no résumé at all.
+   *
+   * The master fills its one page with almost no slack, so the substitutions
+   * tailoring makes — a longer verb, an added keyword — can push it over. When
+   * that happens the honest answer is the untailored master: every claim in it
+   * is the applicant's own and already approved, and the format rule is the one
+   * thing standing between a résumé and an employer who will not read a
+   * two-page intern résumé. Failing generation outright left the applicant with
+   * nothing to apply with, which is strictly worse.
+   *
+   * Only a formatting failure is recoverable this way. An identity mismatch or
+   * an unsupported claim means the *content* is wrong, and recompiling the same
+   * facts would not fix it.
+   */
+  const onlyFormattingFailed =
+    attempt.layoutIssues.length > 0
+    && attempt.contentIssues.length === 0
+    && attempt.identityIssues.length === 0;
+  const tailoringChangedSomething =
+    tailoring.audit.bulletsChanged.length > 0
+    || tailoring.audit.bulletsReordered.length > 0
+    || tailoring.audit.keywordsAdded.length > 0;
+  if (onlyFormattingFailed && tailoringChangedSomething) {
+    // The master is corrected exactly as the tailored content was. Its
+    // "Additional" skills group carries wording the applicant cannot support
+    // for every posting — "reliability testing", "equipment calibration" —
+    // and it is this correction, per posting, that keeps those out of the PDF.
+    // Compiling the raw constant would put them back.
+    const masterCorrection = correctAndValidateResumeContent(
+      MASTER_CONTENT,
+      unsupportedQualifications,
+      documentFacts,
+    );
+    const masterAttempt = masterCorrection.unsupportedClaims.length
+      ? null
+      : await compileAndCheck(masterCorrection.content);
+    if (masterAttempt && masterAttempt.qa.issues.length === 0) {
+      console.warn(JSON.stringify({
+        event: "tailored-document-generation",
+        stage: "tailoring_exceeded_master_format",
+        jobId,
+        issues: attempt.qa.issues,
+      }));
+      tailoring.audit.status = "MASTER_UNCHANGED_NO_SUPPORTED_IMPROVEMENT";
+      tailoring.audit.keywordsAdded = [];
+      tailoring.audit.bulletsChanged = [];
+      tailoring.audit.bulletsReordered = [];
+      tailoring.content = masterCorrection.content;
+      storedTailoringStatus = "MASTER_RESUME_FALLBACK";
+      attempt = masterAttempt;
+    }
+  }
+
+  const resumeBytes = attempt.bytes;
+  const resumeQa = attempt.qa;
+  const resumeIdentityIssues = attempt.identityIssues;
+  const formatQa = attempt.format;
+  const resumeKeywordClassification = attempt.keywordClassification;
   tailoring.audit.formattingPreservation = {
     status: formatQa.status,
     method: "Compiled through the fixed master Typst template, then compared with templates/master_resume_reference.pdf for page size, margins, fonts, font sizes, date alignment, bullet indentation, activity rows, and line spacing.",
@@ -450,7 +546,6 @@ export async function generateDocumentsForJob(
   };
   if (resumeQa.issues.length && !resumeIdentityIssues.length) resumeQa.status = "fail";
   const resumeQaStatus = resumeIdentityIssues.length ? "INVALID_TEST_DATA" : resumeQa.status;
-  const storedTailoringStatus = tailoring.audit.status;
   progress(jobId, "resume_generated");
   currentStage = "resume_persistence";
   // The compiled PDF is handed to the storage abstraction and the identifier
@@ -482,7 +577,7 @@ export async function generateDocumentsForJob(
   if (options.includeCoverLetter !== false) {
     currentStage = "cover_letter_generation";
     const paragraphs = buildGroundedCoverLetterParagraphs(generationJob, documentFacts, selectedFactIds);
-    const coverVersion = await prisma.generatedDocument.count({ where: { jobId, type: "coverLetter" } }) + 1;
+    const coverVersion = await prisma.generatedDocument.count({ where: { userId, jobId, type: "coverLetter" } }) + 1;
     const coverSourceRel = `${jobDirRel}/cover-letter-v${coverVersion}.typ`;
     const coverPdfRel = `${jobDirRel}/cover-letter-v${coverVersion}.pdf`;
     const savedLocation = [profile.addressCity, profile.addressState]
@@ -548,6 +643,19 @@ export async function generateDocumentsForJob(
   return result;
   } catch (error) {
     if (error instanceof DocumentGenerationError) throw error;
-    throw new DocumentGenerationError(stageFailure(currentStage), currentStage);
+    // The reader gets a stage, not a stack trace — but the stage alone is not
+    // enough to fix anything, and this used to discard the cause entirely. It
+    // is logged for the server and carried as `cause` for anything that wants
+    // it, while the message the user sees stays the same.
+    console.error(JSON.stringify({
+      event: "tailored-document-generation",
+      stage: currentStage,
+      jobId,
+      reason: error instanceof Error ? error.message : String(error),
+    }));
+    throw Object.assign(
+      new DocumentGenerationError(stageFailure(currentStage), currentStage),
+      { cause: error },
+    );
   }
 }

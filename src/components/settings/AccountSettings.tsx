@@ -19,7 +19,7 @@ import { authClient, linkSocial, signOut, unlinkAccount } from "@/lib/auth/clien
  */
 
 /** Shaped from what the auth client returns, not invented alongside it. */
-type LinkedAccount = { providerId: string };
+type LinkedAccount = { id: string; accountId: string; providerId: string };
 type SessionRow = { id: string; token: string; createdAt: Date; userAgent?: string | null };
 type ExtensionToken = {
   id: string;
@@ -105,7 +105,8 @@ export default function AccountSettings({
     void refresh().catch(() => setError("Could not load your account details."));
   }, [refresh]);
 
-  const googleLinked = accounts?.some((account) => account.providerId === "google") ?? false;
+  const googleAccount = accounts?.find((account) => account.providerId === "google") ?? null;
+  const googleLinked = googleAccount !== null;
   const passwordSet = accounts?.some((account) => account.providerId === "credential") ?? false;
   // The last remaining sign-in method may not be removed; the server refuses
   // it too, and the button should not pretend otherwise.
@@ -124,9 +125,21 @@ export default function AccountSettings({
 
   async function disconnectGoogle() {
     setError(null);
+    if (!googleAccount) {
+      setError("Google is not connected to this account.");
+      return;
+    }
     setBusy(true);
     try {
-      const result = await unlinkAccount({ providerId: "google" });
+      // `providerId` is required and `accountId` narrows it to one specific
+      // link, matched as `account.accountId === accountId` — so it is the
+      // provider's own account id from listAccounts(), not the row id.
+      // (Better Auth 1.7 changes this call to take the row id alone; the
+      // dependency is pinned to 1.6.29, see package.json.)
+      const result = await unlinkAccount({
+        providerId: "google",
+        accountId: googleAccount.accountId,
+      });
       if (result.error) setError(result.error.message ?? "Google could not be disconnected.");
       await refresh();
     } finally {

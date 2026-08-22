@@ -1,0 +1,404 @@
+name: Publish readiness audit
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "scripts/**"
+      - "extension/**"
+      - "prisma/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/publish-readiness-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-readiness-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BETTER_AUTH_SECRET: publish-readiness-audit-secret-that-is-long-enough-for-ci-only
+  BETTER_AUTH_URL: http://127.0.0.1:3000
+  NEXT_PUBLIC_APP_URL: http://127.0.0.1:3000
+  BASE_URL: http://127.0.0.1:3000
+  INTERNSHIP_PILOT_RUNTIME: local
+  DOCUMENT_STORAGE_DRIVER: local
+  DISABLE_VISION_AGENT: "1"
+  NODE_OPTIONS: --max-old-space-size=6144
+
+jobs:
+  static-unit:
+    name: Static, dependency, build, and unit gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The Vitest suite contains database-backed contracts —
+    # src/lib/auth/multiUserIsolation.test.ts and
+    # src/app/api/jobs/route.database.test.ts — that skip themselves when
+    # DATABASE_URL is unset. This job set the variable with nothing listening
+    # behind it, which is the worst of both: the suites un-skipped and then
+    # failed on connection. A real service means they actually run.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: internship_pilot_unit_audit
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d internship_pilot_unit_audit"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/internship_pilot_unit_audit
+      ISOLATED_TEST_MODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install exact dependencies
+        run: npm ci
+      - name: Production dependency vulnerability gate
+        run: npm audit --omit=dev --audit-level=high
+      - name: Production dependency architecture gate
+        run: node scripts/audit-production-deps.mjs
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Apply PostgreSQL migrations
+        run: npx prisma migrate deploy
+      - name: TypeScript typecheck
+        run: npm run typecheck
+      - name: ESLint
+        run: npm run lint
+      - name: Vitest unit suite
+        run: npm run test:unit
+      - name: Production build
+        run: npm run build
+
+  postgres-contracts:
+    name: PostgreSQL deterministic feature gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: internship_pilot_audit
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d internship_pilot_audit"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/internship_pilot_audit
+      CI: "true"
+      ISOLATED_TEST_MODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install exact dependencies
+        run: npm ci
+      - name: Apply PostgreSQL migrations
+        run: npx prisma migrate deploy
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Database connectivity
+        run: npm run test:db
+      - name: CSV parser and 497-row import contract
+        run: npm run test:csv-loader
+      - name: Fraud detection
+        run: npm run test:fraud-detection
+      - name: Strict discovery boundary
+        run: npm run test:strict-discovery-boundary
+      - name: Active-jobs direct-source policy
+        run: npm run test:active-jobs-policy
+      - name: Verification model
+        run: npm run test:verification-model
+      - name: Document strategy
+        run: npm run test:document-strategy
+      - name: ATS scoring queue
+        run: npm run test:scoring-queue
+      - name: Local firms logic
+        run: npm run test:local-firms
+      - name: Gmail tracker deterministic contract
+        run: npm run test:gmail-tracking
+      - name: Application multi-user isolation
+        run: npm run test:application-multi-user
+      - name: Full deterministic Postgres regression runner
+        run: npm run test:regression
+      - name: Server-to-agent integration boundary
+        run: npx tsx scripts/test-agent-server-integration.ts
+
+  extension-agent:
+    name: Extension and application-agent gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # These fixtures used to run against a copied SQLite dev.db, so this job
+    # declared a DATABASE_URL with no database behind it. They now create their
+    # own users, jobs and runs in a disposable PostgreSQL database, which needs
+    # a real service.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: internship_pilot_agent_audit
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d internship_pilot_agent_audit"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/internship_pilot_agent_audit
+      ISOLATED_TEST_MODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install exact dependencies
+        run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Install the fonts the master resume format is compared against
+        # Document QA compares the compiled PDF with
+        # templates/master_resume_reference.pdf — page count, line spacing and
+        # the font set. The reference was produced with the Microsoft core
+        # fonts, so a runner without them substitutes, the metrics change, and
+        # a correct resume is rejected for reasons that are about the machine
+        # rather than the document.
+        run: |
+          echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | sudo debconf-set-selections
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ttf-mscorefonts-installer fontconfig
+          sudo fc-cache -f
+          fc-list | grep -ci "times new roman"
+      - name: Install Typst
+        # Tailored PDFs are compiled by the Typst binary, pinned to the version
+        # whose layout the master reference was matched against — pagination
+        # differs between Typst releases, and document QA compares pagination.
+        # Without it the document half of the agent contract cannot run at all,
+        # and the whole pipeline — evidence selection, claim validation, layout
+        # QA, the identity guard — would have to be taken on trust.
+        run: |
+          version=v0.15.1
+          curl -fsSL "https://github.com/typst/typst/releases/download/${version}/typst-x86_64-unknown-linux-musl.tar.xz" -o /tmp/typst.tar.xz
+          tar -xJf /tmp/typst.tar.xz -C /tmp
+          sudo install -m 0755 /tmp/typst-x86_64-unknown-linux-musl/typst /usr/local/bin/typst
+          typst --version
+      - name: Apply PostgreSQL migrations
+        run: npx prisma migrate deploy
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Build extension
+        run: npm run extension:build
+      - name: Extension package validation
+        run: npm run test:extension
+      - name: Document layout parity with the master reference
+        # Compiles the master resume on this runner and compares it with
+        # templates/master_resume_reference.pdf. Fails loudly and early if the
+        # runner cannot reproduce the master format, instead of surfacing later
+        # as an unexplained QA rejection inside the agent contract.
+        run: |
+          set -o pipefail
+          npx tsx scripts/inspect-document-layout.ts 2>&1 | tee /tmp/layout.log && exit 0
+          status=$?
+          grep -aE "pages:|metrics:|layout:|format:" /tmp/layout.log | tail -n 8 | while IFS= read -r line; do
+            echo "::error::${line}"
+          done
+          exit $status
+      - name: Application DOM fallback
+        run: npm run test:application-dom-fallback
+      - name: Application legacy-row safety
+        run: npm run test:application-legacy-copy
+      - name: Production build for the agent contract
+        run: npm run build
+      - name: Application agent contract
+        run: |
+          set -o pipefail
+          npm run test:application-agent 2>&1 | tee /tmp/application-agent.log && exit 0
+          status=$?
+          # Surface the reason as annotations. Raw job logs need repository
+          # admin to read, so a failure here was otherwise a bare exit code on
+          # the pull request.
+          echo "--- full log tail ---"
+          tail -n 80 /tmp/application-agent.log
+          # GitHub keeps only the first ~10 annotations per step, so emit the
+          # diagnostic lines rather than a raw tail that would be spent on
+          # banners before reaching the error.
+          grep -aiE "fail|error|crashed|Timed out|Expected|refus" /tmp/application-agent.log \
+            | grep -avE "no-fail|0 failures" \
+            | tail -n 8 \
+            | while IFS= read -r line; do
+                echo "::error::${line}"
+              done
+          exit $status
+      - name: Extension E2E fixture
+        # Runs regardless of the step above: they are independent contracts, and
+        # one failing must not leave the other unreported. The job still fails.
+        if: always()
+        run: npm run test:extension-e2e
+
+  browser-smoke:
+    name: Authenticated production-browser gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: internship_pilot_browser_audit
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d internship_pilot_browser_audit"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/internship_pilot_browser_audit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install exact dependencies
+        run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Apply PostgreSQL migrations
+        run: npx prisma migrate deploy
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Pause background scheduler for deterministic route testing
+        run: |
+          PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d internship_pilot_browser_audit <<'SQL'
+          INSERT INTO "AppSetting" ("key", "value", "updatedAt")
+          VALUES ('schedulerPaused', 'true', NOW())
+          ON CONFLICT ("key") DO UPDATE SET "value" = 'true', "updatedAt" = NOW();
+          SQL
+      - name: Build production server
+        run: npm run build
+      - name: Start server
+        run: |
+          nohup npx next start -p 3000 > /tmp/internship-pilot-server.log 2>&1 &
+          echo $! > /tmp/internship-pilot-server.pid
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:3000/api/extension/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/internship-pilot-server.log
+          exit 1
+      - name: Catalog health endpoint returns structured success
+        run: |
+          curl -fsS http://127.0.0.1:3000/api/health/catalog | tee /tmp/catalog-health.json
+          jq -e '.ok == true and (.active | type == "number") and (.freshness.postedWithin24h | type == "number")' /tmp/catalog-health.json
+      - name: Browser signup/login and every workspace route
+        run: node --import tsx scripts/publish-browser-smoke.ts
+      - name: Server log
+        if: always()
+        run: cat /tmp/internship-pilot-server.log || true
+
+  live-discovery:
+    name: Live discovery and verification gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: internship_pilot_live_audit
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d internship_pilot_live_audit"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/internship_pilot_live_audit
+      CI: "true"
+      ISOLATED_TEST_MODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install exact dependencies
+        run: npm ci
+      - name: Apply PostgreSQL migrations
+        run: npx prisma migrate deploy
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Source sync probe
+        run: npm run test:sync
+      - name: Nationwide discovery probe
+        run: npm run test:nationwide
+      - name: Verification probe
+        run: npm run test:verify
+      - name: Strict verification probe
+        run: npm run test:strict-verification
+      - name: Nearby-firm probe
+        run: npm run test:nearby
+
+  autofill-next-phase-boundary:
+    name: Autofill next-phase boundary (not server release blockers)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record deliberately deferred browser-agent behavior
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Deferred to the autofill-agent phase
+          The server release gate proves the extension package, the authenticated
+          health/API surface, per-user ApplicationRun isolation, the server-generated
+          fill-plan boundary, DOM-fallback field filling against a local fixture form,
+          and legacy application-run normalization.
+
+          These behaviors are intentionally the **next phase**, and are not claimed
+          as server-ready:
+          - live Greenhouse/Lever/Ashby/Workday/custom portal autofill
+          - CAPTCHA/MFA pause-and-resume against a real employer portal
+          - real resume/cover-letter attachment and final-submit safety
+          EOF
+
+  local-only-boundaries:
+    name: Explicit local-only checks (not CI-certified)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record real-machine verification boundary
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ## Requires a real user machine/account before public launch
+          These are intentionally **not** marked PASS by hosted CI:
+          - local Ollama resume parsing and AI-match inference/soak throughput
+          - Google OAuth and the user's real Gmail mailbox
+          - live Greenhouse/Lever/Ashby/Workday/custom employer portal autofill
+          - CAPTCHA/MFA pause-and-resume behavior
+          - real resume/cover-letter attachment and final-submit safety
+          EOF

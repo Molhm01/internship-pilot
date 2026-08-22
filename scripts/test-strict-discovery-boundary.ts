@@ -1,13 +1,13 @@
 import "dotenv/config";
 import { prisma } from "@/lib/db";
 import { ingestJobs } from "@/lib/sync/ingest";
+import { reviewNewEmployer } from "@/lib/employers/review";
 import type { RawInternListJob } from "@/lib/sync/internListAdapter";
 
 let failures = 0;
 function check(condition: boolean, message: string) {
-  if (condition) {
-    console.log(`  PASS: ${message}`);
-  } else {
+  if (condition) console.log(`  PASS: ${message}`);
+  else {
     console.error(`  FAIL: ${message}`);
     failures++;
   }
@@ -27,7 +27,7 @@ function fixtureJob(overrides: Partial<RawInternListJob>): RawInternListJob {
     applyUrl: "https://example.com/apply/test-boundary-job",
     h1bSponsored: "Unknown",
     ...overrides,
-  };
+  } as RawInternListJob;
 }
 
 const NEW_EMPLOYER_NAME = "Totally Unlisted Engineering Co";
@@ -41,29 +41,28 @@ async function cleanup() {
 async function main() {
   await cleanup();
 
-  console.log("1) An Intern List job from an employer NOT on the CSV/manual allowlist is never ingested as a Job");
+  console.log("1) An Intern List job from an employer NOT on the allowlist is never ingested as a Job");
   const job = fixtureJob({ sourceJobId: "test-boundary-job-1", company: NEW_EMPLOYER_NAME });
   const summary = await ingestJobs([job]);
   check(summary.newCount === 0, `no Job row was created (newCount=${summary.newCount})`);
   const jobRow = await prisma.job.findFirst({ where: { source: "intern-list", sourceJobId: "test-boundary-job-1" } });
   check(jobRow === null, "confirmed: no Job row exists for the unlisted employer");
 
-  console.log("\n2) Instead, it lands in NEW_EMPLOYER_REVIEW, pending — never auto-approved");
+  console.log("\n2) Instead, it lands in NewEmployerReview pending — never auto-approved");
   const reviewEntry = await prisma.newEmployerReview.findUnique({ where: { employerName: NEW_EMPLOYER_NAME } });
   check(!!reviewEntry, "a NewEmployerReview row was created");
-  check(reviewEntry?.status === "pending", `status is "pending" (got ${reviewEntry?.status})`);
+  check(reviewEntry?.status === "pending", `status is pending (got ${reviewEntry?.status})`);
   check(reviewEntry?.discoveredFrom === "intern-list", "discoveredFrom is intern-list");
 
-  console.log("\n3) Once the user approves the employer via the API, it becomes allowlisted and future jobs ingest normally");
-  const approveRes = await fetch(`${process.env.BASE_URL ?? "http://localhost:3000"}/api/new-employer-review/${reviewEntry!.id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "approve", officialDomain: "totally-unlisted-eng.example" }),
+  console.log("\n3) Explicit approval uses the same service as the authenticated API route");
+  await reviewNewEmployer({
+    id: reviewEntry!.id,
+    action: "approve",
+    officialDomain: "totally-unlisted-eng.example",
   });
-  check(approveRes.ok, `approval request succeeded (status ${approveRes.status})`);
   const company = await prisma.company.findUnique({ where: { name: NEW_EMPLOYER_NAME } });
   check(!!company && company.allowlisted === true, `company is now allowlisted (got ${JSON.stringify({ allowlisted: company?.allowlisted, source: company?.source })})`);
-  check(company?.source === "intern-list-approved", `source is "intern-list-approved" (got ${company?.source})`);
+  check(company?.source === "intern-list-approved", `source is intern-list-approved (got ${company?.source})`);
 
   const job2 = fixtureJob({ sourceJobId: "test-boundary-job-2", company: NEW_EMPLOYER_NAME });
   const summary2 = await ingestJobs([job2]);

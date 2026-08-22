@@ -66,7 +66,7 @@ export function Footer() {
             Internship Pilot — a personal engineering project, in active development. Not
             affiliated with any employer or applicant tracking system named in the interface.
           </p>
-          <p className="font-mono">Local-first · Ollama · SQLite</p>
+          <p className="font-mono">Local-first · Ollama · PostgreSQL</p>
         </div>
       </div>
     </footer>

@@ -8,12 +8,26 @@ export type AvailabilityProbe = {
   reason: string;
 };
 
+/**
+ * Refuses a match that sits inside a conditional clause.
+ *
+ * Live postings carry footer boilerplate like "If a job is no longer available,
+ * search our other openings" — a hypothetical about some other posting, not a
+ * statement about this one. Reading it as a closure signal marks an open
+ * internship Closed, which is the one direction this detector must never fail
+ * in: a missed closure is corrected on the next check, a false closure removes
+ * a real job from the feed.
+ */
+const CONDITIONAL_LEAD = String.raw`(?<!\b(?:if|when|once|should|unless|whether|in case)\b[^.]{0,60})`;
+
 const CLOSED_TEXT_PATTERNS = [
-  /\bthis\s+(?:job|position|posting|requisition)\s+(?:is|has been)\s+(?:closed|filled|expired|removed|cancelled|canceled|no longer available)\b/i,
-  /\bthe\s+(?:job|position|posting|requisition)\s+(?:is|has been)\s+(?:closed|filled|expired|removed|cancelled|canceled|no longer available)\b/i,
-  /\bjob\s+posting\s+(?:has\s+)?expired\b/i,
-  /\bposition\s+has\s+been\s+filled\b/i,
-  /\bjob\s+is\s+no\s+longer\s+available\b/i,
+  // "This/the <posting> is|has been closed" — stated about this posting.
+  new RegExp(`${CONDITIONAL_LEAD}\\b(?:this|the)\\s+(?:job|position|posting|requisition)\\s+(?:is|has been)\\s+(?:closed|filled|expired|removed|cancelled|canceled|no longer available)\\b`, "i"),
+  new RegExp(`${CONDITIONAL_LEAD}\\bjob\\s+posting\\s+(?:has\\s+)?expired\\b`, "i"),
+  new RegExp(`${CONDITIONAL_LEAD}\\bposition\\s+has\\s+been\\s+filled\\b`, "i"),
+  // Deliberately no bare "job is no longer available": without a "this"/"the"
+  // naming the posting, the phrase is almost always the footer boilerplate
+  // above. The determiner form is already covered by the first pattern.
   /\bwe(?:'|’)re\s+sorry[^.]{0,120}\b(?:job|position)\b[^.]{0,120}\bno\s+longer\s+available\b/i,
 ] as const;
 

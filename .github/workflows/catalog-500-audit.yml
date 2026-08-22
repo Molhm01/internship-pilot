@@ -1,9 +1,9 @@
-name: Catalog 500 audit
+name: Production catalog health
 
 on:
-  pull_request:
-    branches:
-      - main
+  workflow_dispatch:
+  schedule:
+    - cron: "17 * * * *"
 
 permissions:
   contents: read
@@ -13,16 +13,33 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Measure production catalog freshness
+      - name: Measure deployed production catalog
+        shell: bash
         run: |
-          body="$(curl --fail-with-body --silent --show-error --max-time 30 https://internship-pilot.vercel.app/api/health/catalog)"
-          echo "$body" | jq .
-          active="$(echo "$body" | jq -r '.active')"
-          fresh24="$(echo "$body" | jq -r '.freshWithin24h // 0')"
-          fresh72="$(echo "$body" | jq -r '.freshWithin72h // 0')"
-          old14="$(echo "$body" | jq -r '.olderThan14d // 0')"
-          echo "ACTIVE=$active FRESH_24H=$fresh24 FRESH_72H=$fresh72 OLDER_14D=$old14"
-          if [ "$active" -lt 500 ]; then
-            echo "Catalog target not reached: $active active jobs"
+          set -uo pipefail
+          tmp="$(mktemp)"
+          status="$(curl --silent --show-error --max-time 30 --output "$tmp" --write-out '%{http_code}' https://internship-pilot.vercel.app/api/health/catalog || true)"
+          body="$(cat "$tmp")"
+          echo "HTTP_STATUS=$status"
+          if [ -n "$body" ]; then
+            echo "$body" | jq . || printf '%s\n' "$body"
+          else
+            echo "<empty response body>"
+          fi
+
+          if [ "$status" != "200" ]; then
+            echo "Production catalog health endpoint is unhealthy (HTTP $status)."
+            exit 1
+          fi
+
+          active="$(echo "$body" | jq -r '.active // -1')"
+          target="$(echo "$body" | jq -r '.activeTarget // 500')"
+          fresh24="$(echo "$body" | jq -r '.freshness.postedWithin24h // 0')"
+          fresh72="$(echo "$body" | jq -r '.freshness.postedWithin72h // 0')"
+          old14="$(echo "$body" | jq -r '.freshness.olderThan14Days // 0')"
+          echo "ACTIVE=$active TARGET=$target FRESH_24H=$fresh24 FRESH_72H=$fresh72 OLDER_14D=$old14"
+
+          if [ "$active" -lt "$target" ]; then
+            echo "Catalog target not reached: $active/$target active jobs"
             exit 1
           fi

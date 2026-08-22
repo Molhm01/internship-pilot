@@ -1,17 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createApplicationSession } from "./localAgentClient";
-import { ENABLE_LEGACY_APPLICATION_WORKER } from "./legacyWorkerDisabled";
 
 // Mock the global fetch function
 global.fetch = vi.fn();
 
+// The legacy worker stays off for this suite. Hoisted mocks run before any
+// test regardless of where they are written, so it belongs at the top level.
+vi.mock("./legacyWorkerDisabled", () => ({
+  ENABLE_LEGACY_APPLICATION_WORKER: false,
+}));
+
 describe("ApplicationSession Flow", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    // Ensure legacy is disabled
-    vi.mock("./legacyWorkerDisabled", () => ({
-      ENABLE_LEGACY_APPLICATION_WORKER: false
-    }));
   });
 
   it("should not call legacy worker when ENABLE_LEGACY_APPLICATION_WORKER=false", async () => {
@@ -23,7 +24,7 @@ describe("ApplicationSession Flow", () => {
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
       json: vi.fn().mockResolvedValue(mockResponse),
-    } as any);
+    } as unknown as Response);
 
     const result = await createApplicationSession({
       company: "Test Company",
@@ -36,7 +37,7 @@ describe("ApplicationSession Flow", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     
     // Verify no legacy worker code was called
-    const callArgs = (fetch as any).mock.calls[0][0];
+    const callArgs = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(callArgs).toBe("/api/application-sessions");
   });
 });

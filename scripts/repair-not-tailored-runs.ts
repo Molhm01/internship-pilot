@@ -15,7 +15,6 @@ import { prisma } from "@/lib/db";
 //   - never auto-submits or auto-queues anything
 // Safe to run any number of times.
 
-const NOT_TAILORED = /NOT_TAILORED_NO_JOB_DESCRIPTION/;
 const SUPERSEDED_PREFIX = "SUPERSEDED_BY_FALLBACK_POLICY";
 
 async function main() {

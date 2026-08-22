@@ -168,23 +168,31 @@ export function sortJobs<T extends SortableJob>(jobs: T[], sort: JobSort = DEFAU
 /**
  * Best-effort database ordering for the same intent.
  *
- * SQLite sorts NULLs last on DESC, which already matches "unknown dates last"
- * for the default feed. `sortJobs` is still applied afterwards and is the
- * authority — this only keeps the fetched set deterministic and near-final.
+ * `sortJobs` runs afterwards over the whole filtered set, before pagination,
+ * and is the authority; this only keeps the fetched set deterministic and
+ * near-final. NULL placement is stated explicitly rather than inherited: this
+ * used to rely on SQLite putting NULLs last on DESC, and PostgreSQL puts them
+ * first, so "unknown posting dates sort last" needs saying out loud.
+ *
+ * There is deliberately no `matchScore` ordering. That column still exists on
+ * `Job`, but it is the deprecated shared copy — a score is one person's
+ * statement about a job, and it lives on `UserJobState.matchScore`. Ordering
+ * the shared row by it would sort every user's feed by somebody else's score.
+ * The per-user score is projected onto each row before `sortJobs`, which is
+ * where match ordering is actually applied.
  */
 export function jobOrderBy(sort: JobSort) {
   switch (sort) {
     case "oldest":
       return [
-        { sourcePostedAt: "asc" as const },
+        { sourcePostedAt: { sort: "asc" as const, nulls: "last" as const } },
         { sourceRowIndex: "asc" as const },
         { firstSeenAt: "asc" as const },
         { id: "asc" as const },
       ];
     case "match":
       return [
-        { matchScore: "desc" as const },
-        { sourcePostedAt: "desc" as const },
+        { sourcePostedAt: { sort: "desc" as const, nulls: "last" as const } },
         { id: "desc" as const },
       ];
     case "discovered":
@@ -196,7 +204,7 @@ export function jobOrderBy(sort: JobSort) {
     case "newest":
     default:
       return [
-        { sourcePostedAt: "desc" as const },
+        { sourcePostedAt: { sort: "desc" as const, nulls: "last" as const } },
         { sourceRowIndex: "asc" as const },
         { firstSeenAt: "desc" as const },
         { id: "desc" as const },

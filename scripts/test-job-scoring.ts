@@ -60,3 +60,5 @@ main().catch((err) => {
   console.error("\nJob scoring test FAILED:", err.message);
   process.exitCode = 1;
 });
+
+export {};

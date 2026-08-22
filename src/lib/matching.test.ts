@@ -122,12 +122,16 @@ describe("runMatchForJob", () => {
       numPredict: 1_200,
       numCtx: 8_192,
     }));
+    // `origin` carries the invalidation fingerprint alongside the trigger:
+    // "<trigger>:JD:<job-description hash>:<profile hash>". Both hashes are
+    // what lets a replaced résumé or an edited job description retire this
+    // score instead of leaving it on screen as current.
     expect(createMatchResult).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
         jobId: job.id,
         score: 82,
         factsUsed: JSON.stringify(["fact-python"]),
-        origin: "MANUAL",
+        origin: expect.stringMatching(/^MANUAL:JD:[0-9a-f]{64}:[0-9a-f]{64}$/),
       }),
     }));
     // The score is denormalized onto this user's state row. Writing it to the
@@ -249,7 +253,10 @@ describe("runMatchForJob", () => {
     await runMatchForJob(job.id, { userId: TEST_USER, origin: "INITIAL_AUTO" });
 
     expect(createMatchResult).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ origin: "INITIAL_AUTO", score: 82 }),
+      data: expect.objectContaining({
+        origin: expect.stringMatching(/^INITIAL_AUTO:JD:[0-9a-f]{64}:[0-9a-f]{64}$/),
+        score: 82,
+      }),
     }));
   });
 

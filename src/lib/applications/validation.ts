@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { detectAtsFromText } from "@/lib/ats/detect";
 import { normalizeQuestionText } from "./approvedAnswers";
 import { canonicalVerificationStatus } from "@/lib/jobs/verificationStatus";
+import { applicationProfileForUser } from "@/lib/profile/applicationProfile";
 
 export const APPLICATION_STAGES = [
   "QUEUED",
@@ -41,13 +42,16 @@ const queuedRunSchema = z.object({
   answers: z.string().nullable(),
 }).passthrough();
 
+// The application profile is assembled per user by `applicationProfileForUser`,
+// so there is no row id to assert here. What the schema still has to prove is
+// that the assembled answers are complete enough to fill a form truthfully: a
+// null means the user never entered that fact, and the run must stop rather
+// than guess at it.
 const profileSchema = z.object({
-  id: z.literal("default"),
-  fullName: z.string().trim().min(1, "Candidate Profile fullName is required."),
-  email: z.string().trim().email("Candidate Profile email must be valid."),
-  phone: z.string().trim().refine((value) => value.replace(/\D/g, "").length >= 7, "Candidate Profile phone must contain at least 7 digits."),
+  fullName: z.string().trim().min(1, "Application profile legal name is required."),
+  email: z.string().trim().email("Application profile email must be valid."),
+  phone: z.string().trim().refine((value) => value.replace(/\D/g, "").length >= 7, "Application profile phone must contain at least 7 digits."),
   school: z.string().trim().min(1).nullable(),
-  locationPreferences: z.string().nullable(),
 }).passthrough();
 
 const jobSchema = z.object({
@@ -148,15 +152,6 @@ function normalizeRunAnswers(raw: string | null): string {
   } catch { return "{}"; }
 }
 
-function normalizeLocationPreferences(raw: string | null): string | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return null;
-    return JSON.stringify(parsed.filter((value): value is string => typeof value === "string" && Boolean(value.trim())));
-  } catch { return null; }
-}
-
 function isAllowedApplyUrl(value: string | null | undefined, localMock: boolean): value is string {
   if (!value) return false;
   try {
@@ -183,13 +178,22 @@ export async function validateAndNormalizeApplicationRun(runId: string) {
   }
   parseOrThrow(queuedRunSchema, "QueuedApplicationRun", "VALIDATING_RUN", run);
 
-  const profile = await prisma.applicationProfile.findUnique({ where: { id: "default" } });
-  if (!profile) throw new ApplicationValidationError("VALIDATING_RUN", "CandidateProfile", [{ path: "id", expected: '"default" Candidate Profile', received: "undefined", message: "Candidate Profile is missing." }]);
-  const normalizedPreferences = normalizeLocationPreferences(profile.locationPreferences);
-  const normalizedProfile = profile.locationPreferences === normalizedPreferences ? profile : await prisma.applicationProfile.update({ where: { id: profile.id }, data: { locationPreferences: normalizedPreferences } });
-  parseOrThrow(profileSchema, "CandidateProfile", "VALIDATING_RUN", normalizedProfile);
+  // Every personal record below is scoped to the run's owner. The retired
+  // `ApplicationProfile` singleton (id = "default") was one row shared by every
+  // signed-in account, so reading it here would have filled one person's form
+  // with another person's legal name. `applicationProfileForUser` assembles the
+  // same shape out of the models that actually own the data.
+  const ownerId = run.userId;
+  if (!ownerId) {
+    throw new ApplicationValidationError("VALIDATING_RUN", "ApplicationRunOwner", [{ path: "userId", expected: "the id of the user who owns this run", received: "null", message: "This application run has no owner and cannot be filled." }]);
+  }
+  const profile = await applicationProfileForUser(ownerId);
+  if (!profile) throw new ApplicationValidationError("VALIDATING_RUN", "CandidateProfile", [{ path: "userId", expected: "a completed application profile for this user", received: JSON.stringify(ownerId), message: "Application profile is missing." }]);
+  parseOrThrow(profileSchema, "CandidateProfile", "VALIDATING_RUN", profile);
 
-  const approvedAnswers = await prisma.approvedAnswer.findMany();
+  // Scoped to the owner: the answer bank is personal, and normalizing another
+  // user's rows here would both read and mutate data this run does not own.
+  const approvedAnswers = await prisma.approvedAnswer.findMany({ where: { userId: ownerId } });
   parseOrThrow(z.array(approvedAnswerSchema), "ApprovedAnswerBank", "VALIDATING_RUN", approvedAnswers);
   for (const answer of approvedAnswers) {
     const normalizedQuestion = normalizeQuestionText(answer.questionText);
@@ -224,5 +228,5 @@ export async function validateAndNormalizeApplicationRun(runId: string) {
     parseOrThrow(jobSchema, "ValidatedApplicationJob", "VALIDATING_JOB", jobForValidation);
   }
 
-  return { run, profile: normalizedProfile, job: run.job, officialApplyUrl, approvedAnswers };
+  return { run, profile, job: run.job, officialApplyUrl, approvedAnswers };
 }
