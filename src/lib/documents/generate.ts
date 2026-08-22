@@ -555,6 +555,19 @@ export async function generateDocumentsForJob(
   return result;
   } catch (error) {
     if (error instanceof DocumentGenerationError) throw error;
-    throw new DocumentGenerationError(stageFailure(currentStage), currentStage);
+    // The reader gets a stage, not a stack trace — but the stage alone is not
+    // enough to fix anything, and this used to discard the cause entirely. It
+    // is logged for the server and carried as `cause` for anything that wants
+    // it, while the message the user sees stays the same.
+    console.error(JSON.stringify({
+      event: "tailored-document-generation",
+      stage: currentStage,
+      jobId,
+      reason: error instanceof Error ? error.message : String(error),
+    }));
+    throw Object.assign(
+      new DocumentGenerationError(stageFailure(currentStage), currentStage),
+      { cause: error },
+    );
   }
 }
