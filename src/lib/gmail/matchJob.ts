@@ -48,9 +48,6 @@ export function matchEmailToJob(
   for (const job of candidates) {
     const companyNorm = normalize(job.company);
     if (companyNorm.length >= 3 && haystack.includes(companyNorm)) {
-      // Company name alone matches many emails from the same employer — only
-      // confidently resolve to a SINGLE job if this company has just one
-      // candidate row, otherwise also require the title to line up.
       const sameCompanyCount = candidates.filter((c) => normalize(c.company) === companyNorm).length;
       if (sameCompanyCount === 1) return { job, method: "company-name" };
       const titleNorm = normalize(job.title);
@@ -63,9 +60,22 @@ export function matchEmailToJob(
   return null;
 }
 
-export async function loadJobMatchCandidates(): Promise<JobMatchCandidate[]> {
+/**
+ * A mailbox belongs to one user, so its candidate set must also belong to that
+ * user. Shared Job rows are included only when this user has a non-terminal
+ * UserJobState for them; another person's tracker state can never make a job a
+ * candidate for this mailbox.
+ */
+export async function loadJobMatchCandidates(userId: string): Promise<JobMatchCandidate[]> {
   const jobs = await prisma.job.findMany({
-    where: { status: { notIn: ["CLOSED", "REJECTED"] } },
+    where: {
+      userStates: {
+        some: {
+          userId,
+          applicationStatus: { notIn: ["CLOSED", "REJECTED"] },
+        },
+      },
+    },
     select: { id: true, title: true, company: true, requisitionId: true, officialEmployerDomain: true },
   });
   return jobs;
