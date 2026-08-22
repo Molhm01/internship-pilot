@@ -1,0 +1,38 @@
+name: Repair package lock
+
+on:
+  push:
+    branches:
+      - agent/full-publish-readiness-audit
+    paths:
+      - package.json
+      - .github/workflows/repair-package-lock.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair-lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/full-publish-readiness-audit
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Regenerate package-lock from package.json
+        run: npm install --package-lock-only --ignore-scripts
+      - name: Commit repaired lockfile if changed
+        run: |
+          if git diff --quiet -- package-lock.json; then
+            echo "package-lock.json already matches package.json"
+            exit 0
+          fi
+          git config user.name "internship-pilot-release-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          git commit -m "Regenerate lockfile for patched dependencies"
+          git push origin HEAD:agent/full-publish-readiness-audit
