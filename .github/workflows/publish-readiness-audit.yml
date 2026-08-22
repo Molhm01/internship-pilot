@@ -195,10 +195,9 @@ jobs:
         # Tailored PDFs are compiled by the Typst binary, pinned to the version
         # whose layout the master reference was matched against — pagination
         # differs between Typst releases, and document QA compares pagination.
-        # Without it the
-        # document half of the agent contract cannot run at all, and the whole
-        # pipeline — evidence selection, claim validation, layout QA, the
-        # identity guard — would have to be taken on trust.
+        # Without it the document half of the agent contract cannot run at all,
+        # and the whole pipeline — evidence selection, claim validation, layout
+        # QA, the identity guard — would have to be taken on trust.
         run: |
           version=v0.15.1
           curl -fsSL "https://github.com/typst/typst/releases/download/${version}/typst-x86_64-unknown-linux-musl.tar.xz" -o /tmp/typst.tar.xz
