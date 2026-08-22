@@ -66,7 +66,7 @@ async function ensurePortFree(): Promise<void> {
   process.exit(1);
 }
 
-function start(label: string, args: string[], extraEnv: NodeJS.ProcessEnv = {}): ChildProcess {
+function start(label: string, args: string[], extraEnv: Record<string, string | undefined> = {}): ChildProcess {
   const child = spawn(process.execPath, args, {
     cwd: process.cwd(),
     env: { ...process.env, ...extraEnv },

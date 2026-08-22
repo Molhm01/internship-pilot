@@ -54,7 +54,7 @@ async function measure(job: typeof fixtureJobs[number], fixture: number): Promis
   const prompt = buildCompactMatchPrompt(selectedFacts, { ...job, description });
   const promptConstructionMs = Math.round(performance.now() - promptStartedAt);
   const startedAt = performance.now();
-  let timing: OllamaTiming | null = null;
+  const timing: { value: OllamaTiming | null } = { value: null };
   let retries = 0;
   let failureCode: string | undefined;
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -66,7 +66,7 @@ async function measure(job: typeof fixtureJobs[number], fixture: number): Promis
         keepAlive: process.env.AI_MATCH_KEEP_ALIVE ?? "10m",
         numPredict: Number(process.env.AI_MATCH_NUM_PREDICT ?? 1_200),
         numCtx: Number(process.env.AI_MATCH_CONTEXT_TOKENS ?? 8_192),
-        onTiming: (value) => { timing = value; },
+        onTiming: (value) => { timing.value = value; },
       });
       const validationStartedAt = performance.now();
       const validation = matchResponseSchema.safeParse(raw);
@@ -82,11 +82,11 @@ async function measure(job: typeof fixtureJobs[number], fixture: number): Promis
       return {
         fixture,
         totalMs: Math.round(performance.now() - startedAt),
-        modelGenerationMs: timing?.modelGenerationMs ?? 0,
-        connectionMs: timing?.connectionMs ?? 0,
-        modelLoadMs: timing?.modelLoadMs ?? 0,
-        promptEvaluationMs: timing?.promptEvaluationMs ?? 0,
-        jsonParseMs: timing?.jsonParseMs ?? 0,
+        modelGenerationMs: timing.value?.modelGenerationMs ?? 0,
+        connectionMs: timing.value?.connectionMs ?? 0,
+        modelLoadMs: timing.value?.modelLoadMs ?? 0,
+        promptEvaluationMs: timing.value?.promptEvaluationMs ?? 0,
+        jsonParseMs: timing.value?.jsonParseMs ?? 0,
         promptConstructionMs,
         validationMs,
         retries,
@@ -106,11 +106,11 @@ async function measure(job: typeof fixtureJobs[number], fixture: number): Promis
   return {
     fixture,
     totalMs: Math.round(performance.now() - startedAt),
-    modelGenerationMs: timing?.modelGenerationMs ?? 0,
-    connectionMs: timing?.connectionMs ?? 0,
-    modelLoadMs: timing?.modelLoadMs ?? 0,
-    promptEvaluationMs: timing?.promptEvaluationMs ?? 0,
-    jsonParseMs: timing?.jsonParseMs ?? 0,
+    modelGenerationMs: timing.value?.modelGenerationMs ?? 0,
+    connectionMs: timing.value?.connectionMs ?? 0,
+    modelLoadMs: timing.value?.modelLoadMs ?? 0,
+    promptEvaluationMs: timing.value?.promptEvaluationMs ?? 0,
+    jsonParseMs: timing.value?.jsonParseMs ?? 0,
     promptConstructionMs,
     validationMs: 0,
     retries,

@@ -11,6 +11,12 @@ import { generateDocumentsForJob } from "@/lib/documents/generate";
 import { extractPdfText } from "@/lib/pdf";
 import { validateDocumentIdentity } from "@/lib/documents/identityGuard";
 
+function requiredEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is set by scripts/test-application-agent.ts; run that instead of this file.`);
+  return value;
+}
+
 const BASE_URL = process.env.BASE_URL ?? "http://127.0.0.1:3000";
 if (process.env.ISOLATED_TEST_MODE !== "1") throw new Error("Refusing to run mock identity tests without an isolated temporary database.");
 
@@ -20,26 +26,21 @@ if (process.env.ISOLATED_TEST_MODE !== "1") throw new Error("Refusing to run moc
 // would only ever prove that unauthenticated requests are refused.
 // The mock employer runs on its own origin so the fixture pages are reachable
 // without an Internship Pilot session, exactly as a real employer page is.
-const MOCK_ATS_BASE_URL = process.env.MOCK_ATS_BASE_URL;
-if (!MOCK_ATS_BASE_URL) throw new Error("MOCK_ATS_BASE_URL is set by scripts/test-application-agent.ts; run that instead of this file.");
-const TEST_USER_ID = process.env.AGENT_TEST_USER_ID;
-const TEST_SESSION_COOKIE = process.env.AGENT_TEST_SESSION_COOKIE;
-if (!TEST_USER_ID || !TEST_SESSION_COOKIE) {
-  throw new Error("AGENT_TEST_USER_ID and AGENT_TEST_SESSION_COOKIE are set by scripts/test-application-agent.ts; run that instead of this file.");
-}
+const MOCK_ATS_BASE_URL = requiredEnv("MOCK_ATS_BASE_URL");
+const TEST_USER_ID = requiredEnv("AGENT_TEST_USER_ID");
+const TEST_SESSION_COOKIE = requiredEnv("AGENT_TEST_SESSION_COOKIE");
 
 /** fetch, signed in as the fixture account. */
 function authedFetch(input: string, init: RequestInit = {}): Promise<Response> {
   return fetch(input, {
     ...init,
-    headers: { ...(init.headers as Record<string, string> | undefined), cookie: TEST_SESSION_COOKIE! },
+    headers: { ...(init.headers as Record<string, string> | undefined), cookie: TEST_SESSION_COOKIE },
   });
 }
 const TEST_COMPANY_PREFIX = "Application Worker Mock";
 const TEST_SOURCE = "application-worker-test";
 const testPort = 44_000 + (process.pid % 1_000);
-const testTempRoot = process.env.TEST_TEMP_ROOT;
-if (!testTempRoot) throw new Error("TEST_TEMP_ROOT is required for isolated application-agent tests.");
+const testTempRoot = requiredEnv("TEST_TEMP_ROOT");
 const workerEnv = {
   ...process.env,
   APPLICATION_WORKER_TEST_ONLY: "1",
@@ -231,15 +232,15 @@ async function main(): Promise<void> {
     throw new Error(`The local web server must be running at ${BASE_URL}.`);
   });
   await cleanup();
-  await setApplicationMode(TEST_USER_ID!, "FILL_TO_SUBMIT");
+  await setApplicationMode(TEST_USER_ID, "FILL_TO_SUBMIT");
   // "Country" must be unanswerable so section 3 can prove the agent pauses on
   // it rather than inventing a value. Scoped to this account's bank.
-  await prisma.approvedAnswer.deleteMany({ where: { userId: TEST_USER_ID!, questionText: normalizeQuestionText("Country*") } });
+  await prisma.approvedAnswer.deleteMany({ where: { userId: TEST_USER_ID, questionText: normalizeQuestionText("Country*") } });
   // The identity the agent is allowed to state, in the models that own it. The
   // country of residence is deliberately absent.
   const [first, ...restOfName] = candidate.fullName.split(" ");
   await prisma.userProfile.update({
-    where: { userId: TEST_USER_ID! },
+    where: { userId: TEST_USER_ID },
     data: {
       legalFirstName: first ?? candidate.fullName,
       legalLastName: restOfName.join(" ") || candidate.fullName,
@@ -252,10 +253,10 @@ async function main(): Promise<void> {
     },
   });
   await prisma.applicationPreferences.update({
-    where: { userId: TEST_USER_ID! },
+    where: { userId: TEST_USER_ID },
     data: { legallyAuthorizedToWork: true, requiresSponsorshipNow: false },
   });
-  await prisma.education.updateMany({ where: { userId: TEST_USER_ID! }, data: { school: candidate.school } });
+  await prisma.education.updateMany({ where: { userId: TEST_USER_ID }, data: { school: candidate.school } });
   const resumePath = await makeDummyResume(candidate);
 
   console.log("0) Complete job-description capture and evidence-grounded tailoring");
@@ -265,7 +266,7 @@ async function main(): Promise<void> {
   await prisma.job.update({ where: { id: tailoringJob.id }, data: { company: `${TEST_COMPANY_PREFIX} Lightship` } });
   const captured = await captureAndSaveOfficialJobDescription(tailoringJob.id);
   check(captured.description.length >= 500 && captured.responsibilities.length > 0 && captured.qualifications.length > 0, "full description, responsibilities, and qualifications were captured");
-  const generated = await generateDocumentsForJob(tailoringJob.id, { includeCoverLetter: false });
+  const generated = await generateDocumentsForJob(tailoringJob.id, TEST_USER_ID, { includeCoverLetter: false });
   const generatedResume = await prisma.generatedDocument.findUnique({ where: { id: generated.resume.id } });
   if (!generatedResume) throw new Error("Tailoring regression did not generate a resume.");
   const generatedText = (await extractPdfText(await readFile(generatedResume.storagePath))).text;

@@ -34,8 +34,29 @@ jobs:
     name: Static, dependency, build, and unit gates
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The Vitest suite contains database-backed contracts —
+    # src/lib/auth/multiUserIsolation.test.ts and
+    # src/app/api/jobs/route.database.test.ts — that skip themselves when
+    # DATABASE_URL is unset. This job set the variable with nothing listening
+    # behind it, which is the worst of both: the suites un-skipped and then
+    # failed on connection. A real service means they actually run.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: internship_pilot_unit_audit
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d internship_pilot_unit_audit"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
-      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/audit
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/internship_pilot_unit_audit
+      ISOLATED_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -50,6 +71,8 @@ jobs:
         run: node scripts/audit-production-deps.mjs
       - name: Generate Prisma client
         run: npx prisma generate
+      - name: Apply PostgreSQL migrations
+        run: npx prisma migrate deploy
       - name: TypeScript typecheck
         run: npm run typecheck
       - name: ESLint

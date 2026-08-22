@@ -86,8 +86,15 @@ describe.skipIf(!DATABASE_AVAILABLE)("GET /api/jobs against the live database", 
   });
 
   it("the database itself has every column the freshness ordering orders by", async () => {
-    const columns = await prisma.$queryRawUnsafe<{ name: string }[]>("PRAGMA table_info('Job')");
-    const names = columns.map((column) => column.name);
+    // `PRAGMA table_info` is SQLite's introspection statement and PostgreSQL
+    // rejects it outright, so this assertion could not have been passing since
+    // the migration — it failed on the syntax before it ever compared a column.
+    // information_schema is the standard equivalent.
+    const columns = await prisma.$queryRaw<{ column_name: string }[]>`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_schema = current_schema() AND table_name = 'Job'
+    `;
+    const names = columns.map((column) => column.column_name);
     for (const field of FRESHNESS_FIELDS) expect(names).toContain(field);
   });
 

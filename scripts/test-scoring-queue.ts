@@ -13,15 +13,21 @@ import { queueJobsForMatching, scoreNextQueuedJob, __setScorerForTests, __stopSc
 
 const N = 22;
 const COMPANY = "Test Scoring Queue Co";
+// Scoring is per user: queueing and draining both name whose scores these are.
+const FIXTURE_EMAIL = "scoring-queue-fixture@example.test";
 const TOP_PRIORITY = 100000;
 
 let failures = 0;
 function check(cond: boolean, msg: string) { if (cond) console.log(`  PASS: ${msg}`); else { console.error(`  FAIL: ${msg}`); failures++; } }
 
-async function cleanup() { await prisma.job.deleteMany({ where: { company: COMPANY } }); }
+async function cleanup() {
+  await prisma.job.deleteMany({ where: { company: COMPANY } });
+  await prisma.user.deleteMany({ where: { email: FIXTURE_EMAIL } });
+}
 
 async function main() {
   await cleanup();
+  const owner = await prisma.user.create({ data: { email: FIXTURE_EMAIL, name: "Scoring Queue Fixture", emailVerified: true } });
 
   // 1. Create N unscored fixtures.
   const ids: string[] = [];
@@ -42,10 +48,10 @@ async function main() {
   // 1b. queueJobsForMatching COUNTING. queueJobsForMatching starts a 100ms
   //     drain timer; we assert on its synchronous return and stop that timer
   //     within the same window so it never drains (isolation).
-  const firstQueue = await queueJobsForMatching({ jobId: ids[0] });
+  const firstQueue = await queueJobsForMatching({ userId: owner.id, jobId: ids[0] });
   __stopScoringWorkerForTests();
   check(firstQueue.newlyQueued === 1 && firstQueue.eligible === 1, `queueing a NOT_SCORED job reports newlyQueued=1 (got ${JSON.stringify(firstQueue)})`);
-  const reQueue = await queueJobsForMatching({ jobId: ids[0] });
+  const reQueue = await queueJobsForMatching({ userId: owner.id, jobId: ids[0] });
   __stopScoringWorkerForTests();
   check(reQueue.alreadyQueued === 1 && reQueue.newlyQueued === 0, `re-queueing a QUEUED job reports alreadyQueued=1 (got ${JSON.stringify(reQueue)})`);
 
@@ -72,7 +78,7 @@ async function main() {
   try {
     // 4. Drain exactly N fixtures single-threaded (top priority ⇒ claimed first).
     let processed = 0;
-    for (let i = 0; i < N; i++) if (await scoreNextQueuedJob()) processed++;
+    for (let i = 0; i < N; i++) if (await scoreNextQueuedJob(owner.id)) processed++;
     check(processed === N, `drained ${N} jobs (got ${processed})`);
     check(sawScoring === N, `every fixture observed in SCORING during scoring (got ${sawScoring})`);
     check((await prisma.job.count({ where: { company: COMPANY, scoringState: "SCORED" } })) === N, `all ${N} fixtures reached SCORED`);

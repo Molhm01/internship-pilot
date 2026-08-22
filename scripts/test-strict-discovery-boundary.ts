@@ -27,7 +27,7 @@ function fixtureJob(overrides: Partial<RawInternListJob>): RawInternListJob {
     applyUrl: "https://example.com/apply/test-boundary-job",
     h1bSponsored: "Unknown",
     ...overrides,
-  };
+  } as RawInternListJob;
 }
 
 const NEW_EMPLOYER_NAME = "Totally Unlisted Engineering Co";

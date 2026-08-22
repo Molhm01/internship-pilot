@@ -4,7 +4,6 @@ import { prisma } from "@/lib/db";
 import { applicationProfilePath } from "@/lib/applications/browserProfile";
 import { BrowserManager } from "@/lib/applications/browserManager";
 import { issueWorkerExtensionToken } from "@/lib/applications/extensionAuth";
-import { prisma } from "@/lib/db";
 import { processApplicationRun } from "@/lib/applications/worker";
 import {
   acquireApplicationWorkerLock,
