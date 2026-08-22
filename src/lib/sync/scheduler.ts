@@ -6,6 +6,9 @@ import { isSchedulerPaused, recordTickResult, scheduleNextTick } from "@/lib/syn
 import { syncAllConnectedGmailInboxes } from "@/lib/gmail/sync";
 import { isGmailConfigured } from "@/lib/gmail/oauth";
 import { syncApprovedEmployersFromCsv } from "@/lib/employers/sync";
+import { prepareAutomaticScoringQueues } from "@/lib/matching/automaticScoring";
+import { hydrateMissingDescriptionsForScoring } from "@/lib/matching/jobDescriptionHydration";
+import { requeueStaleFailedScores } from "@/lib/matching/recoverFailedScores";
 import { triggerInitialAiMatchWorker } from "@/lib/matching/initialAiMatchQueue";
 
 const MINUTE = 60 * 1000;
@@ -26,12 +29,14 @@ const SCHEDULES = {
   csvSync: { label: "CSV allowlist sync", intervalMs: 30 * MINUTE },
   queue: { label: "Verification queue", intervalMs: 2 * MINUTE },
   companyDiscovery: { label: "Company Watchlist poll", intervalMs: 5 * MINUTE },
+  scoring: { label: "ATS scoring maintenance", intervalMs: 2 * MINUTE },
   nearbyWeekly: { label: "Nearby-firm discovery", intervalMs: WEEK },
   gmail: { label: "Gmail application tracking", intervalMs: 5 * MINUTE },
 } as const;
 
 declare global {
   var __internshipPilotSchedulerStarted: boolean | undefined;
+  var __internshipPilotScoringMaintenanceRunning: boolean | undefined;
 }
 
 function log(message: string) {
@@ -74,6 +79,8 @@ export function startScheduler() {
   log("starting persistent scheduler (all state is durable in Postgres)");
 
   // Resume durable ATS work immediately, then check again every 30 seconds.
+  // The maintenance sweep below CREATES any missing work; this drain loop keeps
+  // consuming it continuously without waiting for the next two-minute sweep.
   triggerInitialAiMatchWorker();
   setInterval(() => triggerInitialAiMatchWorker(), 30 * 1000);
 
@@ -121,6 +128,55 @@ export function startScheduler() {
       }),
     );
 
+  const runScoringMaintenance = () =>
+    runIfNotPaused(
+      "scoring",
+      async () => {
+        // Never overlap a network-heavy description hydration pass with itself.
+        // The next interval simply catches anything still outstanding.
+        if (globalThis.__internshipPilotScoringMaintenanceRunning) {
+          return {
+            skipped: true as const,
+            descriptions: { considered: 0, attempted: 0, hydrated: 0, failed: 0, skippedCooldown: 0 },
+            recovered: { considered: 0, requeued: 0 },
+            queues: { users: 0, initialQueued: 0, refreshQueued: 0 },
+          };
+        }
+
+        globalThis.__internshipPilotScoringMaintenanceRunning = true;
+        try {
+          // 1) Jobs that arrived from a radar with only title/location cannot be
+          // honestly ATS-scored yet. Pull the real employer/ATS description.
+          const descriptions = await hydrateMissingDescriptionsForScoring({
+            maxItems: 24,
+            concurrency: 4,
+          });
+
+          // 2) A transient model/network failure must not permanently strand an
+          // otherwise valid active job.
+          const recovered = await requeueStaleFailedScores({ maxItems: 20 });
+
+          // 3) Catch EVERY active job for EVERY user with an approved resume
+          // profile. This is the local equivalent of the hosted cron backstop.
+          const queues = await prepareAutomaticScoringQueues();
+
+          // 4) Start the local model drain immediately instead of waiting for
+          // the 30-second heartbeat above.
+          triggerInitialAiMatchWorker();
+
+          return { skipped: false as const, descriptions, recovered, queues };
+        } finally {
+          globalThis.__internshipPilotScoringMaintenanceRunning = false;
+        }
+      },
+      (r) => ({
+        summary: r.skipped
+          ? "already running"
+          : `descriptions=${r.descriptions.hydrated}/${r.descriptions.attempted}, queued=${r.queues.initialQueued + r.queues.refreshQueued}, recovered=${r.recovered.requeued}, users=${r.queues.users}`,
+        errors: r.skipped ? 0 : r.descriptions.failed,
+      }),
+    );
+
   const runNearby = () =>
     runIfNotPaused(
       "nearbyWeekly",
@@ -149,19 +205,21 @@ export function startScheduler() {
   setInterval(runCsvSync, SCHEDULES.csvSync.intervalMs);
   setInterval(runVerificationQueue, SCHEDULES.queue.intervalMs);
   setInterval(runCompanyDiscovery, SCHEDULES.companyDiscovery.intervalMs);
+  setInterval(runScoringMaintenance, SCHEDULES.scoring.intervalMs);
   setInterval(runNearby, SCHEDULES.nearbyWeekly.intervalMs);
   setInterval(runGmail, SCHEDULES.gmail.intervalMs);
 
   // Local Postgres can safely handle a bounded bootstrap pass while the server
   // is up. This makes a fresh local database useful immediately: sync the
   // allowlist if present, ingest the current Intern List radar, inspect due
-  // company boards, then verify what was just discovered. Each step is awaited
-  // in sequence so startup does not fan out a burst of competing discovery jobs.
+  // company boards, verify what was just discovered, then hydrate + queue ATS
+  // scoring for the ENTIRE active catalogue before the user has to click anything.
   void (async () => {
     await runCsvSync();
     await runInternList();
     await runCompanyDiscovery();
     await runVerificationQueue();
+    await runScoringMaintenance();
     if (isGmailConfigured()) await runGmail();
   })();
 
