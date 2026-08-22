@@ -27,8 +27,6 @@ async function main() {
   const lock = readLock();
   if (!lock) {
     console.log("No local supervisor lock found. Nothing to stop that this repository owns.");
-    // Safety: if the port is held by a healthy server we did NOT record, we do
-    // not stop it — the user must stop it where it was started.
     const owner = describePortOwner(WEB_PORT);
     if (owner.pid) {
       const health = await serverHealth();
@@ -45,7 +43,8 @@ async function main() {
 
   let stopped = 0;
   if (lock.workerPid) stopped += stopPid(lock.workerPid, "Application worker") ? 1 : 0;
-  if (lock.webPid) stopped += stopPid(lock.webPid, "Web server + scheduler") ? 1 : 0;
+  if (lock.schedulerPid) stopped += stopPid(lock.schedulerPid, "Scheduler + scoring worker") ? 1 : 0;
+  if (lock.webPid) stopped += stopPid(lock.webPid, "Web server") ? 1 : 0;
   if (lock.supervisorPid && lock.supervisorPid !== process.pid) stopped += stopPid(lock.supervisorPid, "Supervisor") ? 1 : 0;
 
   clearLock();
