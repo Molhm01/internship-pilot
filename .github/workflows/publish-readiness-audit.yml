@@ -217,7 +217,14 @@ jobs:
         # templates/master_resume_reference.pdf. Fails loudly and early if the
         # runner cannot reproduce the master format, instead of surfacing later
         # as an unexplained QA rejection inside the agent contract.
-        run: npx tsx scripts/inspect-document-layout.ts
+        run: |
+          set -o pipefail
+          npx tsx scripts/inspect-document-layout.ts 2>&1 | tee /tmp/layout.log && exit 0
+          status=$?
+          grep -aE "pages:|metrics:|layout:|format:" /tmp/layout.log | tail -n 8 | while IFS= read -r line; do
+            echo "::error::${line}"
+          done
+          exit $status
       - name: Application DOM fallback
         run: npm run test:application-dom-fallback
       - name: Application legacy-row safety

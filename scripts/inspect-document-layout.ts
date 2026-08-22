@@ -70,6 +70,14 @@ async function main(): Promise<void> {
   for (const issue of format.issues) console.log(`  format: ${issue}`);
 
   console.log(`\nWrote ${pdfPath} for inspection.`);
+
+  // A machine that cannot reproduce the master format will reject every résumé
+  // it generates, so this reports rather than merely describes.
+  const issues = [...layout.issues, ...format.issues];
+  if (issues.length) {
+    console.error(`This machine does not reproduce the master résumé format: ${issues.length} issue(s) above.`);
+    process.exitCode = 1;
+  }
 }
 
 main().catch((error) => {
