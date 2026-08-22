@@ -23,7 +23,9 @@ const WORKSPACE_URL = `${BASE_URL}/jobs`;
 const children: ChildProcess[] = [];
 let stopping = false;
 let workerRestarts = 0;
+let webRestarts = 0;
 const MAX_WORKER_RESTARTS = 2;
+const MAX_WEB_RESTARTS = 2;
 
 function log(msg: string) { console.log(`[local] ${msg}`); }
 
@@ -56,6 +58,14 @@ function configureLocalEnvironment(): void {
   process.env.DOCUMENT_STORAGE_DRIVER = "local";
   process.env.NEXT_PUBLIC_APP_URL = BASE_URL;
   process.env.BETTER_AUTH_URL = BASE_URL;
+
+  // Local ATS scoring uses Ollama, which is already doing the expensive model
+  // work outside Node. Two simultaneous generations can create unnecessary RAM /
+  // VRAM pressure while Next is compiling pages on Windows. Start conservatively
+  // with one scorer; users can explicitly override this environment variable.
+  if (!process.env.AI_MATCH_WORKER_CONCURRENCY) {
+    process.env.AI_MATCH_WORKER_CONCURRENCY = "1";
+  }
 }
 
 async function ensureLocalDatabase(): Promise<void> {
@@ -125,7 +135,7 @@ function checkOllama(): void {
   log("Checking Ollama…");
   try {
     execSync("ollama list", { stdio: "ignore", cwd: REPO_ROOT });
-    log("✓ Ollama is available.");
+    log(`✓ Ollama is available. ATS scoring concurrency=${process.env.AI_MATCH_WORKER_CONCURRENCY ?? "1"}.`);
   } catch {
     console.warn("[local] ⚠ Ollama is not available. The website can still run, but local AI/autofill features may be unavailable until Ollama is installed/running.");
   }
@@ -221,7 +231,9 @@ async function main(): Promise<void> {
 
   checkOllama();
 
-  // 4. Start exactly one web+scheduler and one application worker.
+  // 4. Start one web+scheduler and one application worker. On Windows, use
+  // Webpack for local development instead of the default native Turbopack path;
+  // native fast-fail exits should not terminate the entire durable work session.
   writeLock({
     repoRoot: REPO_ROOT,
     port: WEB_PORT,
@@ -232,25 +244,47 @@ async function main(): Promise<void> {
     databaseDisplay: databasePath(),
   });
 
-  log("Starting web server + scheduler…");
-  const web = startChild("web", [nextCli, production ? "start" : "dev"], (code, signal) => {
-    console.error(`[local] web server exited unexpectedly (${signal ?? `code ${code}`}). Stopping.`);
-    void shutdown(code ?? 1);
-  });
+  let web: ChildProcess;
+  let worker: ChildProcess;
+
+  const startWeb = () => {
+    const devArgs = process.platform === "win32" ? [nextCli, "dev", "--webpack"] : [nextCli, "dev"];
+    const webArgs = production ? [nextCli, "start"] : devArgs;
+    return startChild("web", webArgs, (code, signal) => {
+      if (webRestarts < MAX_WEB_RESTARTS) {
+        webRestarts += 1;
+        console.error(
+          `[local] web server exited unexpectedly (${signal ?? `code ${code}`}). ` +
+          `Restarting (${webRestarts}/${MAX_WEB_RESTARTS}); queued radar/ATS work remains durable in Postgres…`,
+        );
+        setTimeout(() => {
+          if (stopping) return;
+          web = startWeb();
+          updateLockPids(web.pid ?? null, worker?.pid ?? null);
+        }, 1_500).unref();
+        return;
+      }
+      console.error(`[local] web server keeps exiting after ${MAX_WEB_RESTARTS} restart attempts. Stopping.`);
+      void shutdown(code ?? 1);
+    });
+  };
+
+  log(`Starting web server + scheduler${!production && process.platform === "win32" ? " (Webpack stability mode)" : ""}…`);
+  web = startWeb();
 
   log("Starting application/browser worker…");
   const startWorker = () => startChild("worker", ["--import", "tsx", "scripts/application-worker.ts"], (code, signal) => {
     if (workerRestarts < MAX_WORKER_RESTARTS) {
       workerRestarts++;
       console.error(`[local] application worker exited (${signal ?? `code ${code}`}). Restarting (${workerRestarts}/${MAX_WORKER_RESTARTS})…`);
-      const w = startWorker();
-      updateLockPids(web.pid ?? null, w.pid ?? null);
+      worker = startWorker();
+      updateLockPids(web.pid ?? null, worker.pid ?? null);
     } else {
       console.error("[local] application worker keeps exiting; leaving the website up WITHOUT the browser worker. Autofill runs will not process until it is healthy. Check Ollama/Chromium, then restart with `npm run local`.");
       updateLockPids(web.pid ?? null, null);
     }
   });
-  const worker = startWorker();
+  worker = startWorker();
   updateLockPids(web.pid ?? null, worker.pid ?? null);
 
   // 5. Wait for health, then open the signed-in workspace instead of the
