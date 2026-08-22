@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { prisma } from "@/lib/db";
 import { compileTypst, escapeTypstString, typstStringArray } from "@/lib/documents/typst";
 import { extractPdfText } from "@/lib/pdf";
-import { evaluateStrictDocumentQa } from "@/lib/documents/qa";
+import { evaluateStrictDocumentQa, isPageCountIssue } from "@/lib/documents/qa";
 import { evaluatePdfLayoutQa, evaluateResumeFormatPreservation } from "@/lib/documents/layoutQa";
 import { logAudit } from "@/lib/applications/audit";
 import { validateDocumentIdentity } from "@/lib/documents/identityGuard";
@@ -464,11 +464,14 @@ export async function generateDocumentsForJob(
     // fresh list rather than pushed onto the object the checker returned: this
     // runs twice, and mutating a returned value carries the first attempt's
     // verdict into the second.
-    const contentIssues = [...strict.issues];
+    // The page-count finding comes from strict QA but is a layout fact: the
+    // document did not fit, not that it says the wrong things.
+    const contentIssues = strict.issues.filter((issue) => !isPageCountIssue(issue));
+    const paginationIssues = strict.issues.filter(isPageCountIssue);
     const identityIssues = validateDocumentIdentity(extraction.text, profile);
     const layout = await evaluatePdfLayoutQa(layoutBytes, "resume");
     const format = await evaluateResumeFormatPreservation(layoutBytes, referenceResumeBytes);
-    const layoutIssues = [...layout.issues, ...format.issues];
+    const layoutIssues = [...paginationIssues, ...layout.issues, ...format.issues];
     const qa = { status: strict.status, issues: [...contentIssues, ...identityIssues, ...layoutIssues] };
     return { source, bytes, layoutBytes, extraction, qa, identityIssues, contentIssues, layoutIssues, format, keywordClassification: keywordClassificationFor(source) };
   };
