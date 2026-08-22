@@ -15,16 +15,27 @@ function isUniqueConstraintError(error: unknown): boolean {
 }
 
 /**
- * Queue one durable run. This function deliberately contains no Playwright
- * import and performs no browser or network work, so it is safe in a route.
+ * ApplicationRun.activeKey is globally unique in the database, so a bare job
+ * id would make two different users collide when applying to the same
+ * requisition. Keep the durable duplicate-click guard scoped to the owner.
  */
+export function applicationActiveKey(userId: string, jobId: string): string {
+  return `${userId}:${jobId}`;
+}
+
+async function markApplying(userId: string, jobId: string): Promise<void> {
+  await prisma.userJobState.upsert({
+    where: { userId_jobId: { userId, jobId } },
+    create: { userId, jobId, applicationStatus: "APPLYING" },
+    update: { applicationStatus: "APPLYING" },
+  });
+}
+
 /**
  * Queues an application run for one user against one job.
  *
- * Every function in this module now takes the owner explicitly. A run holds the
- * answers that will be typed into an employer's form, so "which run is this"
- * and "whose run is this" have to be one question — a run id alone is not
- * authority to read, resume, retry or cancel it.
+ * Every private relation is filtered by owner here. A Job row is shared
+ * catalogue data; MatchResult, GeneratedDocument and ApplicationRun are not.
  */
 export async function enqueueApplication(
   jobId: string,
@@ -38,18 +49,13 @@ export async function enqueueApplication(
   const job = await prisma.job.findUnique({
     where: { id: jobId },
     include: {
-      matchResults: { orderBy: { createdAt: "desc" }, take: 1 },
-      generatedDocuments: { orderBy: { createdAt: "desc" } },
-      applicationRuns: { orderBy: { createdAt: "asc" } },
+      matchResults: { where: { userId }, orderBy: { createdAt: "desc" }, take: 1 },
+      generatedDocuments: { where: { userId }, orderBy: { createdAt: "desc" } },
+      applicationRuns: { where: { userId }, orderBy: { createdAt: "asc" } },
     },
   });
   if (!job) throw new ApplicationAgentError("Job not found.");
-  // The agent is available from EVERY legitimate active job — officially
-  // verified, source listed, OR verification pending — not only jobs matched
-  // to a Greenhouse/Lever/Ashby mirror. It refuses only jobs with concrete
-  // negative evidence: a confirmed closure, a destination mismatch, or a
-  // security block. The worker still performs a live destination re-check
-  // before filling.
+
   const availability = canonicalAvailability(job.verificationStatus);
   if (availability === AVAILABILITY.SECURITY_BLOCKED) {
     throw new ApplicationAgentError("This posting is security-blocked and never receives autofill or personal data.");
@@ -69,15 +75,11 @@ export async function enqueueApplication(
   const existingFilled = job.applicationRuns.find((run) => run.status === "filled");
   if (existingFilled) return { runId: existingFilled.id, status: existingFilled.status, queued: false };
 
-  // A match is helpful but NOT required — the button must work even before an
-  // AI score exists. Only an explicit eligibility Fail blocks queuing.
   const latestMatch = job.matchResults[0];
   if (latestMatch && latestMatch.eligibility === "Fail") {
     throw new ApplicationAgentError("The AI match marked this job an explicit eligibility Fail; applying isn't recommended.");
   }
-  // Resolve the best destination: prefer the confirmed official apply URL,
-  // then the stored url/job page, then the source listing's apply link (the
-  // worker resolves its redirects live before filling).
+
   const officialApplyUrl = job.officialApplyUrl ?? job.url ?? job.officialJobUrl ?? job.sourceUrl;
   if (!officialApplyUrl) throw new ApplicationAgentError("This job has no usable application or source URL to open.");
   try {
@@ -87,13 +89,10 @@ export async function enqueueApplication(
   } catch {
     throw new ApplicationAgentError(`Invalid required job field officialApplyUrl: expected a valid HTTPS URL; received ${JSON.stringify(officialApplyUrl)}.`);
   }
-  if (job.officialApplyUrl !== officialApplyUrl) await prisma.job.update({ where: { id: job.id }, data: { officialApplyUrl } });
+  if (job.officialApplyUrl !== officialApplyUrl) {
+    await prisma.job.update({ where: { id: job.id }, data: { officialApplyUrl } });
+  }
 
-  // Document strategy is separate from autofill eligibility. ANY QA-passed,
-  // identity-verified resume for this job is usable — including a
-  // master-resume fallback generated when the description was incomplete. Only
-  // the total ABSENCE of an approved resume (NO_APPROVED_DOCUMENT) blocks the
-  // run; a missing/partial job description never does.
   const usableResumes = job.generatedDocuments.filter((document) => isUsableResume(document));
   const resume = usableResumes.find((d) => strategyFromTailoringStatus(d.tailoringStatus) === "TAILORED")
     ?? usableResumes.find((d) => strategyFromTailoringStatus(d.tailoringStatus) === "PARTIAL_TAILORING")
@@ -104,13 +103,14 @@ export async function enqueueApplication(
     documentStrategy = "NO_APPROVED_DOCUMENT";
     throw new ApplicationAgentError(documentStrategyReason(documentStrategy, completeness));
   }
-  // Reusing an existing approved doc → EXISTING_APPROVED_DOCUMENT; otherwise the
-  // strategy reflects how tailored that resume is.
   documentStrategy = "EXISTING_APPROVED_DOCUMENT";
   const strategyReason = `${documentStrategyReason("EXISTING_APPROVED_DOCUMENT", completeness)} (${strategyFromTailoringStatus(resume.tailoringStatus)})`;
   const coverLetter = job.generatedDocuments.find((document) => document.type === "coverLetter" && document.qaStatus === "pass" && document.identityVerified);
+  const activeKey = applicationActiveKey(userId, jobId);
 
-  // Repair legacy duplicates before assigning the unique active key.
+  // Repair duplicate active rows for THIS OWNER only. Legacy rows may still
+  // carry a bare jobId activeKey; assigning the scoped key here upgrades them
+  // without allowing another user's row to win the race.
   const active = job.applicationRuns.filter((run) =>
     ACTIVE_APPLICATION_STATUSES.includes(run.status as (typeof ACTIVE_APPLICATION_STATUSES)[number]),
   );
@@ -121,16 +121,20 @@ export async function enqueueApplication(
     const duplicateIds = active.filter((run) => run.id !== canonical.id).map((run) => run.id);
     if (duplicateIds.length) {
       await prisma.applicationRun.updateMany({
-        where: { id: { in: duplicateIds } },
+        where: { id: { in: duplicateIds }, userId },
         data: { status: "superseded", activeKey: null, finishedAt: new Date(), currentStep: "Superseded duplicate run" },
       });
     }
     try {
-      const repaired = await prisma.applicationRun.update({ where: { id: canonical.id }, data: { activeKey: jobId } });
+      const repaired = await prisma.applicationRun.update({
+        where: { id: canonical.id },
+        data: { userId, activeKey },
+      });
+      await markApplying(userId, jobId);
       return { runId: repaired.id, status: repaired.status, queued: false };
     } catch (error) {
       if (!isUniqueConstraintError(error)) throw error;
-      const winner = await prisma.applicationRun.findUnique({ where: { activeKey: jobId } });
+      const winner = await prisma.applicationRun.findFirst({ where: { activeKey, userId } });
       if (winner) return { runId: winner.id, status: winner.status, queued: false };
       throw error;
     }
@@ -140,10 +144,9 @@ export async function enqueueApplication(
   try {
     const run = await prisma.applicationRun.create({
       data: {
-        activeKey: jobId,
+        userId,
+        activeKey,
         jobId,
-        // Production is intentionally locked to Fill To Submit. The worker
-        // never receives permission to click a final Submit control.
         mode: "fill_to_submit",
         atsType,
         status: "queued",
@@ -157,9 +160,10 @@ export async function enqueueApplication(
         matchScoreAtRun: latestMatch?.score ?? null,
       },
     });
-    await prisma.job.update({ where: { id: jobId }, data: { status: "APPLYING" } });
+    await markApplying(userId, jobId);
     await prisma.auditLogEntry.create({
       data: {
+        userId,
         jobId,
         actor: "application-agent",
         action: "application-run-queued",
@@ -170,7 +174,7 @@ export async function enqueueApplication(
     return { runId: run.id, status: run.status, queued: true };
   } catch (error) {
     if (!isUniqueConstraintError(error)) throw error;
-    const winner = await prisma.applicationRun.findUnique({ where: { activeKey: jobId } });
+    const winner = await prisma.applicationRun.findFirst({ where: { activeKey, userId } });
     if (!winner) throw error;
     return { runId: winner.id, status: winner.status, queued: false };
   }
@@ -190,10 +194,11 @@ export async function queueAnsweredRun(
   if (run.status !== "needs_user_action") {
     throw new ApplicationAgentError("This run has no pending question to resume.");
   }
+  const activeKey = applicationActiveKey(userId, run.jobId);
   const resumed = await prisma.applicationRun.updateMany({
-    where: { id: runId, status: "needs_user_action", activeKey: run.jobId },
+    where: { id: runId, userId, status: "needs_user_action" },
     data: {
-      activeKey: run.jobId,
+      activeKey,
       status: "queued",
       currentStep: "QUEUED",
       needsUserActionReason: null,
@@ -201,7 +206,7 @@ export async function queueAnsweredRun(
     },
   });
   if (resumed.count !== 1) {
-    const current = await prisma.applicationRun.findUnique({ where: { id: runId } });
+    const current = await prisma.applicationRun.findFirst({ where: { id: runId, userId } });
     if (current && (current.status === "queued" || current.status === "running")) {
       return { runId: current.id, status: current.status };
     }
@@ -215,6 +220,7 @@ export async function queueAnsweredRun(
         ? "User requested same-run resume after logging in."
         : "Approved answer saved; resuming the same run.";
   await recordRunStage(runId, "QUEUED", detail);
+  await markApplying(userId, run.jobId);
   return { runId, status: "queued" };
 }
 
@@ -260,11 +266,11 @@ export async function retryFailedRun(
     });
 
     const nextAttempt = run.attemptNumber + 1;
-
+    const activeKey = applicationActiveKey(userId, run.jobId);
     const retry = await prisma.applicationRun.updateMany({
-      where: { id: run.id, status: "failed", activeKey: null },
+      where: { id: run.id, userId, status: "failed", activeKey: null },
       data: {
-        activeKey: run.jobId,
+        activeKey,
         status: "queued",
         currentStep: "QUEUED",
         attemptNumber: nextAttempt,
@@ -282,16 +288,17 @@ export async function retryFailedRun(
       },
     });
     if (retry.count !== 1) {
-      const current = await prisma.applicationRun.findUnique({ where: { id: run.id } });
+      const current = await prisma.applicationRun.findFirst({ where: { id: run.id, userId } });
       if (current && (current.status === "queued" || current.status === "running")) {
         return { runId: current.id, status: current.status };
       }
       throw new ApplicationAgentError("This failed run changed state before it could be queued.");
     }
     await recordRunStage(run.id, "QUEUED", `Retry attempt #${nextAttempt} requested; transients cleared for fresh DOM scan.`);
-    await prisma.job.update({ where: { id: run.jobId }, data: { status: "APPLYING" } });
+    await markApplying(userId, run.jobId);
     await prisma.auditLogEntry.create({
       data: {
+        userId,
         jobId: run.jobId,
         actor: "application-agent",
         action: "application-run-retried",
