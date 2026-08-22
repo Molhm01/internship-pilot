@@ -23,16 +23,26 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Regenerate package-lock from package.json
-        run: npm install --package-lock-only --ignore-scripts
+      - name: Rebuild package-lock from a clean dependency graph
+        run: |
+          rm -f package-lock.json
+          npm install --package-lock-only --ignore-scripts
+      - name: Show production dependency paths that matter to the release audit
+        run: |
+          npm install --ignore-scripts
+          npm explain prisma || true
+          npm explain @prisma/config || true
+          npm explain deepmerge-ts || true
+          npm explain nanoid || true
+          npm audit --omit=dev --audit-level=high || true
       - name: Commit repaired lockfile if changed
         run: |
           if git diff --quiet -- package-lock.json; then
-            echo "package-lock.json already matches package.json"
+            echo "package-lock.json already matches a clean regeneration"
             exit 0
           fi
           git config user.name "internship-pilot-release-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add package-lock.json
-          git commit -m "Regenerate lockfile for patched dependencies"
+          git commit -m "Regenerate lockfile from clean dependency graph"
           git push origin HEAD:agent/full-publish-readiness-audit
