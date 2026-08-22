@@ -94,6 +94,26 @@ export async function seedFixtureProfile(userId: string, candidate: FixtureCandi
   });
   await seedFixtureEvidence(userId);
 
+  // The agent states the applicant's most recent role from their own Experience
+  // rows — it used to come from a module constant holding one specific
+  // person's job history. An account with no experience entered has no answer
+  // to "Most Recent Experience", and the agent correctly pauses rather than
+  // inventing one, so the fixture has to enter it.
+  const experience = await prisma.experience.findFirst({ where: { userId } });
+  if (!experience) {
+    await prisma.experience.create({
+      data: {
+        userId,
+        employer: "Freelance",
+        title: "PC Builder and Repair Technician",
+        location: `${candidate.city}, ${candidate.state}`,
+        startDate: "2021-07",
+        currentlyEmployed: true,
+        sortOrder: 0,
+      },
+    });
+  }
+
   const education = await prisma.education.findFirst({ where: { userId } });
   if (!education) {
     await prisma.education.create({
