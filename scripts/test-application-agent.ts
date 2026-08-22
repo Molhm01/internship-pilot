@@ -61,6 +61,11 @@ async function main(): Promise<void> {
     BASE_URL: baseUrl,
     BETTER_AUTH_URL: baseUrl,
     NEXT_PUBLIC_APP_URL: baseUrl,
+    // What the worker writes into the loaded extension's storage as its
+    // backend. Unset, the extension falls back to port 3000, finds nothing
+    // listening, and every fill reports "Internship Pilot is not reachable on
+    // this computer" after navigating and reading the form correctly.
+    INTERNSHIP_PILOT_BASE_URL: baseUrl,
     ISOLATED_TEST_MODE: "1",
     TEST_TEMP_ROOT: tempRoot,
     GENERATED_OUTPUT_DIR: path.join(tempRoot, "documents"),

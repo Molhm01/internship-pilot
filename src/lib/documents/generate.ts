@@ -504,8 +504,20 @@ export async function generateDocumentsForJob(
     || tailoring.audit.bulletsReordered.length > 0
     || tailoring.audit.keywordsAdded.length > 0;
   if (onlyFormattingFailed && tailoringChangedSomething) {
-    const masterAttempt = await compileAndCheck(MASTER_CONTENT);
-    if (masterAttempt.qa.issues.length === 0) {
+    // The master is corrected exactly as the tailored content was. Its
+    // "Additional" skills group carries wording the applicant cannot support
+    // for every posting — "reliability testing", "equipment calibration" —
+    // and it is this correction, per posting, that keeps those out of the PDF.
+    // Compiling the raw constant would put them back.
+    const masterCorrection = correctAndValidateResumeContent(
+      MASTER_CONTENT,
+      unsupportedQualifications,
+      documentFacts,
+    );
+    const masterAttempt = masterCorrection.unsupportedClaims.length
+      ? null
+      : await compileAndCheck(masterCorrection.content);
+    if (masterAttempt && masterAttempt.qa.issues.length === 0) {
       console.warn(JSON.stringify({
         event: "tailored-document-generation",
         stage: "tailoring_exceeded_master_format",
@@ -516,7 +528,7 @@ export async function generateDocumentsForJob(
       tailoring.audit.keywordsAdded = [];
       tailoring.audit.bulletsChanged = [];
       tailoring.audit.bulletsReordered = [];
-      tailoring.content = MASTER_CONTENT;
+      tailoring.content = masterCorrection.content;
       storedTailoringStatus = "MASTER_RESUME_FALLBACK";
       attempt = masterAttempt;
     }
