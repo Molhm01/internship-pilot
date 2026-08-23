@@ -206,6 +206,10 @@ function isReadableBoard(atsType: string, atsIdentifier: string | null): boolean
     "smartrecruiters",
     "workable",
     "workday",
+    // Employer-operated public search APIs, observed from the employer's own
+    // page rather than guessed. Their identifier is the employer, not a tenant.
+    "ibm-careers",
+    "bytedance-careers",
     "icims",
     "taleo",
     // Client-rendered career-site vendors. Their identifier is
@@ -864,4 +868,54 @@ async function recordResolutionAttempt(args: {
     create: { normalizedCompany: args.key, ...shared },
     update: shared,
   });
+}
+
+/**
+ * Force one employer's cached board configuration to be re-derived.
+ *
+ * A cached RESOLVED configuration is trusted for a week, which is right when
+ * it works and actively harmful when it does not. IBM was cached as an
+ * `employer-page` pointing at careers.ibm.com — syntactically valid, reachable,
+ * and returning exactly one unrelated posting from Taiwan, for a week, while
+ * nine fresh IBM internships went unresolved every tick.
+ *
+ * A configuration that reads zero usable postings is evidence about the
+ * configuration, not about the employer. Clearing it lets the cascade — which
+ * now knows about IBM's own search API, careers hosts and Workable — try
+ * again, and the negative-backoff path still prevents a re-crawl storm if the
+ * rediscovery also fails.
+ */
+export async function invalidateBoardResolution(
+  companyName: string,
+  reason: string,
+): Promise<boolean> {
+  const key = normalizeCompanyKey(companyName);
+  if (!key) return false;
+
+  const existing = await prisma.employerBoardResolution.findUnique({
+    where: { normalizedCompany: key },
+    select: { state: true, atsType: true },
+  });
+  // Only a RESOLVED row is cleared. An UNRESOLVED one is already carrying its
+  // own backoff, and resetting that would turn a settled miss into a retry
+  // loop against an employer that has nothing to give.
+  if (existing?.state !== "RESOLVED") return false;
+
+  await prisma.employerBoardResolution.update({
+    where: { normalizedCompany: key },
+    data: {
+      state: "STALE",
+      reasonCode: null,
+      atsType: null,
+      atsIdentifier: null,
+      evidence: JSON.stringify({
+        invalidatedAt: new Date().toISOString(),
+        previousAtsType: existing.atsType,
+        reason,
+      }),
+      // Re-derivable immediately: the point is to try a better cascade now.
+      nextAttemptAt: null,
+    },
+  });
+  return true;
 }

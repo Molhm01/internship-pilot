@@ -50,6 +50,7 @@ import {
   type FreshSignalReasonCounts,
 } from "@/lib/sync/freshSignalReasons";
 import {
+  invalidateBoardResolution,
   loadApprovedCompanyIndex,
   resolveEmployerBoard,
   type EmployerBoardConfig,
@@ -691,7 +692,7 @@ async function resolveOneSignal(
     pending = resolveEmployerBoard(signal.company, detail.companyDomain, approvedIndex, now);
     employerCache.set(employerKey, pending);
   }
-  const board = await pending;
+  let board = await pending;
   if (!board.ok) {
     return {
       state: "PENDING",
@@ -703,11 +704,32 @@ async function resolveOneSignal(
     };
   }
 
-  const { jobs, fetchFailed, botWalled } = await boardJobsFor(
+  let { jobs, fetchFailed, botWalled } = await boardJobsFor(
     board.config,
     signal.company,
     boardCache,
   );
+
+  // A CACHED configuration that reads nothing is evidence about the
+  // configuration, not about the employer. IBM sat cached for a week as an
+  // `employer-page` on careers.ibm.com that returned one unrelated posting,
+  // while nine fresh IBM internships went unresolved on every tick. Clear it
+  // and let the cascade — which now knows IBM's own search API, careers hosts
+  // and Workable — answer again, exactly once per tick.
+  if (jobs.length === 0 && board.config.origin === "cached_resolution") {
+    const cleared = await invalidateBoardResolution(
+      signal.company,
+      `cached ${board.config.atsType} configuration read 0 postings`,
+    );
+    if (cleared) {
+      employerCache.delete(employerKey);
+      const rediscovered = await resolveEmployerBoard(signal.company, detail.companyDomain, approvedIndex, now);
+      if (rediscovered.ok) {
+        board = rediscovered;
+        ({ jobs, fetchFailed, botWalled } = await boardJobsFor(rediscovered.config, signal.company, boardCache));
+      }
+    }
+  }
   // An empty result is reported as a FETCH failure, not as "the board has
   // nothing like this". Vendors such as iCIMS answer automated reads with a
   // bot wall (HTTP 405 "Human Verification"), which is indistinguishable from

@@ -78,7 +78,9 @@
     "test:browser-smoke": "node --import tsx scripts/publish-browser-smoke.ts",
     "benchmark:freshness-slo": "tsx scripts/measure-freshness-slo.ts",
     "diagnose:fresh-misses": "tsx scripts/diagnose-fresh-misses.ts",
-    "audit:match-quality": "tsx scripts/audit-match-quality.ts"
+    "audit:match-quality": "tsx scripts/audit-match-quality.ts",
+    "benchmark:freeze-cohort": "tsx scripts/freeze-fresh-cohort.ts",
+    "benchmark:fresh-discovery:frozen": "tsx scripts/diagnose-fresh-misses.ts --frozen"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.9.1",

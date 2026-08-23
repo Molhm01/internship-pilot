@@ -25,6 +25,8 @@ import {
   hostCandidates,
 } from "@/lib/sync/employerBoardResolution";
 import { isTargetEngineeringRole } from "@/lib/sync/classify";
+import { readFile } from "node:fs/promises";
+import { FROZEN_COHORT_PATH, toRadarSignal, validSignals, type FrozenCohort } from "@/lib/sync/frozenCohort";
 
 /**
  * Why every missed fresh signal missed.
@@ -453,9 +455,25 @@ async function main() {
   ) || 60;
 
   const now = new Date();
-  console.log(`[miss-diagnostic] ${now.toISOString()}`);
-  const source = await fetchJobrightFreshSignals(now);
-  const valid = source.jobs.filter((job) => isTargetEngineeringRole(job.title, job.qualifications));
+  const frozenArg = process.argv.find((v) => v.startsWith("--frozen"));
+  console.log(`[miss-diagnostic] ${now.toISOString()} ${frozenArg ? "FROZEN COHORT" : "LIVE RADAR"}`);
+
+  let valid;
+  let source;
+  if (frozenArg) {
+    const cohortPath = frozenArg.includes("=") ? frozenArg.split("=")[1]! : FROZEN_COHORT_PATH;
+    const cohort = JSON.parse(await readFile(cohortPath, "utf8")) as FrozenCohort;
+    console.log(`cohort ${cohortPath} captured ${cohort.capturedAt}`);
+    valid = validSignals(cohort).map(toRadarSignal);
+    source = {
+      jobs: cohort.signals.map(toRadarSignal),
+      freshUnder24h: cohort.freshUnder24h,
+      freshUnder72h: cohort.freshUnder72h,
+    };
+  } else {
+    source = await fetchJobrightFreshSignals(now);
+    valid = source.jobs.filter((job) => isTargetEngineeringRole(job.title, job.qualifications));
+  }
   const offset = Number.parseInt(process.argv.find((v) => v.startsWith("--offset="))?.slice(9) ?? "0", 10) || 0;
   const sample = valid.slice(offset, offset + limit);
 

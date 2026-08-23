@@ -21,6 +21,7 @@ import {
 import {
   FRESH_SIGNAL_REASONS,
   formatReasonCounts,
+  isPermanentLikeReason,
   isTransientReason,
   nextAttemptDelayMs,
   normalizeCompanyKey,
@@ -201,9 +202,16 @@ describe("Gates 12 & 13 — closed vs merely unreachable", () => {
   });
 
   it("never schedules a retry so far out that a signal is effectively dropped", () => {
+    // Every reason stays on a bounded schedule — the point of the invariant is
+    // that nothing is silently abandoned. The ceiling differs by class: an
+    // employer whose careers site answers 404 to a real browser gets days
+    // rather than hours, because retrying it sooner cannot change the answer
+    // and spends budget a recoverable employer could have used.
+    const ONE_DAY = 24 * 60 * 60 * 1000;
     for (const reason of FRESH_SIGNAL_REASONS) {
-      expect(nextAttemptDelayMs(reason, 50)).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
-      expect(nextAttemptDelayMs(reason, 1)).toBeGreaterThan(0);
+      const ceiling = isPermanentLikeReason(reason) ? 14 * ONE_DAY : ONE_DAY;
+      expect(nextAttemptDelayMs(reason, 50), `${reason} must stay bounded`).toBeLessThanOrEqual(ceiling);
+      expect(nextAttemptDelayMs(reason, 1), `${reason} must always retry`).toBeGreaterThan(0);
     }
   });
 });
@@ -389,5 +397,38 @@ describe("Gate 10 (observability) — unresolved is never one generic bucket", (
       stoppedForTimeBudget: false,
     });
     expect(line).toContain("resolved=8 (80%)");
+  });
+});
+
+describe("a verified public-access block is its own retry class", () => {
+  it("backs off for days, not minutes — and never abandons the employer", () => {
+    // Marathon Petroleum answers 404 to a real Chromium on every careers host
+    // it publishes. Retrying that on the structural hour-scale schedule spends
+    // fresh-lane budget that a recoverable employer could have used, and no
+    // amount of retrying today changes the answer.
+    const first = nextAttemptDelayMs("PROVIDER_ACCESS_BLOCKED", 1);
+    const later = nextAttemptDelayMs("PROVIDER_ACCESS_BLOCKED", 5);
+
+    expect(first).toBeGreaterThanOrEqual(3 * 24 * 60 * 60 * 1000);
+    expect(later).toBeGreaterThan(first);
+    // Bounded: a careers site can come back, so this never becomes "never".
+    expect(nextAttemptDelayMs("PROVIDER_ACCESS_BLOCKED", 999)).toBeLessThanOrEqual(
+      14 * 24 * 60 * 60 * 1000,
+    );
+  });
+
+  it("waits far longer than an ordinary structural miss or a transient one", () => {
+    expect(nextAttemptDelayMs("PROVIDER_ACCESS_BLOCKED", 1)).toBeGreaterThan(
+      nextAttemptDelayMs("NO_ATS_CONFIG", 1),
+    );
+    expect(nextAttemptDelayMs("NO_ATS_CONFIG", 1)).toBeGreaterThan(
+      nextAttemptDelayMs("NETWORK_FAILURE", 1),
+    );
+  });
+
+  it("is not classed as transient, so an empty read is never read as a closure", () => {
+    expect(isTransientReason("PROVIDER_ACCESS_BLOCKED")).toBe(false);
+    expect(isPermanentLikeReason("PROVIDER_ACCESS_BLOCKED")).toBe(true);
+    expect(isPermanentLikeReason("NO_ATS_CONFIG")).toBe(false);
   });
 });

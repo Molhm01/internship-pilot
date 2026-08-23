@@ -36,6 +36,15 @@ export const FRESH_SIGNAL_REASONS = [
    * rather than simply asking again.
    */
   "BOT_WALL_BLOCKED",
+  /**
+   * The employer publishes nothing an ordinary public client can read: the
+   * careers host answers 403/404 to a real browser, not just to a fetch.
+   * Distinct from a bot wall because there is no page to render and nothing to
+   * retry soon — Marathon Petroleum answers 404 to Chromium on every host it
+   * publishes. Retried on a long cooldown so a five-minute lane never spends
+   * budget on it, but never abandoned: a careers site can come back.
+   */
+  "PROVIDER_ACCESS_BLOCKED",
   /** The signal itself could not be parsed into a usable identity. */
   "PARSER_FAILURE",
 ] as const;
@@ -56,6 +65,17 @@ const TRANSIENT: ReadonlySet<FreshSignalReason> = new Set<FreshSignalReason>([
   "BOT_WALL_BLOCKED",
 ]);
 
+/**
+ * Failures whose answer will not change today. Long cooldown, never dropped.
+ */
+const PERMANENT_LIKE: ReadonlySet<FreshSignalReason> = new Set<FreshSignalReason>([
+  "PROVIDER_ACCESS_BLOCKED",
+]);
+
+export function isPermanentLikeReason(reason: FreshSignalReason): boolean {
+  return PERMANENT_LIKE.has(reason);
+}
+
 export function isTransientReason(reason: FreshSignalReason): boolean {
   return TRANSIENT.has(reason);
 }
@@ -71,6 +91,14 @@ const ONE_MINUTE_MS = 60_000;
  * employer can publish a careers page tomorrow.
  */
 export function nextAttemptDelayMs(reason: FreshSignalReason, attempts: number): number {
+  // Three classes, not two. A verified public-access block is neither a blip
+  // nor an ordinary structural miss: nothing about retrying it in an hour can
+  // change the answer, and every attempt costs the fresh lane budget that a
+  // recoverable employer could have used.
+  if (PERMANENT_LIKE.has(reason)) {
+    const days = Math.min(14, 3 * Math.max(1, attempts));
+    return days * 24 * 60 * ONE_MINUTE_MS;
+  }
   const base = isTransientReason(reason) ? 5 : 60;
   const capMinutes = isTransientReason(reason) ? 60 : 24 * 60;
   const minutes = Math.min(capMinutes, base * 2 ** Math.max(0, attempts - 1));

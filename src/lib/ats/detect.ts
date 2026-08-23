@@ -11,6 +11,26 @@ const PATTERNS: Pattern[] = [
   // is apply.workable.com/<account>. Excluding the literal "j" segment keeps a
   // posting link from being read as the tenant.
   { atsType: "workable", regex: /apply\.workable\.com\/(?!j\/)([a-z0-9][a-z0-9-]{1,60})/i, extractId: (m) => m[1] },
+  // ByteDance-family brands (TikTok, ByteDance) share one public search
+  // platform on per-brand hosts. The identifier carries the API host, the
+  // brand routing value and the site host — all three read from the
+  // employer's own page traffic. See src/lib/ats/bytedanceCareers.ts.
+  {
+    atsType: "bytedance-careers",
+    regex: /lifeattiktok\.com/i,
+    extractId: () => "api.lifeattiktok.com|tiktok|lifeattiktok.com",
+  },
+  {
+    atsType: "bytedance-careers",
+    regex: /joinbytedance\.com|jobs\.bytedance\.com/i,
+    extractId: () => "jobs.bytedance.com|en|joinbytedance.com",
+  },
+  // IBM operates its own public careers search rather than buying a vendor.
+  // The endpoint behind it was observed from IBM's own page, not guessed; see
+  // src/lib/ats/ibmCareers.ts. Recognising the host is what routes an IBM
+  // signal to that adapter instead of a generic careers-page scan that reads
+  // one unrelated posting.
+  { atsType: "ibm-careers", regex: /careers\.ibm\.com|ibm\.com\/careers/i, extractId: () => "ibm" },
   { atsType: "lever", regex: /jobs\.lever\.co\/([a-z0-9-]+)/i, extractId: (m) => m[1] },
   { atsType: "ashby", regex: /jobs\.ashbyhq\.com\/([a-z0-9-]+)/i, extractId: (m) => m[1] },
   { atsType: "smartrecruiters", regex: /jobs\.smartrecruiters\.com\/([a-zA-Z0-9-]+)/i, extractId: (m) => m[1] },
@@ -123,12 +143,22 @@ export async function detectAtsForCareersPage(careersUrl: string): Promise<AtsDe
 
     if (res.ok) {
       const body = await res.text();
+
+      // What the page IS outranks what the page MENTIONS.
+      //
+      // A client-rendered marker (`_EF_GROUP_ID`, the Eightfold/Phenom CDN) is
+      // evidence about the site itself. A vendor URL appearing somewhere in the
+      // HTML is not: careers pages link to legacy portals, benefits systems and
+      // partner boards all the time. New York Life is an Eightfold site whose
+      // page happens to mention a SuccessFactors host, and reading the mention
+      // first configured it as SuccessFactors — syntactically valid, reachable,
+      // and returning zero postings while NYL internships appeared in the radar.
+      const clientRendered = detectClientRenderedAts(body, res.url || careersUrl);
+      if (clientRendered.atsType !== "unknown" && clientRendered.atsIdentifier) return clientRendered;
+
       const linked = detectAtsFromText(body);
       if (linked.atsType !== "unknown") return linked;
-      // Nothing on the page links to a classic board. Before giving up, check
-      // whether the page IS a client-rendered career site whose postings live
-      // behind a JSON API on this same host.
-      return detectClientRenderedAts(body, res.url || careersUrl);
+      return { atsType: "unknown", atsIdentifier: null };
     }
     return { atsType: "unknown", atsIdentifier: null };
   } catch {
