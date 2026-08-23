@@ -27,8 +27,17 @@
 
 import { prisma } from "@/lib/db";
 import type { CompanyForListing } from "@/lib/ats";
-import { detectAtsForCareersPage } from "@/lib/ats/detect";
+import {
+  detectAtsForCareersPage,
+  detectAtsFromText,
+  detectClientRenderedAts,
+} from "@/lib/ats/detect";
+import { renderCareersPage } from "@/lib/ats/headlessResolver";
 import { resolveAtsForCompany } from "@/lib/ats/resolve";
+import {
+  discoverFromRenderedShell,
+  type SpaDiscovery,
+} from "@/lib/ats/spaDiscovery";
 import {
   normalizeCompanyKey,
   type FreshSignalReason,
@@ -60,6 +69,33 @@ const CAREERS_PATHS = [
   "/",
 ] as const;
 
+/**
+ * Hosts to try for one employer, strongest first.
+ *
+ * Sources very often publish a COUNTRY SITE as the company's website —
+ * "usa.philips.com", "us.pg.com", "us.specialisterne.com" — while the careers
+ * site lives on the registrable domain. Adding the apex is not inventing a
+ * domain: it is the same registrable domain the source already named, with a
+ * regional prefix removed.
+ *
+ * Deliberately does not strip arbitrary subdomains: only a leading region-ish
+ * label, and only down to a two-label apex.
+ */
+export function hostCandidates(domain: string): string[] {
+  const host = domain.toLowerCase().replace(/^www\./, "");
+  const labels = host.split(".");
+  if (labels.length <= 2) return [host];
+
+  const apex = labels.slice(-2).join(".");
+  // A multi-part public suffix (co.uk, com.au) would make a two-label "apex"
+  // meaningless, so require the apex to have a plausible single-label TLD.
+  if (labels.at(-2)!.length <= 3 && labels.length >= 3) {
+    const wider = labels.slice(-3).join(".");
+    return host === wider ? [host] : [host, wider];
+  }
+  return host === apex ? [host] : [host, apex];
+}
+
 function negativeBackoffMs(attempts: number): number {
   return Math.min(MAX_NEGATIVE_BACKOFF_MS, 6 * ONE_HOUR_MS * 2 ** Math.max(0, attempts - 1));
 }
@@ -77,9 +113,23 @@ function usableAts(atsType: string | null | undefined): boolean {
 function isReadableBoard(atsType: string, atsIdentifier: string | null): boolean {
   if (atsType === "successfactors") return true;
   if (!atsIdentifier) return false;
-  return ["greenhouse", "lever", "ashby", "smartrecruiters", "workday", "icims", "taleo"].includes(
-    atsType,
-  );
+  return [
+    "greenhouse",
+    "lever",
+    "ashby",
+    "smartrecruiters",
+    "workday",
+    "icims",
+    "taleo",
+    // Client-rendered career-site vendors. Their identifier is
+    // "<careersHost>|<tenantKey>" and their postings come from a public JSON
+    // API on the employer's own host.
+    "eightfold",
+    "phenom",
+    // Not vendors: page-derived paths whose "identifier" is a URL.
+    "spa",
+    "employer-page",
+  ].includes(atsType);
 }
 
 /**
@@ -129,7 +179,7 @@ export function findApprovedCompany(
 }
 
 const CAREERS_LINK_TEXT = /\b(careers?|jobs|join\s+(us|our\s+team)|work\s+(with|for)\s+us|open\s+(roles|positions))\b/i;
-const MAX_HOMEPAGE_CAREERS_LINKS = 4;
+const MAX_HOMEPAGE_CAREERS_LINKS = 6;
 
 /**
  * Careers destinations the employer's own homepage links to.
@@ -138,9 +188,42 @@ const MAX_HOMEPAGE_CAREERS_LINKS = 4;
  * careers site at careers.example.com or examplecareers.com has still stated
  * that destination itself. What is never allowed is a hostname nobody stated.
  */
+/**
+ * How likely a careers link is to be the actual jobs ENTRY POINT.
+ *
+ * Lower sorts first. This ranking exists because a corporate homepage links to
+ * a dozen careers-flavoured marketing pages, and taking the first few in
+ * document order is how "gf.com" ended up crawling
+ * /careers/where-we-work/north-america/ and never reaching careers.gf.com —
+ * the Eightfold site that actually holds the jobs.
+ */
+function careersLinkRank(url: URL, homepageHost: string): number {
+  const host = url.hostname.replace(/^www\./, "").toLowerCase();
+  const path = url.pathname.replace(/\/+$/, "").toLowerCase();
+  const depth = path.split("/").filter(Boolean).length;
+
+  // A dedicated careers host (careers.acme.com, jobs.acme.com, acmecareers.com)
+  // is the strongest signal an employer can give about where its jobs live.
+  const dedicatedHost = host !== homepageHost && /(^|\.)(careers?|jobs)\.|careers?$|jobs$/.test(host);
+  if (dedicatedHost) return depth === 0 ? 0 : 1;
+
+  // A top-level /careers or /jobs on the same site.
+  if (depth <= 1 && /^\/(careers?|jobs)$/.test(path || "/")) return 2;
+  if (depth <= 2 && /^\/(careers?|jobs)\//.test(path)) return 3;
+  if (host !== homepageHost) return 4;
+  return 5 + depth;
+}
+
 export function extractCareersLinks(html: string, homepageUrl: string): string[] {
-  const found: string[] = [];
+  const candidates: { url: URL; rank: number }[] = [];
   const seen = new Set<string>();
+  let homepageHost = "";
+  try {
+    homepageHost = new URL(homepageUrl).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return [];
+  }
+
   for (const match of html.matchAll(/<a\b[^>]*href=["']([^"'#]+)["'][^>]*>([\s\S]{0,200}?)<\/a>/gi)) {
     const href = match[1];
     const text = (match[2] ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
@@ -154,20 +237,25 @@ export function extractCareersLinks(html: string, homepageUrl: string): string[]
       continue;
     }
     if (url.protocol !== "https:" && url.protocol !== "http:") continue;
-    // A link straight into a known ATS is handled by detection anyway; keep it,
-    // it is the strongest possible hit.
     const normalized = `https://${url.hostname.replace(/^www\./, "")}${url.pathname.replace(/\/+$/, "")}`;
     if (seen.has(normalized)) continue;
     seen.add(normalized);
-    found.push(url.toString());
-    if (found.length >= MAX_HOMEPAGE_CAREERS_LINKS) break;
+    candidates.push({ url, rank: careersLinkRank(url, homepageHost) });
   }
-  return found;
+
+  return candidates
+    .sort((a, b) => a.rank - b.rank || a.url.pathname.length - b.url.pathname.length)
+    .slice(0, MAX_HOMEPAGE_CAREERS_LINKS)
+    .map((candidate) => candidate.url.toString());
 }
 
-export async function careersLinksFromHomepage(domain: string): Promise<string[]> {
+/** Fetch one page and run the no-browser embedded-data strategies over it. */
+async function fetchRenderedShell(
+  careersUrl: string,
+  companyName: string,
+): Promise<SpaDiscovery | null> {
   try {
-    const response = await fetch(`https://${domain}/`, {
+    const response = await fetch(careersUrl, {
       redirect: "follow",
       headers: {
         "User-Agent":
@@ -175,11 +263,91 @@ export async function careersLinksFromHomepage(domain: string): Promise<string[]
       },
       signal: AbortSignal.timeout(15_000),
     });
-    if (!response.ok) return [];
-    return extractCareersLinks(await response.text(), response.url || `https://${domain}/`);
+    if (!response.ok) return null;
+    const html = await response.text();
+    return discoverFromRenderedShell(html, response.url || careersUrl, companyName);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Dedicated careers hosts a page REFERENCES, even outside an anchor.
+ *
+ * GlobalFoundries is the case that motivated this: gf.com's homepage links only
+ * to marketing pages under /careers/, and the actual Eightfold site
+ * (careers.gf.com) is referenced from inside those pages — in a script config,
+ * not an <a href>. Scanning for careers-shaped hostnames finds it. This is
+ * still a host the employer's own page names; nothing is constructed.
+ */
+export function dedicatedCareersHostUrls(html: string, baseUrl: string): string[] {
+  let baseHost = "";
+  try {
+    baseHost = new URL(baseUrl).hostname.replace(/^www\./, "").toLowerCase();
   } catch {
     return [];
   }
+  const registrable = baseHost.split(".").slice(-2).join(".");
+
+  const found: string[] = [];
+  const seen = new Set<string>();
+  for (const match of html.matchAll(/https?:\/\/([a-z0-9.-]+\.[a-z]{2,})/gi)) {
+    const host = match[1]!.toLowerCase().replace(/^www\./, "");
+    if (host === baseHost || seen.has(host)) continue;
+    const isCareersHost =
+      /^(careers?|jobs|recruiting|talent)\./.test(host) ||
+      (host.endsWith(registrable) && /(careers?|jobs)/.test(host)) ||
+      /^[a-z0-9-]*(careers|jobs)\.[a-z]{2,}$/.test(host);
+    if (!isCareersHost) continue;
+    seen.add(host);
+    found.push(`https://${host}/`);
+    if (found.length >= 3) break;
+  }
+  return found;
+}
+
+async function fetchText(url: string): Promise<{ html: string; finalUrl: string } | null> {
+  try {
+    const response = await fetch(url, {
+      redirect: "follow",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) return null;
+    return { html: await response.text(), finalUrl: response.url || url };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Careers destinations reachable from an employer's own site.
+ *
+ * Reads the homepage AND the conventional /careers landing page, because a
+ * dedicated careers host is very often named only on the latter.
+ */
+export async function careersLinksFromHomepage(domain: string): Promise<string[]> {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (url: string) => {
+    const key = url.replace(/\/+$/, "");
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(url);
+  };
+
+  for (const entry of [`https://${domain}/`, `https://${domain}/careers`]) {
+    const page = await fetchText(entry);
+    if (!page) continue;
+    // Dedicated careers hosts first — they are the strongest signal available.
+    for (const url of dedicatedCareersHostUrls(page.html, page.finalUrl)) push(url);
+    for (const url of extractCareersLinks(page.html, page.finalUrl)) push(url);
+    if (out.length >= MAX_HOMEPAGE_CAREERS_LINKS + 3) break;
+  }
+  return out.slice(0, MAX_HOMEPAGE_CAREERS_LINKS + 3);
 }
 
 /**
@@ -192,8 +360,23 @@ async function discoverBoardFromDomain(
   companyName: string,
   domain: string,
 ): Promise<{ careersUrl: string; atsType: string; atsIdentifier: string; evidence: string } | null> {
-  for (const path of CAREERS_PATHS) {
-    const careersUrl = `https://${domain}${path}`;
+  // Fetched at most once per employer: every pass below reuses this list.
+  let homepageLinks: string[] | null = null;
+  const linksFromSite = async (): Promise<string[]> => {
+    if (homepageLinks === null) {
+      homepageLinks = [];
+      for (const host of hostCandidates(domain)) {
+        homepageLinks.push(...(await careersLinksFromHomepage(host)));
+        if (homepageLinks.length > 0) break;
+      }
+    }
+    return homepageLinks;
+  };
+
+  for (const { host, path } of hostCandidates(domain).flatMap((host) =>
+    CAREERS_PATHS.map((path) => ({ host, path })),
+  )) {
+    const careersUrl = `https://${host}${path}`;
     // Detect across EVERY vendor this codebase can actually read, not just the
     // five resolveAtsForCompany treats as "direct". A live measurement of 20
     // fresh signals found 18 of them at employers on iCIMS, SuccessFactors or
@@ -220,7 +403,7 @@ async function discoverBoardFromDomain(
   // marketing homepage. Following the "Careers" link the employer's OWN
   // homepage publishes reaches those, and is still employer-stated evidence
   // rather than a guess.
-  for (const careersUrl of await careersLinksFromHomepage(domain)) {
+  for (const careersUrl of await linksFromSite()) {
     const detected = await detectAtsForCareersPage(careersUrl);
     if (!isReadableBoard(detected.atsType, detected.atsIdentifier)) continue;
     return {
@@ -234,6 +417,107 @@ async function discoverBoardFromDomain(
         confirmedAt: new Date().toISOString(),
       }),
     };
+  }
+
+  // Third pass: the page may be a client-rendered shell that still embeds its
+  // postings as schema.org JobPosting JSON-LD or a framework state blob, or
+  // that embeds a classic ATS board in an iframe. "The HTML had no job links"
+  // is not the same as "this employer has no jobs".
+  for (const careersUrl of [
+    ...CAREERS_PATHS.map((path) => `https://${domain}${path}`),
+    ...(await linksFromSite()),
+  ].slice(0, 8)) {
+    const shell = await fetchRenderedShell(careersUrl, companyName);
+    if (!shell) continue;
+
+    if (shell.embeddedAts?.atsIdentifier && isReadableBoard(shell.embeddedAts.atsType, shell.embeddedAts.atsIdentifier)) {
+      return {
+        careersUrl,
+        atsType: shell.embeddedAts.atsType,
+        atsIdentifier: shell.embeddedAts.atsIdentifier,
+        evidence: JSON.stringify({
+          method: "embedded-ats-board",
+          crawledPage: careersUrl,
+          confirmedAt: new Date().toISOString(),
+        }),
+      };
+    }
+
+    if (shell.jobs.length > 0) {
+      return {
+        careersUrl,
+        atsType: "spa",
+        atsIdentifier: careersUrl,
+        evidence: JSON.stringify({
+          method: "embedded-page-data",
+          crawledPage: careersUrl,
+          postingsFound: shell.jobs.length,
+          apiHints: shell.apiHints,
+          confirmedAt: new Date().toISOString(),
+        }),
+      };
+    }
+
+    // Last no-browser tier: the page may simply LINK to each official posting.
+    // Benesch publishes its openings this way at /job-openings/ — no ATS
+    // signature anywhere, no embedded JSON, just anchors to real job pages.
+    if (shell.officialJobLinks > 0) {
+      return {
+        careersUrl,
+        atsType: "employer-page",
+        atsIdentifier: careersUrl,
+        evidence: JSON.stringify({
+          method: "employer-page-job-links",
+          crawledPage: careersUrl,
+          postingsFound: shell.officialJobLinks,
+          confirmedAt: new Date().toISOString(),
+        }),
+      };
+    }
+  }
+
+  // Fourth pass: render ONE careers page. Reached only when every no-browser
+  // strategy above has failed, so the cost falls on exactly the employers that
+  // cannot be read any other way — a careers site whose ATS signature and whose
+  // postings both only exist after its own scripts run. The same pure detectors
+  // are reused on the rendered DOM, and renderCareersPage enforces the browser
+  // limits (one at a time, closed immediately, per-host cooldown).
+  const renderTarget = (await linksFromSite())[0] ?? `https://${domain}/careers`;
+  const rendered = await renderCareersPage(renderTarget);
+  if (rendered) {
+    const linked = detectAtsFromText(rendered.html);
+    const clientRendered = detectClientRenderedAts(rendered.html, rendered.finalUrl);
+    const detected = isReadableBoard(linked.atsType, linked.atsIdentifier)
+      ? linked
+      : clientRendered;
+
+    if (isReadableBoard(detected.atsType, detected.atsIdentifier)) {
+      return {
+        careersUrl: rendered.finalUrl,
+        atsType: detected.atsType,
+        atsIdentifier: detected.atsIdentifier ?? detected.atsType,
+        evidence: JSON.stringify({
+          method: "rendered-careers-page",
+          crawledPage: rendered.finalUrl,
+          confirmedAt: new Date().toISOString(),
+        }),
+      };
+    }
+
+    const shell = discoverFromRenderedShell(rendered.html, rendered.finalUrl, companyName);
+    if (shell.jobs.length > 0 || shell.officialJobLinks > 0) {
+      return {
+        careersUrl: rendered.finalUrl,
+        atsType: shell.jobs.length > 0 ? "spa" : "employer-page",
+        atsIdentifier: rendered.finalUrl,
+        evidence: JSON.stringify({
+          method: "rendered-page-postings",
+          crawledPage: rendered.finalUrl,
+          postingsFound: shell.jobs.length || shell.officialJobLinks,
+          confirmedAt: new Date().toISOString(),
+        }),
+      };
+    }
   }
 
   // Fallback: conservative slug probing, which resolveAtsForCompany only allows

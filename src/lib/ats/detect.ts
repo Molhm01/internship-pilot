@@ -45,6 +45,58 @@ export function detectAtsFromText(text: string): AtsDetectionResult {
   return { atsType: "unknown", atsIdentifier: null };
 }
 
+// ---------------------------------------------------------------------------
+// Client-rendered career-site vendors
+// ---------------------------------------------------------------------------
+//
+// Eightfold and Phenom do not put a recognisable board URL anywhere in the
+// page — they render everything from JSON at runtime and serve their API from
+// the EMPLOYER's own hostname. So detection needs two things the URL-pattern
+// table above cannot express: the page body (for the tenant key) and the page's
+// final URL (for the host that serves the API). Their identifiers are stored as
+// "<careersHost>|<tenantKey>".
+
+/** `window._EF_GROUP_ID = "globalfoundries.com"` on every Eightfold PCSX site. */
+const EIGHTFOLD_GROUP_ID = /window\._EF_GROUP_ID\s*=\s*["']([^"']+)["']/i;
+const EIGHTFOLD_MARKER = /app\.eightfold\.ai|static\.vscdn\.net|_EF_PRODUCT\s*=\s*["']PCS/i;
+
+/** Phenom publishes its tenant as `refNum`, and again in its CDN asset paths. */
+const PHENOM_REF_NUM = [
+  /["']refNum["']\s*:\s*["']([A-Z0-9_]{4,40})["']/,
+  /CareerConnectResources\/([A-Z0-9_]{4,40})\//,
+  /["']ph_?id["']\s*[:=]\s*["']([A-Z0-9_]{4,40})["']/i,
+] as const;
+const PHENOM_MARKER = /phenompeople\.com|cdn-bot\.phenompeople|content-ir\.phenompeople/i;
+
+/**
+ * Identify a client-rendered career-site vendor from a fetched page.
+ *
+ * `finalUrl` must be the URL the page was actually served from after redirects,
+ * because that host — not the vendor's — is where the public JSON API lives.
+ */
+export function detectClientRenderedAts(html: string, finalUrl: string): AtsDetectionResult {
+  let host: string;
+  try {
+    host = new URL(finalUrl).hostname.toLowerCase();
+  } catch {
+    return { atsType: "unknown", atsIdentifier: null };
+  }
+
+  if (EIGHTFOLD_MARKER.test(html)) {
+    const groupId = html.match(EIGHTFOLD_GROUP_ID)?.[1]?.trim();
+    if (groupId) return { atsType: "eightfold", atsIdentifier: `${host}|${groupId}` };
+  }
+
+  if (PHENOM_MARKER.test(html)) {
+    for (const pattern of PHENOM_REF_NUM) {
+      const refNum = html.match(pattern)?.[1]?.trim();
+      if (refNum) return { atsType: "phenom", atsIdentifier: `${host}|${refNum}` };
+    }
+  }
+
+  return { atsType: "unknown", atsIdentifier: null };
+}
+
 // Fetches a company's careers page (following redirects) and checks both the
 // final URL and the page body for a known ATS signature — covers both the
 // "careers page redirects straight to the ATS" and "careers page embeds/links
@@ -64,7 +116,12 @@ export async function detectAtsForCareersPage(careersUrl: string): Promise<AtsDe
 
     if (res.ok) {
       const body = await res.text();
-      return detectAtsFromText(body);
+      const linked = detectAtsFromText(body);
+      if (linked.atsType !== "unknown") return linked;
+      // Nothing on the page links to a classic board. Before giving up, check
+      // whether the page IS a client-rendered career site whose postings live
+      // behind a JSON API on this same host.
+      return detectClientRenderedAts(body, res.url || careersUrl);
     }
     return { atsType: "unknown", atsIdentifier: null };
   } catch {

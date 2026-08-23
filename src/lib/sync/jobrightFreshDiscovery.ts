@@ -19,6 +19,10 @@
 
 import { prisma } from "@/lib/db";
 import { listJobsForCompany } from "@/lib/ats";
+import { fetchEightfoldJobDescription } from "@/lib/ats/eightfold";
+import { fetchPhenomJobDescription } from "@/lib/ats/phenom";
+import { resolveWithHeadlessBrowser } from "@/lib/ats/headlessResolver";
+import { listEmployerPageJobs } from "@/lib/ats/employerPageLinks";
 import type { AtsJob } from "@/lib/ats/types";
 import {
   isAggregatorUrl,
@@ -184,11 +188,15 @@ export function asOfficialAtsJob(
   };
 }
 
-async function persistOfficialSignal(job: AtsJob): Promise<{
+async function persistOfficialSignal(
+  job: AtsJob,
+  providerHint?: string | null,
+): Promise<{
   outcome: "new" | "updated" | "unchanged";
   jobId: string | null;
+  provider: string;
 }> {
-  const resolved = inferResolvedSource(job.applyUrl);
+  const resolved = inferResolvedSource(job.applyUrl, providerHint);
   const outcome = await upsertClassifiedAtsJob({
     job,
     source: resolved.source,
@@ -205,7 +213,7 @@ async function persistOfficialSignal(job: AtsJob): Promise<{
     where: { officialApplicationUrl: job.applyUrl },
     select: { id: true },
   });
-  return { outcome, jobId: stored?.id ?? null };
+  return { outcome, jobId: stored?.id ?? null, provider: resolved.source };
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +246,10 @@ export type FreshRadarDiagnostics = {
   updatedJobs: number;
   medianResolutionMs: number | null;
   reasonCounts: FreshSignalReasonCounts;
+  /** Resolved postings by the official system they were resolved through. */
+  providerCounts: Record<string, number>;
+  /** Resolved postings that already carry the employer's real job description. */
+  resolvedWithJd: number;
 };
 
 /** One-line render used by the scheduler log and the diagnostic script. */
@@ -251,8 +263,20 @@ export function formatFreshRadarDiagnostics(d: FreshRadarDiagnostics): string {
     `resolved=${resolved} (${rate}%) unresolved=${d.unresolved} closed=${d.closed} ` +
     `duplicates=${d.duplicates} new=${d.newJobs} updated=${d.updatedJobs} ` +
     `alreadyResolved=${d.alreadyResolved} deferred=${d.deferred} ` +
-    `medianResolutionMs=${d.medianResolutionMs ?? "n/a"} | reasons: ${formatReasonCounts(d.reasonCounts)}`
+    `withJD=${d.resolvedWithJd}/${resolved} ` +
+    `medianResolutionMs=${d.medianResolutionMs ?? "n/a"} | providers: ${formatProviderCounts(d.providerCounts)}` +
+    ` | reasons: ${formatReasonCounts(d.reasonCounts)}`
   );
+}
+
+/** "greenhouse=4 workday=3" — busiest provider first. */
+export function formatProviderCounts(counts: Record<string, number>): string {
+  const entries = Object.entries(counts).filter(([, value]) => value > 0);
+  if (entries.length === 0) return "none";
+  return entries
+    .sort(([leftKey, left], [rightKey, right]) => right - left || leftKey.localeCompare(rightKey))
+    .map(([key, value]) => `${key}=${value}`)
+    .join(" ");
 }
 
 function median(values: number[]): number | null {
@@ -277,6 +301,10 @@ type SignalOutcome =
       persistOutcome: "new" | "updated" | "unchanged";
       /** True when the employer's board was found automatically, not from the CSV. */
       autoResolvedEmployer: boolean;
+      /** Canonical provider token the destination was attributed to. */
+      provider: string;
+      /** True when a real employer job description came with the resolution. */
+      hasEmployerJd: boolean;
     }
   | { state: "CLOSED"; url: string; reason: string }
   | { state: "PENDING"; reason: FreshSignalReason; detail: string };
@@ -317,6 +345,7 @@ async function verifyAndPersist(
   boardJob: AtsJob | null,
   path: "direct_official_url" | "source_original_post" | "employer_board",
   autoResolvedEmployer: boolean,
+  providerHint?: string | null,
 ): Promise<SignalOutcome> {
   const probe = await probeOfficialJobAvailability(url);
   if (!shouldPromoteAfterProbe(probe.state)) {
@@ -324,8 +353,18 @@ async function verifyAndPersist(
   }
 
   try {
-    const { outcome, jobId } = await persistOfficialSignal(asOfficialAtsJob(signal, url, boardJob));
-    return { state: "RESOLVED", path, url, jobId, persistOutcome: outcome, autoResolvedEmployer };
+    const job = asOfficialAtsJob(signal, url, boardJob);
+    const { outcome, jobId, provider } = await persistOfficialSignal(job, providerHint);
+    return {
+      state: "RESOLVED",
+      path,
+      url,
+      jobId,
+      persistOutcome: outcome,
+      autoResolvedEmployer,
+      provider,
+      hasEmployerJd: job.description.trim().length > 200,
+    };
   } catch (error) {
     return {
       state: "PENDING",
@@ -336,7 +375,7 @@ async function verifyAndPersist(
 }
 
 /** Board contents, fetched at most once per employer per tick. */
-type BoardCache = Map<string, { jobs: AtsJob[]; fetchFailed: boolean }>;
+type BoardCache = Map<string, { jobs: AtsJob[]; fetchFailed: boolean; botWalled: boolean }>;
 
 /**
  * In-flight employer resolutions, keyed by normalized company.
@@ -349,15 +388,23 @@ type BoardCache = Map<string, { jobs: AtsJob[]; fetchFailed: boolean }>;
  */
 type EmployerResolutionCache = Map<string, Promise<EmployerBoardOutcome>>;
 
+/**
+ * Vendors that answer automated HTTP reads with a bot wall rather than their
+ * public listing. An empty result from one of these is a blocked read, not an
+ * employer with no openings, and it is worth one bounded rendered page.
+ */
+const BOT_WALLED_VENDORS = new Set(["icims", "taleo", "custom", "spa", "employer-page"]);
+
 async function boardJobsFor(
   config: EmployerBoardConfig,
+  companyName: string,
   cache: BoardCache,
-): Promise<{ jobs: AtsJob[]; fetchFailed: boolean }> {
+): Promise<{ jobs: AtsJob[]; fetchFailed: boolean; botWalled: boolean }> {
   const key = `${config.atsType}:${config.atsIdentifier}`;
   const cached = cache.get(key);
   if (cached) return cached;
 
-  let result: { jobs: AtsJob[]; fetchFailed: boolean };
+  let result: { jobs: AtsJob[]; fetchFailed: boolean; botWalled: boolean };
   try {
     const listed = await listJobsForCompany({
       ...config,
@@ -366,13 +413,82 @@ async function boardJobsFor(
       contentHash: null,
     });
     result = listed.supported
-      ? { jobs: listed.jobs, fetchFailed: false }
-      : { jobs: [], fetchFailed: true };
+      ? { jobs: listed.jobs, fetchFailed: false, botWalled: false }
+      : { jobs: [], fetchFailed: true, botWalled: false };
   } catch {
-    result = { jobs: [], fetchFailed: true };
+    result = { jobs: [], fetchFailed: true, botWalled: false };
   }
+
+  // Before spending a browser: the employer's OWN careers page often links
+  // directly to every posting on the walled board, in plain server-rendered
+  // HTML. One cheap fetch, and it frequently succeeds where the vendor's portal
+  // refuses to answer at all.
+  if (result.jobs.length === 0 && config.careersUrl) {
+    const linked = await listEmployerPageJobs(config.careersUrl, companyName);
+    if (linked.length > 0) result = { jobs: linked, fetchFailed: false, botWalled: false };
+  }
+
+  // Bounded headless fallback. Reached ONLY after the HTTP/API path produced
+  // nothing, only for vendors known to gate automated reads, and only through
+  // ordinary public navigation. resolveWithHeadlessBrowser owns the process
+  // limits: one browser at a time, closed at the end of the batch.
+  if (result.jobs.length === 0 && BOT_WALLED_VENDORS.has(config.atsType ?? "")) {
+    const renderUrl = headlessListingUrlFor(config);
+    if (renderUrl) {
+      const [outcome] = await resolveWithHeadlessBrowser([
+        { tenantKey: key, url: renderUrl, companyName },
+      ]);
+      if (outcome && outcome.jobs.length > 0) {
+        result = { jobs: outcome.jobs, fetchFailed: false, botWalled: false };
+      } else {
+        result = { jobs: [], fetchFailed: true, botWalled: true };
+      }
+    } else {
+      result = { ...result, botWalled: true };
+    }
+  }
+
   cache.set(key, result);
   return result;
+}
+
+/**
+ * Attach the employer's real job description to a matched board posting.
+ *
+ * Adapters for the client-rendered vendors deliberately list without
+ * descriptions — one detail request per listed posting would be dozens of
+ * requests per employer for a single match. Fetching exactly one, here, keeps
+ * the cost proportional while still giving the ATS scorer real text.
+ *
+ * A failure is not an error: the posting is promoted regardless and the
+ * asynchronous JD hydration pass fills the gap later.
+ */
+async function withEmployerDescription(
+  config: EmployerBoardConfig,
+  job: AtsJob,
+): Promise<AtsJob> {
+  if (job.description && job.description.trim().length > 200) return job;
+  if (!config.atsIdentifier) return job;
+
+  try {
+    let description: string | null = null;
+    if (config.atsType === "eightfold") {
+      description = await fetchEightfoldJobDescription(config.atsIdentifier, job.sourceJobId);
+    } else if (config.atsType === "phenom") {
+      description = await fetchPhenomJobDescription(config.atsIdentifier, job.sourceJobId);
+    }
+    return description ? { ...job, description } : job;
+  } catch {
+    return job;
+  }
+}
+
+/** The public listing page worth rendering for a vendor that blocked us. */
+function headlessListingUrlFor(config: EmployerBoardConfig): string | null {
+  if (config.atsType === "icims" && config.atsIdentifier) {
+    return `https://${config.atsIdentifier}.icims.com/jobs/search?ss=1&searchKeyword=intern`;
+  }
+  return config.careersUrl ?? null;
 }
 
 async function resolveOneSignal(
@@ -427,7 +543,11 @@ async function resolveOneSignal(
     };
   }
 
-  const { jobs, fetchFailed } = await boardJobsFor(board.config, boardCache);
+  const { jobs, fetchFailed, botWalled } = await boardJobsFor(
+    board.config,
+    signal.company,
+    boardCache,
+  );
   // An empty result is reported as a FETCH failure, not as "the board has
   // nothing like this". Vendors such as iCIMS answer automated reads with a
   // bot wall (HTTP 405 "Human Verification"), which is indistinguishable from
@@ -437,7 +557,7 @@ async function resolveOneSignal(
   if (fetchFailed || jobs.length === 0) {
     return {
       state: "PENDING",
-      reason: "ATS_BOARD_FETCH_FAILED",
+      reason: botWalled ? "BOT_WALL_BLOCKED" : "ATS_BOARD_FETCH_FAILED",
       detail: `Read no postings from ${board.config.atsType}/${board.config.atsIdentifier} for "${signal.company}".`,
     };
   }
@@ -469,12 +589,18 @@ async function resolveOneSignal(
     };
   }
 
+  // The matched posting is the ONLY one whose description is worth fetching, so
+  // it is fetched here rather than by the adapter listing dozens of them. This
+  // is what turns "resolved but unscoreable" into "resolved with a real JD".
+  const boardJob = await withEmployerDescription(board.config, verdict.job);
+
   return verifyAndPersist(
     signal,
-    verdict.job.applyUrl,
-    verdict.job,
+    boardJob.applyUrl,
+    boardJob,
     "employer_board",
     board.config.origin !== "approved_company",
+    board.config.atsType,
   );
 }
 
@@ -607,6 +733,8 @@ export async function runJobrightFreshDiscovery(
     updatedJobs: 0,
     medianResolutionMs: null,
     reasonCounts,
+    providerCounts: {},
+    resolvedWithJd: 0,
   };
 
   let cursor = 0;
@@ -646,6 +774,9 @@ export async function runJobrightFreshDiscovery(
         else if (outcome.path === "source_original_post") diagnostics.sourceOriginalPost += 1;
         else diagnostics.boardResolved += 1;
         if (outcome.autoResolvedEmployer) diagnostics.companyResolved += 1;
+        if (outcome.hasEmployerJd) diagnostics.resolvedWithJd += 1;
+        diagnostics.providerCounts[outcome.provider] =
+          (diagnostics.providerCounts[outcome.provider] ?? 0) + 1;
         if (outcome.persistOutcome === "new") diagnostics.newJobs += 1;
         else if (outcome.persistOutcome === "updated") {
           diagnostics.updatedJobs += 1;

@@ -21,6 +21,8 @@ export type CanonicalSource =
   | "icims"
   | "taleo"
   | "successfactors"
+  | "eightfold"
+  | "phenom"
   | "usajobs"
   | "manual"
   | "other";
@@ -44,6 +46,11 @@ export const DIRECT_OFFICIAL_SOURCES: ReadonlySet<CanonicalSource> = new Set<Can
   "workday",
   "icims",
   "successfactors",
+  // Eightfold and Phenom are career-site layers in front of a real ATS. A
+  // posting read from their public JSON API is the employer's own record, and
+  // Phenom rows even carry the underlying ATS apply URL directly.
+  "eightfold",
+  "phenom",
   "usajobs",
 ]);
 
@@ -98,6 +105,8 @@ export function canonicalizeSource(raw: string | null | undefined): CanonicalSou
   if (/icims/.test(flat)) return "icims";
   if (/taleo/.test(flat)) return "taleo";
   if (/successfactors/.test(flat)) return "successfactors";
+  if (/eightfold/.test(flat)) return "eightfold";
+  if (/phenom/.test(flat)) return "phenom";
   if (/usajobs/.test(flat)) return "usajobs";
   if (/manual/.test(flat)) return "manual";
   return "other";

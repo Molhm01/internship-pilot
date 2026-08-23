@@ -252,11 +252,17 @@ describe("board-match rejection reasons are specific", () => {
   });
 
   it("reports TITLE_MATCH_TOO_LOW for a partial title overlap under the bar", () => {
-    // 4 of 6 tokens shared = 0.67, above the 0.55 "worth diagnosing" floor but
-    // below the 0.72 accept bar, and the board gives no state to add confidence.
+    // Both titles carry a distinctive token the other lacks ("controls" vs
+    // "thermal"), so neither contains the other: 4 of 6 shared = 0.67, above the
+    // 0.55 "worth diagnosing" floor but below the 0.72 accept bar.
     const verdict = classifyOfficialBoardMatch(
-      { title: "Software Engineering Intern Compilers", location: "Austin, TX" },
-      [boardJob({ title: "Software Engineering Intern Compilers Runtime Performance", location: "Remote" })],
+      { title: "Mechanical Engineering Intern Robotics Controls", location: "Austin, TX" },
+      [
+        boardJob({
+          title: "Mechanical Engineering Intern Robotics Thermal Systems",
+          location: "Remote",
+        }),
+      ],
     );
     expect(verdict.accepted).toBe(false);
     if (!verdict.accepted) {
@@ -303,6 +309,8 @@ describe("Gate 10 (observability) — unresolved is never one generic bucket", (
       updatedJobs: 21,
       medianResolutionMs: 1800,
       reasonCounts: { NO_ATS_CONFIG: 20, NETWORK_FAILURE: 6 },
+      providerCounts: { workday: 60, greenhouse: 45, eightfold: 25, phenom: 15 },
+      resolvedWithJd: 120,
     };
     const line = formatFreshRadarDiagnostics(diagnostics);
     expect(line).toContain("signals=312");
@@ -337,6 +345,8 @@ describe("Gate 10 (observability) — unresolved is never one generic bucket", (
       updatedJobs: 0,
       medianResolutionMs: null,
       reasonCounts: {},
+      providerCounts: { greenhouse: 5, phenom: 3 },
+      resolvedWithJd: 6,
     });
     expect(line).toContain("resolved=8 (80%)");
   });

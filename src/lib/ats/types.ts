@@ -28,6 +28,8 @@ export type AtsType =
   | "icims"
   | "taleo"
   | "successfactors"
+  | "eightfold"
+  | "phenom"
   | "usajobs"
   | "custom"
   | "unknown";

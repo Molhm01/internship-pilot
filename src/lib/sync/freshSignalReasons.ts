@@ -27,6 +27,15 @@ export const FRESH_SIGNAL_REASONS = [
   "POSTING_CLOSED",
   /** A transient network/HTTP failure. Explicitly NOT a closure. */
   "NETWORK_FAILURE",
+  /** The board answered 429 / 5xx. Transient by definition — back off, retry. */
+  "RATE_LIMITED",
+  /**
+   * The board served a bot wall instead of its public listing (iCIMS answers
+   * automated GETs with HTTP 405 "Human Verification"). Distinct from a fetch
+   * failure because the remedy is different: render the public page once,
+   * rather than simply asking again.
+   */
+  "BOT_WALL_BLOCKED",
   /** The signal itself could not be parsed into a usable identity. */
   "PARSER_FAILURE",
 ] as const;
@@ -43,6 +52,8 @@ export type FreshSignalReasonCounts = Partial<Record<FreshSignalReason, number>>
 const TRANSIENT: ReadonlySet<FreshSignalReason> = new Set<FreshSignalReason>([
   "ATS_BOARD_FETCH_FAILED",
   "NETWORK_FAILURE",
+  "RATE_LIMITED",
+  "BOT_WALL_BLOCKED",
 ]);
 
 export function isTransientReason(reason: FreshSignalReason): boolean {

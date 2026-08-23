@@ -6,6 +6,10 @@ import { listSmartRecruitersJobs } from "@/lib/ats/smartrecruiters";
 import { listWorkdayJobs } from "@/lib/ats/workday";
 import { listIcimsJobs } from "@/lib/ats/icims";
 import { listSuccessFactorsJobs } from "@/lib/ats/successfactors";
+import { listEightfoldJobs } from "@/lib/ats/eightfold";
+import { listPhenomJobs } from "@/lib/ats/phenom";
+import { listSpaEmbeddedJobs } from "@/lib/ats/spaDiscovery";
+import { listEmployerPageJobs } from "@/lib/ats/employerPageLinks";
 import { scanCareersPageForInternshipLinks } from "@/lib/ats/generic";
 
 export * from "@/lib/ats/types";
@@ -66,6 +70,27 @@ export async function listJobsForCompany(company: CompanyForListing): Promise<Li
         jobs: await listIcimsJobs(id, company.careersUrl, company.name),
         supported: true,
       };
+    case "eightfold":
+      if (!id) return { jobs: [], supported: false };
+      return { jobs: await listEightfoldJobs(id, company.name), supported: true };
+    case "phenom":
+      if (!id) return { jobs: [], supported: false };
+      return { jobs: await listPhenomJobs(id, company.name), supported: true };
+    case "employer-page": {
+      // The employer publishes its openings as ordinary links to real job
+      // pages. The "identifier" is the page holding those links.
+      const listUrl = id ?? company.careersUrl;
+      if (!listUrl) return { jobs: [], supported: false };
+      return { jobs: await listEmployerPageJobs(listUrl, company.name), supported: true };
+    }
+    case "spa": {
+      // No vendor tenant exists for this path: the "identifier" IS the careers
+      // page, and the postings come from data the page embeds (JSON-LD or a
+      // framework state blob) rather than from an ATS API.
+      const pageUrl = id ?? company.careersUrl;
+      if (!pageUrl) return { jobs: [], supported: false };
+      return { jobs: await listSpaEmbeddedJobs(pageUrl, company.name), supported: true };
+    }
     case "successfactors":
       if (!company.careersUrl) return { jobs: [], supported: false };
       return {
