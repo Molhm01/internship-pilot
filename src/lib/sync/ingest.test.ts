@@ -65,14 +65,14 @@ describe("job ingestion INITIAL AI Match trigger", () => {
     scheduleInitialAiMatch.mockResolvedValue({ scheduled: true, reason: "SCHEDULED" });
   });
 
-  it("schedules exactly one INITIAL match only after a genuinely new job is persisted", async () => {
+  it("queues exactly one INITIAL match without starting model work in discovery", async () => {
     await expect(ingestAtsJobs([importedJob], "ats:greenhouse")).resolves.toEqual({
       newCount: 1,
       updatedCount: 0,
     });
     expect(jobCreate).toHaveBeenCalledOnce();
     expect(scheduleInitialAiMatch).toHaveBeenCalledOnce();
-    expect(scheduleInitialAiMatch).toHaveBeenCalledWith("job-new");
+    expect(scheduleInitialAiMatch).toHaveBeenCalledWith("job-new", { startWorker: false });
     expect(jobCreate.mock.invocationCallOrder[0]).toBeLessThan(scheduleInitialAiMatch.mock.invocationCallOrder[0]);
   });
 
@@ -93,6 +93,20 @@ describe("job ingestion INITIAL AI Match trigger", () => {
         activeFeed: true,
       }),
     }));
+  });
+
+  it("lets bounded discovery diagnostics ingest without queueing model work", async () => {
+    await upsertClassifiedAtsJob({
+      job: importedJob,
+      source: "workday",
+      atsType: "workday",
+      atsTenant: "signal/External",
+      classification: "QUALIFYING_INTERNSHIP",
+      classificationReason: "Validated board role.",
+      scheduleInitialMatch: false,
+    });
+    expect(jobCreate).toHaveBeenCalledOnce();
+    expect(scheduleInitialAiMatch).not.toHaveBeenCalled();
   });
 
   it("does not schedule when an existing job is rediscovered or updated", async () => {

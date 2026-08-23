@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { listWorkdayJobs } from "@/lib/ats/workday";
+import { listWorkdayJobs, parseWorkdayConfiguration, probeWorkdayJobs } from "@/lib/ats/workday";
 
 type Call = { url: string; body: unknown };
 
@@ -47,6 +47,7 @@ function bigTenantFetch(calls: Call[]): typeof fetch {
         location: "Boise, ID - Main Site",
         jobDescription: "<p>Real employer job description.</p>",
         postedOn: "Posted Yesterday",
+        startDate: "2026-08-22",
       },
     });
   }) as unknown as typeof fetch;
@@ -85,7 +86,7 @@ describe("Workday board listing", () => {
     });
   });
 
-  it("asks Workday to do the searching instead of filtering a blind page locally", async () => {
+  it("uses one unfiltered page for board validation, then asks Workday to search", async () => {
     const calls: Call[] = [];
     vi.stubGlobal("fetch", bigTenantFetch(calls));
     await listWorkdayJobs("micron.wd1/External", "Micron", () => true);
@@ -95,7 +96,7 @@ describe("Workday board listing", () => {
       .map((call) => (call.body as { searchText?: string })?.searchText);
     expect(searches).toContain("intern");
     expect(searches).toContain("co-op");
-    expect(searches).not.toContain("");
+    expect(searches.filter((value) => value === "")).toHaveLength(2);
   });
 
   it("keeps the tenant shard so a wd5 board is not queried on wd1", async () => {
@@ -107,10 +108,25 @@ describe("Workday board listing", () => {
     );
   });
 
-  it("defaults the site to External when the identifier has no site", async () => {
+  it("rejects a missing site instead of silently guessing External", async () => {
+    await expect(listWorkdayJobs("acme", "Acme", () => true)).rejects.toMatchObject({
+      code: "ATS_CONFIG_MALFORMED",
+    });
+  });
+
+  it("derives the authoritative shard and site from the employer careers URL", () => {
+    expect(parseWorkdayConfiguration(
+      "acme/External",
+      "https://acme.wd5.myworkdayjobs.com/en-US/University_Careers",
+    )).toMatchObject({ tenant: "acme", shard: "wd5", site: "University_Careers", derivedFromCareersUrl: true });
+  });
+
+  it("reports total board size and verified pagination separately from internship rows", async () => {
     const calls: Call[] = [];
     vi.stubGlobal("fetch", bigTenantFetch(calls));
-    await listWorkdayJobs("acme", "Acme", () => true);
-    expect(calls[0]!.url).toBe("https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/jobs");
+    const probe = await probeWorkdayJobs("micron.wd1/External", null, "Micron", (title) => /intern/i.test(title));
+    expect(probe.totalAvailableJobs).toBe(2718);
+    expect(probe.paginationVerified).toBe(true);
+    expect(probe.jobs[0]?.postedAt?.toISOString()).toBe("2026-08-22T00:00:00.000Z");
   });
 });

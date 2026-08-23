@@ -3,6 +3,16 @@ import { isAggregatorUrl } from "@/lib/applications/officialDestination";
 
 export type StructuredPortalKind = "icims" | "successfactors";
 
+export type StructuredPortalProbe = {
+  jobs: AtsJob[];
+  readableListPages: number;
+  detailLinksFound: number;
+  studentDetailLinksFound: number;
+  employerMirrorAvailable: boolean;
+  botWallBlocked: boolean;
+  httpStatuses: number[];
+};
+
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
@@ -113,6 +123,38 @@ function metaContent(html: string, key: string): string | null {
   return null;
 }
 
+function itempropContent(html: string, key: string): string | null {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const patterns = [
+    new RegExp(`<meta\\b[^>]*itemprop=["']${escaped}["'][^>]*content=["']([^"']+)["'][^>]*>`, "i"),
+    new RegExp(`<meta\\b[^>]*content=["']([^"']+)["'][^>]*itemprop=["']${escaped}["'][^>]*>`, "i"),
+  ];
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    if (match?.[1]) return decodeHtml(match[1]).trim() || null;
+  }
+  return null;
+}
+
+function microdataDescription(html: string): string {
+  const start = html.search(/<[^>]+itemprop=["']description["'][^>]*>/i);
+  if (start < 0) return "";
+  const openingEnd = html.indexOf(">", start);
+  if (openingEnd < 0) return "";
+  const rest = html.slice(openingEnd + 1);
+  const boundary = rest.search(/<form\b[^>]*class=["'][^"']*(?:frmSocialSubscribe|job-alert)[^"']*["']|<div\b[^>]*class=["'][^"']*joblayouttoken|<\/main>/i);
+  return stripPortalHtml(boundary >= 0 ? rest.slice(0, boundary) : rest.slice(0, 250_000));
+}
+
+function microdataLocation(html: string): string | null {
+  const parts = [
+    itempropContent(html, "addressLocality"),
+    itempropContent(html, "addressRegion"),
+    itempropContent(html, "addressCountry"),
+  ].filter((part): part is string => Boolean(part));
+  return parts.length > 0 ? [...new Set(parts)].join(", ") : null;
+}
+
 function headingTitle(html: string): string | null {
   const h1 = html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i);
   if (h1?.[1]) {
@@ -181,7 +223,7 @@ export function parseStructuredJobPage(
 
   const description = posting?.description
     ? stripPortalHtml(String(posting.description))
-    : stripPortalHtml(metaContent(html, "description") ?? "");
+    : microdataDescription(html) || stripPortalHtml(metaContent(html, "description") ?? "");
 
   const identifier = firstString(posting?.identifier);
   const structuredUrl = asString(posting?.url);
@@ -190,7 +232,7 @@ export function parseStructuredJobPage(
     ? employmentTypeRaw.filter((item): item is string => typeof item === "string").join(", ") || null
     : asString(employmentTypeRaw);
   const jobLocationType = asString(posting?.jobLocationType);
-  const location = formatJobLocation(posting?.jobLocation);
+  const location = formatJobLocation(posting?.jobLocation) ?? microdataLocation(html);
 
   return {
     sourceJobId: identifier ?? sourceJobIdFromUrl(pageUrl),
@@ -201,7 +243,7 @@ export function parseStructuredJobPage(
     workplaceType: /telecommute|remote/i.test(jobLocationType ?? "") ? "Remote" : null,
     applyUrl: structuredUrl && !isAggregatorUrl(structuredUrl) ? structuredUrl : pageUrl,
     description,
-    postedAt: parseDate(posting?.datePosted),
+    postedAt: parseDate(posting?.datePosted ?? itempropContent(html, "datePosted")),
     employmentType,
   };
 }
@@ -274,19 +316,33 @@ function looksLikePortalNavigation(kind: StructuredPortalKind, link: PortalLink,
   return /\/job\b|\/jobs\b|\/search\b|\/go\b|\b(search|view|open)\s+jobs?\b|career_ns=job_listing_summary|[?&](?:page|startrow)=\d+/i.test(signal);
 }
 
-async function fetchHtml(url: string): Promise<{ html: string; finalUrl: string } | null> {
+async function fetchHtml(url: string): Promise<{
+  page: { html: string; finalUrl: string } | null;
+  status: number | null;
+  botWallBlocked: boolean;
+}> {
   try {
     const response = await fetch(url, {
       redirect: "follow",
       headers: { "User-Agent": USER_AGENT, Accept: "text/html,application/xhtml+xml" },
       signal: AbortSignal.timeout(12_000),
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      return { page: null, status: response.status, botWallBlocked: [401, 403, 429].includes(response.status) };
+    }
     const contentType = response.headers.get("content-type") ?? "";
-    if (contentType && !/html|xhtml|text/i.test(contentType)) return null;
-    return { html: await response.text(), finalUrl: response.url || url };
+    if (contentType && !/html|xhtml|text/i.test(contentType)) {
+      return { page: null, status: response.status, botWallBlocked: false };
+    }
+    const html = await response.text();
+    const botWallBlocked = /captcha|cf-chl-|access denied|verify you are human|akamai/i.test(html);
+    return {
+      page: botWallBlocked ? null : { html, finalUrl: response.url || url },
+      status: response.status,
+      botWallBlocked,
+    };
   } catch {
-    return null;
+    return { page: null, status: null, botWallBlocked: false };
   }
 }
 
@@ -312,7 +368,7 @@ function allowedDetailHost(kind: StructuredPortalKind, detailUrl: URL, allowedHo
   return hostLooksLikeAts(kind, detailUrl.hostname);
 }
 
-export async function crawlStructuredPortalJobs(options: {
+export async function probeStructuredPortalJobs(options: {
   kind: StructuredPortalKind;
   companyName: string;
   careersUrl: string;
@@ -320,7 +376,7 @@ export async function crawlStructuredPortalJobs(options: {
   maxListPages?: number;
   maxJobDetails?: number;
   throwOnFetchError?: boolean;
-}): Promise<AtsJob[]> {
+}): Promise<StructuredPortalProbe> {
   const maxListPages = Math.max(1, Math.min(options.maxListPages ?? 6, 10));
   const maxJobDetails = Math.max(1, Math.min(options.maxJobDetails ?? 35, 60));
   const queue = [options.careersUrl, ...(options.additionalStartUrls ?? [])];
@@ -329,13 +385,20 @@ export async function crawlStructuredPortalJobs(options: {
   const allowedHosts = new Set<string>();
   const details = new Map<string, string>();
   let readableListPages = 0;
+  let detailLinksFound = 0;
+  let employerMirrorAvailable = false;
+  let botWallBlocked = false;
+  const httpStatuses: number[] = [];
 
   while (queue.length > 0 && visited.size < maxListPages) {
     const current = queue.shift()!;
     if (visited.has(current)) continue;
     visited.add(current);
 
-    const page = await fetchHtml(current);
+    const fetched = await fetchHtml(current);
+    if (fetched.status !== null) httpStatuses.push(fetched.status);
+    botWallBlocked ||= fetched.botWallBlocked;
+    const page = fetched.page;
     if (!page) continue;
     readableListPages += 1;
 
@@ -349,6 +412,8 @@ export async function crawlStructuredPortalJobs(options: {
 
     for (const link of anchorLinks(page.html, page.finalUrl)) {
       if (isDetailUrl(options.kind, link.url)) {
+        detailLinksFound += 1;
+        if (!hostLooksLikeAts(options.kind, base.hostname)) employerMirrorAvailable = true;
         const hint = `${link.text} ${link.url}`;
         if (STUDENT_ROLE_HINT.test(hint) && !details.has(link.url)) {
           details.set(link.url, link.text);
@@ -371,7 +436,10 @@ export async function crawlStructuredPortalJobs(options: {
 
   const detailEntries = [...details.entries()].slice(0, maxJobDetails);
   const parsed = await mapWithConcurrency(detailEntries, 5, async ([url, fallbackTitle]) => {
-    const page = await fetchHtml(url);
+    const fetched = await fetchHtml(url);
+    if (fetched.status !== null) httpStatuses.push(fetched.status);
+    botWallBlocked ||= fetched.botWallBlocked;
+    const page = fetched.page;
     if (!page) return null;
 
     let finalUrl: URL;
@@ -409,5 +477,25 @@ export async function crawlStructuredPortalJobs(options: {
     seen.add(key);
     jobs.push(job);
   }
-  return jobs;
+  return {
+    jobs,
+    readableListPages,
+    detailLinksFound,
+    studentDetailLinksFound: details.size,
+    employerMirrorAvailable,
+    botWallBlocked,
+    httpStatuses,
+  };
+}
+
+export async function crawlStructuredPortalJobs(options: {
+  kind: StructuredPortalKind;
+  companyName: string;
+  careersUrl: string;
+  additionalStartUrls?: string[];
+  maxListPages?: number;
+  maxJobDetails?: number;
+  throwOnFetchError?: boolean;
+}): Promise<AtsJob[]> {
+  return (await probeStructuredPortalJobs(options)).jobs;
 }

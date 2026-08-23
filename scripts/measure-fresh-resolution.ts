@@ -5,11 +5,14 @@
 // This runs the REAL resolution pipeline — detail enrichment, employer domain,
 // careers-page crawl, client-rendered vendor detection, ATS board read,
 // title/location match, availability probe, JD fetch — against live public
-// signals, but writes NOTHING to the database and needs no running database at
-// all. It exists so the resolution percentage can be measured honestly without
-// starting the full local stack.
+// signals. It reads the canonical catalog from PostgreSQL, never mutates it,
+// and persists the classified signal sample as a disposable JSON benchmark.
+// Only PostgreSQL is needed; the web app and workers stay stopped.
 
 import "dotenv/config";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { prisma } from "@/lib/db";
 import { listJobsForCompany } from "@/lib/ats";
 import type { AtsJob } from "@/lib/ats/types";
 import {
@@ -65,12 +68,18 @@ const READABLE = [
 ];
 const BOT_WALLED = new Set(["icims", "taleo", "custom", "spa", "employer-page"]);
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const ALLOW_HEADLESS = process.argv.includes("--headless");
+let headlessBudget = ALLOW_HEADLESS ? 2 : 0;
+
+type FetchedSignals = { valid: RawInternListJob[]; stale: number; irrelevant: number };
 
 type BoardConfig = { atsType: string; atsIdentifier: string; careersUrl: string };
 
-async function fetchSignals(now: Date): Promise<RawInternListJob[]> {
+async function fetchSignals(now: Date): Promise<FetchedSignals> {
   const out: RawInternListJob[] = [];
   const seen = new Set<string>();
+  let stale = 0;
+  let irrelevant = 0;
   for (const slug of SLUGS) {
     try {
       const response = await fetch(
@@ -81,22 +90,33 @@ async function fetchSignals(now: Date): Promise<RawInternListJob[]> {
       const nextData = extractNextData(await response.text());
       if (!nextData) continue;
       for (const job of parseInternListPayload(nextData, now)) {
-        if (!job.sourcePostedAt) continue;
-        const age = now.getTime() - job.sourcePostedAt.getTime();
-        if (age < 0 || age > 7 * ONE_DAY_MS) continue;
-        if (!isTargetEngineeringRole(job.title, job.qualifications)) continue;
         const key = `${job.company}|${job.title}|${job.location ?? ""}`.toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
+        if (!isTargetEngineeringRole(job.title, job.qualifications)) {
+          irrelevant += 1;
+          continue;
+        }
+        if (!job.sourcePostedAt) {
+          stale += 1;
+          continue;
+        }
+        const age = now.getTime() - job.sourcePostedAt.getTime();
+        if (age < 0 || age > 7 * ONE_DAY_MS) {
+          stale += 1;
+          continue;
+        }
         out.push(job);
       }
     } catch {
       // A dead category contributes nothing; the others still measure.
     }
   }
-  return out.sort(
-    (a, b) => (b.sourcePostedAt?.getTime() ?? 0) - (a.sourcePostedAt?.getTime() ?? 0),
-  );
+  return {
+    valid: out.sort((a, b) => (b.sourcePostedAt?.getTime() ?? 0) - (a.sourcePostedAt?.getTime() ?? 0)),
+    stale,
+    irrelevant,
+  };
 }
 
 function readable(atsType: string, atsIdentifier: string | null): boolean {
@@ -176,7 +196,10 @@ async function discoverBoard(company: string, domain: string): Promise<BoardConf
     }
   }
 
-  const rendered = await renderCareersPage(homepageLinks[0] ?? `https://${domain}/careers`);
+  const rendered = headlessBudget > 0
+    ? await renderCareersPage(homepageLinks[0] ?? `https://${domain}/careers`)
+    : null;
+  if (rendered) headlessBudget -= 1;
   if (rendered) {
     const linked = detectAtsFromText(rendered.html);
     const client = detectClientRenderedAts(rendered.html, rendered.finalUrl);
@@ -241,7 +264,8 @@ async function readBoard(config: BoardConfig, companyName: string): Promise<AtsJ
     if (linked.length > 0) return linked;
   }
 
-  if ((jobs === null || jobs.length === 0) && BOT_WALLED.has(config.atsType)) {
+  if ((jobs === null || jobs.length === 0) && BOT_WALLED.has(config.atsType) && headlessBudget > 0) {
+    headlessBudget -= 1;
     const url =
       config.atsType === "icims"
         ? `https://${config.atsIdentifier}.icims.com/jobs/search?ss=1&searchKeyword=intern`
@@ -371,10 +395,41 @@ async function resolveOne(signal: RawInternListJob): Promise<Result> {
 }
 
 async function main() {
-  const sampleSize = Number.parseInt(process.argv[2] ?? "30", 10) || 30;
+  const explicitLimit = process.argv.find((value) => value.startsWith("--limit="))?.slice("--limit=".length);
+  const sampleSize = Number.parseInt(explicitLimit ?? process.argv.find((value) => /^\d+$/.test(value)) ?? "30", 10) || 30;
   const now = new Date();
-  const signals = await fetchSignals(now);
+  const fetched = await fetchSignals(now);
+  const signals = fetched.valid;
   const sample = signals.slice(0, sampleSize);
+
+  // The catalog comparison is read-only. The benchmark dataset itself is a
+  // disposable JSON artifact, so no radar fixture can mutate product rows.
+  const catalogRows = await prisma.job.findMany({
+    where: { activeFeed: true, verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK" },
+    select: {
+      sourceJobId: true, requisitionId: true, title: true, company: true,
+      location: true, workplaceType: true, officialApplicationUrl: true,
+      description: true, sourcePostedAt: true,
+    },
+  });
+  const catalogByCompany = new Map<string, AtsJob[]>();
+  for (const row of catalogRows) {
+    if (!row.officialApplicationUrl) continue;
+    const key = normalizeCompanyKey(row.company);
+    const jobs = catalogByCompany.get(key) ?? [];
+    jobs.push({
+      sourceJobId: row.sourceJobId ?? row.requisitionId ?? row.officialApplicationUrl,
+      requisitionId: row.requisitionId,
+      title: row.title,
+      company: row.company,
+      location: row.location,
+      workplaceType: row.workplaceType,
+      applyUrl: row.officialApplicationUrl,
+      description: row.description,
+      postedAt: row.sourcePostedAt,
+    });
+    catalogByCompany.set(key, jobs);
+  }
 
   console.log(`fresh signals available: ${signals.length}`);
   console.log(
@@ -391,11 +446,36 @@ async function main() {
   let resolved = 0;
   let closed = 0;
   let withJd = 0;
+  let alreadyFoundOfficially = 0;
+  let resolvedAfterPriorityTrigger = 0;
+  let officialExistsButMatchFailed = 0;
+  const datasetRows: Array<Record<string, unknown>> = [];
 
   let cursor = 0;
-  const workers = Array.from({ length: Math.min(6, sample.length) }, async () => {
+  const workers = Array.from({ length: Math.min(3, sample.length) }, async () => {
     while (cursor < sample.length) {
       const signal = sample[cursor++]!;
+      const catalogJobs = catalogByCompany.get(normalizeCompanyKey(signal.company)) ?? [];
+      const existing = catalogJobs.length > 0
+        ? classifyOfficialBoardMatch({ title: signal.title, location: signal.location }, catalogJobs)
+        : null;
+      if (existing?.accepted) {
+        alreadyFoundOfficially += 1;
+        resolved += 1;
+        urls.add(existing.job.applyUrl);
+        if (existing.job.description.trim().length > 200) withJd += 1;
+        datasetRows.push({
+          sourceJobId: signal.sourceJobId,
+          company: signal.company,
+          title: signal.title,
+          location: signal.location,
+          sourcePostedAt: signal.sourcePostedAt?.toISOString() ?? null,
+          classification: "ALREADY_FOUND_OFFICIALLY",
+          officialUrl: existing.job.applyUrl,
+        });
+        console.log(`  HAVE [catalog] ${signal.company} â€” ${signal.title}`);
+        continue;
+      }
       let result: Result;
       try {
         result = await resolveOne(signal);
@@ -408,24 +488,71 @@ async function main() {
       }
       if (result.state === "RESOLVED") {
         resolved += 1;
+        resolvedAfterPriorityTrigger += 1;
         times.push(result.ms);
         urls.add(result.url);
         byPath[result.path] = (byPath[result.path] ?? 0) + 1;
         byProvider[result.provider] = (byProvider[result.provider] ?? 0) + 1;
         if (result.hadJd) withJd += 1;
+        datasetRows.push({
+          sourceJobId: signal.sourceJobId,
+          company: signal.company,
+          title: signal.title,
+          location: signal.location,
+          sourcePostedAt: signal.sourcePostedAt?.toISOString() ?? null,
+          classification: "RESOLVED_AFTER_PRIORITY_TRIGGER",
+          officialUrl: result.url,
+          provider: result.provider,
+        });
         console.log(
           `  OK   [${result.provider}${result.hadJd ? "+jd" : ""}] ${signal.company} — ${signal.title}\n       ${result.url}`,
         );
       } else if (result.state === "CLOSED") {
         closed += 1;
+        datasetRows.push({ sourceJobId: signal.sourceJobId, company: signal.company, title: signal.title, classification: "SOURCE_SIGNAL_STALE" });
         console.log(`  DEAD ${signal.company} — ${signal.title}`);
       } else {
         countReason(reasons, result.reason);
+        const classification = ["NO_BOARD_MATCH", "TITLE_MATCH_TOO_LOW", "LOCATION_MISMATCH"].includes(result.reason)
+          ? "OFFICIAL_JOB_EXISTS_BUT_MATCH_FAILED"
+          : "UNRESOLVED";
+        if (classification === "OFFICIAL_JOB_EXISTS_BUT_MATCH_FAILED") officialExistsButMatchFailed += 1;
+        datasetRows.push({
+          sourceJobId: signal.sourceJobId,
+          company: signal.company,
+          title: signal.title,
+          location: signal.location,
+          sourcePostedAt: signal.sourcePostedAt?.toISOString() ?? null,
+          classification,
+          reason: result.reason,
+          detail: result.detail,
+        });
         console.log(`  --   ${signal.company} — ${signal.title}  [${result.reason}] ${result.detail}`);
       }
     }
   });
   await Promise.all(workers);
+
+  const outputArg = process.argv.find((value) => value.startsWith("--output="))?.slice("--output=".length);
+  const outputPath = path.resolve(outputArg || "data/generated/fresh-official-benchmark.json");
+  await mkdir(path.dirname(outputPath), { recursive: true });
+  await writeFile(outputPath, JSON.stringify({
+    generatedAt: now.toISOString(),
+    source: "jobright-public-radar",
+    availableValidSignals: signals.length,
+    freshUnder24h: signals.filter((signal) => now.getTime() - signal.sourcePostedAt!.getTime() <= ONE_DAY_MS).length,
+    freshUnder72h: signals.filter((signal) => now.getTime() - signal.sourcePostedAt!.getTime() <= 3 * ONE_DAY_MS).length,
+    validSignalDenominator: sample.length,
+    sourceSignalStale: fetched.stale + closed,
+    sourceSignalIrrelevant: fetched.irrelevant,
+    alreadyFoundOfficially,
+    resolvedAfterPriorityTrigger,
+    officialJobExistsButMatchFailed: officialExistsButMatchFailed,
+    unresolved: sample.length - resolved - closed - officialExistsButMatchFailed,
+    trueRecallPercent: sample.length ? Number(((resolved / sample.length) * 100).toFixed(2)) : 0,
+    resolvedWithFullJd: withJd,
+    rows: datasetRows,
+  }, null, 2));
 
   const sorted = [...times].sort((a, b) => a - b);
   const medianMs = sorted.length ? sorted[Math.floor(sorted.length / 2)] : null;
@@ -435,17 +562,23 @@ async function main() {
   console.log("\n" + "=".repeat(60));
   console.log(`examined            ${sample.length}`);
   console.log(`officially resolved ${resolved} (${pct(resolved, sample.length)})`);
+  console.log(`  ALREADY_FOUND_OFFICIALLY          ${alreadyFoundOfficially}`);
+  console.log(`  RESOLVED_AFTER_PRIORITY_TRIGGER   ${resolvedAfterPriorityTrigger}`);
+  console.log(`  OFFICIAL_JOB_EXISTS_MATCH_FAILED  ${officialExistsButMatchFailed}`);
   console.log(`  by path           ${JSON.stringify(byPath)}`);
   console.log(`  by provider       ${JSON.stringify(byProvider)}`);
   console.log(`  with a real JD    ${withJd} (${pct(withJd, resolved)} of resolved)`);
   console.log(`closed at source    ${closed}`);
-  console.log(`unresolved          ${sample.length - resolved - closed}`);
+  console.log(`stale source rows   ${fetched.stale}`);
+  console.log(`irrelevant rows     ${fetched.irrelevant}`);
+  console.log(`unresolved          ${sample.length - resolved - closed - officialExistsButMatchFailed}`);
   console.log(`distinct URLs       ${urls.size} (duplicates collapsed: ${resolved - urls.size})`);
   console.log(`median resolve ms   ${medianMs ?? "n/a"}`);
   console.log(`reasons             ${formatReasonCounts(reasons)}`);
+  console.log(`dataset             ${outputPath}`);
 }
 
 main().catch((error) => {
   console.error(error);
   process.exitCode = 1;
-});
+}).finally(async () => prisma.$disconnect());

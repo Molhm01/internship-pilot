@@ -220,6 +220,7 @@ async function upsertNormalizedJob(
   input: NormalizedJobInput,
   now: Date,
   profile: VerificationProfile = AGGREGATOR_PROFILE,
+  options: { scheduleInitialMatch?: boolean } = {},
 ): Promise<"new" | "updated" | "unchanged"> {
   const existing = await findExistingJob(input);
   const company = await prisma.company.findFirst({
@@ -360,6 +361,9 @@ async function upsertNormalizedJob(
               consecutiveBoardMisses: 0,
               boardMissingSince: null,
               closedAt: null,
+              ...(!isDirectOfficialSource(existing.source)
+                ? { officialFirstSeenAt: now, discoveryPipeline: "official-first-v2" }
+                : {}),
             }
           : {}),
         // Refresh classification on rediscovery so a classifier improvement
@@ -399,6 +403,9 @@ async function upsertNormalizedJob(
       ...destinationData,
       workplaceType: input.workplaceType,
       firstSeenAt: now,
+      ...(profile.verificationStatus === "VERIFIED_OFFICIAL_AT_LAST_CHECK"
+        ? { officialFirstSeenAt: now, discoveryPipeline: "official-first-v2" }
+        : {}),
       lastSeenAt: now,
       compensation: input.compensation && input.compensation.toUpperCase() !== "N/A" ? input.compensation : null,
       // Provenance comes from the caller's profile. Aggregator listings stay
@@ -432,7 +439,12 @@ async function upsertNormalizedJob(
     },
   });
   try {
-    await scheduleInitialAiMatchForAllUsers(created.id);
+    // Discovery may enqueue optional downstream scoring, but it must never
+    // start model work in the crawler process. A separately scheduled worker
+    // owns that queue; fresh official jobs become visible immediately.
+    if (options.scheduleInitialMatch !== false) {
+      await scheduleInitialAiMatchForAllUsers(created.id, { startWorker: false });
+    }
   } catch (error) {
     // Scheduling is a short database operation, never a model request. A
     // temporary queue-write failure must not roll back successful ingestion.
@@ -620,6 +632,7 @@ export async function upsertClassifiedAtsJob(args: {
   rowIndex?: number | null;
   capturedAt?: Date;
   sourceDateProvenance?: SourceDateProvenance;
+  scheduleInitialMatch?: boolean;
 }): Promise<"new" | "updated" | "unchanged"> {
   const capturedAt = args.capturedAt ?? args.now ?? new Date();
   const sourceDate = parseFirstSourceDate([args.job.postedAt, args.job.postedAtText], capturedAt);
@@ -654,5 +667,6 @@ export async function upsertClassifiedAtsJob(args: {
     },
     args.now ?? new Date(),
     directAtsProfile(args.atsType),
+    { scheduleInitialMatch: args.scheduleInitialMatch },
   );
 }

@@ -4,9 +4,11 @@ import { canonicalizeJobUrl } from "@/lib/sync/ingest";
 import { normalizeCompanyKey } from "@/lib/sync/freshSignalReasons";
 import {
   REPORT_PROVIDERS,
+  ATS_CONFIG_STATES,
   classifyFreshRecall,
   gapGroup,
   isUsableProviderConfig,
+  normalizedConfigState,
   percentile,
   reportProvider,
 } from "@/lib/sync/officialDiscoveryMetrics";
@@ -28,7 +30,7 @@ async function main() {
       where: { allowlisted: true },
       select: {
         id: true, name: true, atsType: true, atsIdentifier: true, careersUrl: true,
-        csvEeCpeFit: true, priority: true, lastCheckStatus: true,
+        csvEeCpeFit: true, priority: true, lastCheckStatus: true, atsConfigState: true,
       },
     }),
     prisma.employerBoardResolution.findMany({
@@ -39,7 +41,8 @@ async function main() {
       select: {
         id: true, title: true, company: true, source: true, atsType: true, atsTenant: true,
         sourceJobId: true, requisitionId: true, officialApplicationUrl: true, sourcePostedAt: true,
-        sourceDateProvenance: true, firstSeenAt: true, description: true, activeFeed: true,
+        sourceDateProvenance: true, sourceDateConfidence: true, firstSeenAt: true,
+        officialFirstSeenAt: true, discoveryPipeline: true, description: true, activeFeed: true,
         verificationStatus: true, closedAt: true, classification: true, disciplineTags: true,
       },
     }),
@@ -55,6 +58,7 @@ async function main() {
     atsType: company.atsType,
     atsIdentifier: company.atsIdentifier,
     careersUrl: company.careersUrl,
+    atsConfigState: company.atsConfigState,
     origin: "catalog" as const,
   }]));
   let dynamicOnly = 0;
@@ -66,6 +70,7 @@ async function main() {
       atsType: board.state === "RESOLVED" ? board.atsType : null,
       atsIdentifier: board.state === "RESOLVED" ? board.atsIdentifier : null,
       careersUrl: board.careersUrl,
+      atsConfigState: "UNTESTED",
       origin: "catalog" as const,
     });
   }
@@ -74,9 +79,17 @@ async function main() {
   let providerKnown = 0;
   let providerUnknown = 0;
   let usableProviderConfigurations = 0;
+  const configurationStates = Object.fromEntries(ATS_CONFIG_STATES.map((state) => [state, 0])) as Record<string, number>;
+  const providerConfigurationStates = Object.fromEntries(REPORT_PROVIDERS.map((provider) => [
+    provider,
+    Object.fromEntries(ATS_CONFIG_STATES.map((state) => [state, 0])) as Record<string, number>,
+  ]));
   for (const employer of registry.values()) {
     const provider = reportProvider(employer.atsType);
+    const configState = normalizedConfigState(employer);
     providerDistribution[provider] += 1;
+    configurationStates[configState] += 1;
+    providerConfigurationStates[provider][configState] += 1;
     if (provider === "Unknown") providerUnknown += 1;
     else providerKnown += 1;
     if (isUsableProviderConfig(employer)) usableProviderConfigurations += 1;
@@ -105,6 +118,18 @@ async function main() {
     .filter((job) => job.sourcePostedAt && job.firstSeenAt)
     .map((job) => job.firstSeenAt!.getTime() - job.sourcePostedAt!.getTime())
     .filter((delay) => delay >= 0);
+  const newPipelineDelays = activeOfficial
+    .filter((job) =>
+      job.discoveryPipeline === "official-first-v2"
+      && job.officialFirstSeenAt
+      && job.sourcePostedAt
+      && ["EMPLOYER_ATS_EXACT", "EMPLOYER_ATS_DATE"].includes(job.sourceDateProvenance ?? "")
+      && ["EXACT", "DATE_ONLY"].includes(job.sourceDateConfidence ?? ""))
+    .map((job) => job.officialFirstSeenAt!.getTime() - job.sourcePostedAt!.getTime())
+    .filter((delay) => delay >= 0);
+  const newPipelineJobs = activeOfficial.filter((job) => job.discoveryPipeline === "official-first-v2");
+  const newPipelineKnownDates = newPipelineJobs.filter((job) => job.sourcePostedAt).length;
+  const newPipelineJds = newPipelineJobs.filter((job) => job.description.trim().length > 200).length;
 
   const duplicateKeys = new Map<string, number>();
   for (const job of activeOfficial) {
@@ -149,16 +174,22 @@ async function main() {
     ).length;
     const providerPolls = latestPolls.filter((poll) => reportProvider(poll.provider) === provider);
     const providerJobs = activeOfficial.filter((job) => reportProvider(job.atsType ?? job.source) === provider);
+    const currentEngineering = providerPolls.reduce((sum, poll) => sum + poll.engineeringInternshipsFound, 0);
+    const providerKnownDates = providerPolls.reduce((sum, poll) => sum
+      + poll.exactTimestampJobs + poll.dateOnlyJobs + poll.relativeParsedJobs + poll.radarFallbackJobs, 0);
+    const providerJds = providerPolls.reduce((sum, poll) => sum + poll.fullJdJobs, 0);
     return {
       provider,
       employersConfigured: configured,
       employersSuccessfullyQueried: providerPolls.filter((poll) => poll.status === "success" || poll.status === "not_modified").length,
       currentJobsScanned: providerPolls.reduce((sum, poll) => sum + poll.jobsScanned, 0),
-      engineeringInternshipsFound: providerJobs.length,
+      engineeringInternshipsFound: currentEngineering,
       freshUnder24h: providerJobs.filter((job) => job.sourcePostedAt && now.getTime() - job.sourcePostedAt.getTime() <= DAY_MS).length,
       freshUnder72h: providerJobs.filter((job) => job.sourcePostedAt && now.getTime() - job.sourcePostedAt.getTime() <= 3 * DAY_MS).length,
       errors: providerPolls.filter((poll) => poll.status === "error").length,
       medianQueryMs: percentile(providerPolls.map((poll) => poll.durationMs), 0.5),
+      timestampCoveragePercent: percentage(providerKnownDates, currentEngineering),
+      jdHydrationPercent: percentage(providerJds, currentEngineering),
     };
   });
 
@@ -173,6 +204,8 @@ async function main() {
       usableProviderConfigurations,
       missingUsableProviderConfigurations: registry.size - usableProviderConfigurations,
       providerDistribution,
+      configurationStates,
+      providerConfigurationStates,
       highValueMissingUsableConfiguration: highValueMissing,
     },
     officialCatalog: {
@@ -182,6 +215,13 @@ async function main() {
       freshUnder72h: fresh72h,
       medianDiscoveryDelayMs: percentile(delays, 0.5),
       p90DiscoveryDelayMs: percentile(delays, 0.9),
+      historicalMedianDiscoveryDelayMs: percentile(delays, 0.5),
+      historicalP90DiscoveryDelayMs: percentile(delays, 0.9),
+      newPipelineTrustedRows: newPipelineDelays.length,
+      newPipelineMedianDiscoveryDelayMs: percentile(newPipelineDelays, 0.5),
+      newPipelineP90DiscoveryDelayMs: percentile(newPipelineDelays, 0.9),
+      newPipelineUnknownDateRatePercent: percentage(newPipelineJobs.length - newPipelineKnownDates, newPipelineJobs.length),
+      newPipelineJdHydrationPercent: percentage(newPipelineJds, newPipelineJobs.length),
       jdHydrationPercent: percentage(withJd, activeOfficial.length),
       duplicateRatePercent: percentage(duplicateRows, activeOfficial.length),
       closedJobRatePercent: percentage(closedJobs, jobs.length),
@@ -203,11 +243,13 @@ async function main() {
     return;
   }
   console.log(`[official-discovery] ${report.generatedAt}`);
-  console.log(`registry ${report.registry.catalogEmployers} catalog + ${dynamicOnly} learned = ${registry.size} unique; provider known=${providerKnown} unknown=${providerUnknown}; usable=${usableProviderConfigurations} missingUsable=${registry.size - usableProviderConfigurations}`);
+  console.log(`registry ${report.registry.catalogEmployers} catalog + ${dynamicOnly} learned = ${registry.size} unique; VALIDATED usable=${usableProviderConfigurations}; states=${JSON.stringify(configurationStates)}`);
   console.log(`providers ${Object.entries(providerDistribution).map(([key, value]) => `${key}=${value}`).join(" ")}`);
   console.log(`official boards successful=${report.officialCatalog.boardsSuccessfullyQueried} engineering internships=${activeOfficial.length} <24h=${fresh24h} <72h=${fresh72h}`);
   console.log(`fresh signals valid=${validSignals} alreadyOfficial=${recallCounts.ALREADY_FOUND_OFFICIALLY} resolvedAfterTrigger=${recallCounts.RESOLVED_AFTER_PRIORITY_TRIGGER} recall=${report.freshRecall.trueRecallPercent}%`);
   console.log(`delay median=${report.officialCatalog.medianDiscoveryDelayMs ?? "n/a"}ms p90=${report.officialCatalog.p90DiscoveryDelayMs ?? "n/a"}ms JD=${report.officialCatalog.jdHydrationPercent}% duplicates=${report.officialCatalog.duplicateRatePercent}% unknownDates=${report.officialCatalog.unknownDateRatePercent}%`);
+  console.log(`new-pipeline trusted=${newPipelineDelays.length} median=${report.officialCatalog.newPipelineMedianDiscoveryDelayMs ?? "n/a"}ms p90=${report.officialCatalog.newPipelineP90DiscoveryDelayMs ?? "n/a"}ms`);
+  console.log(`new-pipeline quality rows=${newPipelineJobs.length} unknownDates=${report.officialCatalog.newPipelineUnknownDateRatePercent}% JD=${report.officialCatalog.newPipelineJdHydrationPercent}%`);
   console.table(providerCoverage);
   console.log(`high-value employers missing usable config (${highValueMissing.length}): ${highValueMissing.slice(0, 30).map((item) => item.name).join(", ") || "none"}`);
   console.log(`unresolved gaps ${JSON.stringify(gaps)}`);

@@ -45,4 +45,9 @@ describe("provider-aware polling tiers", () => {
     expect(pollingTierFor({ priority: "standard", provider: "workday", eeCpeFit: "Medium" })).toBe("B");
     expect(pollingTierFor({ priority: "priority", provider: "custom", eeCpeFit: "High" })).toBe("C");
   });
+
+  it("uses measured engineering activity when a provider has been swept", () => {
+    expect(pollingTierFor({ priority: "standard", provider: "workday", eeCpeFit: "Medium", activityTier: "A" })).toBe("A");
+    expect(pollingTierFor({ priority: "priority", provider: "workday", eeCpeFit: "High", activityTier: "C" })).toBe("C");
+  });
 });

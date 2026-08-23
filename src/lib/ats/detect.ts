@@ -3,7 +3,10 @@ export type AtsDetectionResult = { atsType: string; atsIdentifier: string | null
 type Pattern = { atsType: string; regex: RegExp; extractId: (m: RegExpMatchArray) => string };
 
 const PATTERNS: Pattern[] = [
-  { atsType: "greenhouse", regex: /(?:boards|job-boards)\.greenhouse\.io\/([a-z0-9-]+)/i, extractId: (m) => m[1] },
+  // Greenhouse's legacy embed URL puts the real tenant in ?for=. Matching the
+  // path alone used to persist the meaningless slug "embed" for every board.
+  { atsType: "greenhouse", regex: /boards\.greenhouse\.io\/embed\/job_board\/js\?[^"'\s>]*\bfor=([a-z0-9_-]+)/i, extractId: (m) => m[1] },
+  { atsType: "greenhouse", regex: /(?:boards|job-boards)\.greenhouse\.io\/(?!embed(?:[/?#]|$))([a-z0-9_-]+)/i, extractId: (m) => m[1] },
   { atsType: "lever", regex: /jobs\.lever\.co\/([a-z0-9-]+)/i, extractId: (m) => m[1] },
   { atsType: "ashby", regex: /jobs\.ashbyhq\.com\/([a-z0-9-]+)/i, extractId: (m) => m[1] },
   { atsType: "smartrecruiters", regex: /jobs\.smartrecruiters\.com\/([a-zA-Z0-9-]+)/i, extractId: (m) => m[1] },

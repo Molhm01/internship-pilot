@@ -272,6 +272,16 @@ model Company {
   boardSnapshot         String? // JSON source-job-id array from the last successful complete-enough board poll
   lastSuccessfulBoardAt DateTime?
   lastBoardQueryMs      Int?
+  // Live configuration truth. An ATS enum alone never makes a board usable.
+  // VALIDATED | STALE | MALFORMED | UNTESTED | UNSUPPORTED | CUSTOM
+  atsConfigState        String    @default("UNTESTED")
+  atsConfigCheckedAt    DateTime?
+  atsValidatedAt        DateTime?
+  atsConfigErrorCode    String?
+  atsConfigEvidence     String? // JSON containing bounded-probe facts, never credentials
+  // A = recent relevant posting, B = historical relevant posting, C = none yet.
+  engineeringActivityTier String  @default("C")
+  lastEngineeringInternshipAt DateTime?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
@@ -301,6 +311,8 @@ model Company {
   @@index([nextCheckAt])
   @@index([priority])
   @@index([allowlisted])
+  @@index([atsConfigState])
+  @@index([engineeringActivityTier])
 }
 
 // Milestone (source-security): the specific, evidenced link between one
@@ -530,6 +542,10 @@ model Job {
   // only for the newest run, so an older sync can never outrank a newer one.
   sourceSyncRunId        String?
   sourceRowIndex         Int?
+  // First time the official-first crawler itself observed this requisition.
+  // Kept separate from legacy/radar firstSeenAt for clean pipeline SLOs.
+  officialFirstSeenAt    DateTime?
+  discoveryPipeline     String?
   lastVerifiedAt         DateTime? // = "verifiedAt": when verificationStatus was last (re)computed
   compensation           String? // raw text, e.g. "$20-$23/hr"
   // Unverified | Pending | VERIFIED_OFFICIAL_AT_LAST_CHECK | NeedsReview |
@@ -627,6 +643,7 @@ model Job {
   @@index([source, sourceJobId])
   @@index([sourcePostedAt])
   @@index([sourceSyncRunId, sourceRowIndex])
+  @@index([discoveryPipeline, officialFirstSeenAt])
   @@index([verificationStatus])
   @@index([activeFeed])
   @@index([scoringState])
@@ -685,6 +702,7 @@ model OfficialBoardPoll {
   status      String // success | not_modified | unsupported | error
 
   jobsScanned                 Int @default(0)
+  totalAvailableJobs          Int @default(0)
   engineeringInternshipsFound Int @default(0)
   newJobs                     Int @default(0)
   updatedJobs                 Int @default(0)
@@ -692,6 +710,14 @@ model OfficialBoardPoll {
   closedJobs                  Int @default(0)
   durationMs                  Int @default(0)
   errorCode                   String?
+  configState                 String?
+  paginationVerified          Boolean @default(false)
+  fullJdJobs                  Int @default(0)
+  exactTimestampJobs          Int @default(0)
+  dateOnlyJobs                Int @default(0)
+  relativeParsedJobs          Int @default(0)
+  radarFallbackJobs           Int @default(0)
+  unknownTimestampJobs        Int @default(0)
 
   @@index([provider, startedAt])
   @@index([companyId, startedAt])

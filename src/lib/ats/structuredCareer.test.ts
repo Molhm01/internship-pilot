@@ -65,6 +65,28 @@ describe("structured public ATS job parsing", () => {
     expect(job?.description).toBe("Hands-on hardware validation role");
   });
 
+  it("hydrates SuccessFactors microdata when JSON-LD is absent", () => {
+    const html = `
+      <meta itemprop="addressLocality" content="Galway">
+      <meta itemprop="addressRegion" content="G">
+      <meta itemprop="addressCountry" content="IE">
+      <meta itemprop="datePosted" content="Thu Jul 30 00:00:00 UTC 2026">
+      <h1 itemprop="title">Operations Engineering Support Student Intern</h1>
+      <span itemprop="description" class="jobdescription">
+        <p>Req ID: 138637</p><div>${"Build and validate embedded manufacturing systems. ".repeat(8)}</div>
+      </span>
+      <form class="form-inline frmSocialSubscribe"></form>`;
+    const job = parseStructuredJobPage(
+      html,
+      "https://careers.celestica.com/job/Galway/1420816533/",
+      "Celestica",
+    );
+    expect(job?.location).toBe("Galway, G, IE");
+    expect(job?.postedAt?.toISOString()).toBe("2026-07-30T00:00:00.000Z");
+    expect(job?.description.length).toBeGreaterThan(200);
+    expect(job?.description).toContain("Build and validate embedded manufacturing systems");
+  });
+
   it("strips scripts, styles, tags, and common HTML entities", () => {
     expect(stripPortalHtml("<style>x</style><script>y</script><p>PCB &amp; FPGA work</p>")).toBe("PCB & FPGA work");
   });

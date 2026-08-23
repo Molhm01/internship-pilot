@@ -10,6 +10,12 @@ import { promoteCanonicalDirectJob } from "@/lib/jobs/activeFeed";
 import type { AtsJob } from "@/lib/ats/types";
 import { reconcileOfficialBoardDelta } from "@/lib/sync/officialBoardDelta";
 import { sanitizeErrorCode } from "@/lib/sync/atsIngest";
+import {
+  postingQualityTelemetry,
+  syntacticConfigState,
+  type AtsConfigState,
+} from "@/lib/sync/officialDiscoveryMetrics";
+import { parseWorkdayConfiguration } from "@/lib/ats/workday";
 
 export type CompanyCheckResult = {
   companyId: string;
@@ -18,6 +24,7 @@ export type CompanyCheckResult = {
   newCount: number;
   updatedCount: number;
   jobsScanned: number;
+  totalAvailableJobs: number;
   engineeringInternshipsFound: number;
   missingCount: number;
   closedCount: number;
@@ -42,8 +49,8 @@ const CHEAP_PROVIDER = new Set([
 function baseIntervalMinutes(priority: string, provider?: string | null): number {
   const cheap = provider ? CHEAP_PROVIDER.has(provider) : false;
   if (priority === "priority") return cheap ? 5 + Math.floor(Math.random() * 6) : 60;
-  if (priority === "low") return 24 * 60;
-  return cheap ? 20 + Math.floor(Math.random() * 41) : 6 * 60;
+  if (priority === "low") return cheap ? 60 + Math.floor(Math.random() * 31) : 24 * 60;
+  return cheap ? 20 + Math.floor(Math.random() * 11) : 6 * 60;
 }
 
 export function nextCheckTimeFor(priority: string, consecutiveFailures: number, provider?: string | null): Date {
@@ -56,14 +63,16 @@ export function pollingTierFor(input: {
   priority: string;
   provider: string | null;
   eeCpeFit?: string | null;
+  activityTier?: string | null;
 }): "A" | "B" | "C" {
   if (!input.provider || !CHEAP_PROVIDER.has(input.provider)) return "C";
+  if (["A", "B", "C"].includes(input.activityTier ?? "")) return input.activityTier as "A" | "B" | "C";
   if (input.priority === "priority" || input.eeCpeFit === "High") return "A";
   return "B";
 }
 
-function effectivePriority(company: { priority: string; csvEeCpeFit?: string | null }, provider: string | null): string {
-  const tier = pollingTierFor({ priority: company.priority, provider, eeCpeFit: company.csvEeCpeFit });
+function effectivePriority(company: { priority: string; csvEeCpeFit?: string | null; engineeringActivityTier?: string | null }, provider: string | null): string {
+  const tier = pollingTierFor({ priority: company.priority, provider, eeCpeFit: company.csvEeCpeFit, activityTier: company.engineeringActivityTier });
   return tier === "A" ? "priority" : tier === "C" ? "low" : "standard";
 }
 
@@ -75,10 +84,11 @@ async function ingestDiscoveredJobs(
   jobs: AtsJob[],
   atsType: string | null | undefined,
   atsIdentifier: string | null | undefined,
+  capturedAt: Date,
 ): Promise<{ newCount: number; updatedCount: number }> {
   const canonical = canonicalizeSource(atsType);
   if (!canonical || !isDirectOfficialSource(canonical)) {
-    return ingestAtsJobs(jobs, atsType ? `ats:${atsType}` : "unknown");
+    return ingestAtsJobs(jobs, atsType ? `ats:${atsType}` : "unknown", { capturedAt });
   }
 
   let newCount = 0;
@@ -95,6 +105,8 @@ async function ingestDiscoveredJobs(
       classificationReason:
         "Read from an official source and matched the engineering internship/co-op role filter.",
       rowIndex,
+      capturedAt,
+      syncRunId: `official-poll:${capturedAt.toISOString()}`,
     });
 
     // If this posting already existed only as an aggregator row, make the
@@ -131,7 +143,15 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
     });
     if (!existingApproval) {
       const confirmation = await detectAtsForCareersPage(company.careersUrl);
-      if (confirmation.atsType === atsType && confirmation.atsIdentifier === atsIdentifier) {
+      if (
+        confirmation.atsType === atsType
+        && confirmation.atsIdentifier
+        && equivalentConfiguredTenant(atsType, atsIdentifier, confirmation.atsIdentifier, company.careersUrl)
+      ) {
+        // Preserve an employer-page-proven shard-aware Workday identifier.
+        if (atsType === "workday" && confirmation.atsIdentifier !== atsIdentifier) {
+          atsIdentifier = confirmation.atsIdentifier;
+        }
         await prisma.approvedAtsTenant.create({
           data: {
             companyId,
@@ -152,14 +172,14 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
           data: { lastCheckedAt: new Date(), nextCheckAt: nextCheckTimeFor(effectivePriority(company, atsType), 0, atsType), lastCheckStatus: "unsupported" },
         });
         const durationMs = Date.now() - startedAt.getTime();
-        await recordOfficialPoll({ companyId, companyName: company.name, provider: atsType ?? "unknown", startedAt, status: "unsupported", durationMs });
-        return { companyId, name: company.name, status: "unsupported", newCount: 0, updatedCount: 0, jobsScanned: 0, engineeringInternshipsFound: 0, missingCount: 0, closedCount: 0, durationMs };
+        await recordOfficialPoll({ companyId, companyName: company.name, provider: atsType ?? "unknown", startedAt, status: "unsupported", durationMs, configState: "UNTESTED", errorCode: "ATS_TENANT_UNCONFIRMED" });
+        return { companyId, name: company.name, status: "unsupported", newCount: 0, updatedCount: 0, jobsScanned: 0, totalAvailableJobs: 0, engineeringInternshipsFound: 0, missingCount: 0, closedCount: 0, durationMs };
       }
     }
   }
 
   try {
-    const { jobs, supported, notModified, etag, lastModified, contentHash } = await listJobsForCompany({
+    const { jobs, supported, notModified, etag, lastModified, contentHash, totalAvailableJobs, paginationVerified } = await listJobsForCompany({
       name: company.name,
       atsType,
       atsIdentifier,
@@ -172,7 +192,7 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
     const relevant = notModified ? [] : jobs.filter((j) => isTargetEngineeringRole(j.title, j.description));
     const summary = notModified
       ? { newCount: 0, updatedCount: 0 }
-      : await ingestDiscoveredJobs(relevant, atsType, atsIdentifier);
+      : await ingestDiscoveredJobs(relevant, atsType, atsIdentifier, startedAt);
     const delta = supported && !notModified
       ? await reconcileOfficialBoardDelta({
           companyId,
@@ -184,6 +204,17 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
         })
       : { newRequisitions: 0, missing: 0, closed: 0, reconciled: false };
     const durationMs = Date.now() - startedAt.getTime();
+    // Quality SLOs describe the relevant jobs users can discover, not every
+    // unrelated row returned by a broad provider search.
+    const quality = postingQualityTelemetry(relevant, startedAt);
+    const configState: AtsConfigState = supported
+      ? (atsType === "custom" ? "CUSTOM" : "VALIDATED")
+      : syntacticConfigState({ atsType, atsIdentifier, careersUrl: company.careersUrl });
+    const activityTier = relevant.length > 0
+      ? "A"
+      : company.lastEngineeringInternshipAt
+        ? "B"
+        : "C";
 
     await prisma.company.update({
       where: { id: companyId },
@@ -191,12 +222,18 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
         atsType,
         atsIdentifier,
         lastCheckedAt: new Date(),
-        nextCheckAt: nextCheckTimeFor(effectivePriority(company, atsType), 0, atsType),
+        nextCheckAt: nextCheckTimeFor(effectivePriority({ ...company, engineeringActivityTier: activityTier }, atsType), 0, atsType),
         ...(notModified ? {} : { activeInternshipCount: relevant.length }),
         lastCheckStatus: supported ? "success" : "unsupported",
         lastCheckError: null,
         consecutiveFailures: 0,
         lastBoardQueryMs: durationMs,
+        atsConfigState: configState,
+        atsConfigCheckedAt: new Date(),
+        ...(configState === "VALIDATED" ? { atsValidatedAt: new Date() } : {}),
+        atsConfigErrorCode: null,
+        engineeringActivityTier: activityTier,
+        ...(relevant.length > 0 ? { lastEngineeringInternshipAt: new Date() } : {}),
         ...(etag !== undefined ? { lastETag: etag } : {}),
         ...(lastModified !== undefined ? { lastModified } : {}),
         ...(contentHash !== undefined ? { contentHash } : {}),
@@ -209,12 +246,16 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
       startedAt,
       status: notModified ? "not_modified" : supported ? "success" : "unsupported",
       jobsScanned: jobs.length,
+      totalAvailableJobs: totalAvailableJobs ?? jobs.length,
       engineeringInternshipsFound: relevant.length,
       newJobs: summary.newCount,
       updatedJobs: summary.updatedCount,
       missingJobs: delta.missing,
       closedJobs: delta.closed,
       durationMs,
+      configState,
+      paginationVerified: paginationVerified ?? false,
+      ...quality,
     });
 
     return {
@@ -224,6 +265,7 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
       newCount: summary.newCount,
       updatedCount: summary.updatedCount,
       jobsScanned: jobs.length,
+      totalAvailableJobs: totalAvailableJobs ?? jobs.length,
       engineeringInternshipsFound: relevant.length,
       missingCount: delta.missing,
       closedCount: delta.closed,
@@ -232,6 +274,14 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const consecutiveFailures = company.consecutiveFailures + 1;
+    const failureCode = sanitizeErrorCode(err);
+    const configState: AtsConfigState = ["ATS_HTTP_404", "ATS_HTTP_410", "ATS_SCHEMA_INVALID", "ATS_BOARD_UNREACHABLE"].includes(failureCode)
+      ? "STALE"
+      : failureCode === "ATS_CONFIG_MALFORMED"
+        ? "MALFORMED"
+        // A timeout, rate limit, or other transient fetch failure is not
+        // evidence that a previously validated configuration became invalid.
+        : company.atsConfigState === "VALIDATED" ? "VALIDATED" : "UNTESTED";
     await prisma.company.update({
       where: { id: companyId },
       data: {
@@ -240,12 +290,27 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
         lastCheckStatus: "error",
         lastCheckError: message,
         consecutiveFailures,
+        atsConfigState: configState,
+        atsConfigCheckedAt: new Date(),
+        atsConfigErrorCode: failureCode,
       },
     });
     const durationMs = Date.now() - startedAt.getTime();
-    await recordOfficialPoll({ companyId, companyName: company.name, provider: atsType ?? "unknown", startedAt, status: "error", durationMs, errorCode: sanitizeErrorCode(err) });
-    return { companyId, name: company.name, status: "error", newCount: 0, updatedCount: 0, jobsScanned: 0, engineeringInternshipsFound: 0, missingCount: 0, closedCount: 0, durationMs, error: message };
+    await recordOfficialPoll({ companyId, companyName: company.name, provider: atsType ?? "unknown", startedAt, status: "error", durationMs, errorCode: failureCode, configState });
+    return { companyId, name: company.name, status: "error", newCount: 0, updatedCount: 0, jobsScanned: 0, totalAvailableJobs: 0, engineeringInternshipsFound: 0, missingCount: 0, closedCount: 0, durationMs, error: message };
   }
+}
+
+function equivalentConfiguredTenant(
+  atsType: string,
+  configured: string,
+  detected: string,
+  careersUrl: string | null,
+): boolean {
+  if (atsType !== "workday") return configured === detected;
+  const left = parseWorkdayConfiguration(configured, careersUrl);
+  const right = parseWorkdayConfiguration(detected, careersUrl);
+  return Boolean(left && right && left.tenant === right.tenant && left.site === right.site);
 }
 
 async function recordOfficialPoll(args: {
@@ -255,6 +320,7 @@ async function recordOfficialPoll(args: {
   startedAt: Date;
   status: "success" | "not_modified" | "unsupported" | "error";
   jobsScanned?: number;
+  totalAvailableJobs?: number;
   engineeringInternshipsFound?: number;
   newJobs?: number;
   updatedJobs?: number;
@@ -262,18 +328,35 @@ async function recordOfficialPoll(args: {
   closedJobs?: number;
   durationMs: number;
   errorCode?: string;
+  configState?: AtsConfigState;
+  paginationVerified?: boolean;
+  fullJdJobs?: number;
+  exactTimestampJobs?: number;
+  dateOnlyJobs?: number;
+  relativeParsedJobs?: number;
+  radarFallbackJobs?: number;
+  unknownTimestampJobs?: number;
 }): Promise<void> {
   await prisma.officialBoardPoll.create({
     data: {
       ...args,
       finishedAt: new Date(),
       jobsScanned: args.jobsScanned ?? 0,
+      totalAvailableJobs: args.totalAvailableJobs ?? args.jobsScanned ?? 0,
       engineeringInternshipsFound: args.engineeringInternshipsFound ?? 0,
       newJobs: args.newJobs ?? 0,
       updatedJobs: args.updatedJobs ?? 0,
       missingJobs: args.missingJobs ?? 0,
       closedJobs: args.closedJobs ?? 0,
       errorCode: args.errorCode ?? null,
+      configState: args.configState ?? null,
+      paginationVerified: args.paginationVerified ?? false,
+      fullJdJobs: args.fullJdJobs ?? 0,
+      exactTimestampJobs: args.exactTimestampJobs ?? 0,
+      dateOnlyJobs: args.dateOnlyJobs ?? 0,
+      relativeParsedJobs: args.relativeParsedJobs ?? 0,
+      radarFallbackJobs: args.radarFallbackJobs ?? 0,
+      unknownTimestampJobs: args.unknownTimestampJobs ?? 0,
     },
   }).catch(() => undefined);
 }
@@ -324,6 +407,7 @@ export async function runCompanyDiscoveryBatch(limit = 5): Promise<{ checked: nu
       careersUrl: true,
       priority: true,
       csvEeCpeFit: true,
+      engineeringActivityTier: true,
       nextCheckAt: true,
       lastCheckedAt: true,
     },
@@ -332,8 +416,8 @@ export async function runCompanyDiscoveryBatch(limit = 5): Promise<{ checked: nu
   const time = (value: Date | null) => value?.getTime() ?? 0;
   const due = candidates
     .sort((left, right) => {
-      const leftTier = pollingTierFor({ priority: left.priority, provider: left.atsType, eeCpeFit: left.csvEeCpeFit });
-      const rightTier = pollingTierFor({ priority: right.priority, provider: right.atsType, eeCpeFit: right.csvEeCpeFit });
+      const leftTier = pollingTierFor({ priority: left.priority, provider: left.atsType, eeCpeFit: left.csvEeCpeFit, activityTier: left.engineeringActivityTier });
+      const rightTier = pollingTierFor({ priority: right.priority, provider: right.atsType, eeCpeFit: right.csvEeCpeFit, activityTier: right.engineeringActivityTier });
       return tierRank[leftTier] - tierRank[rightTier]
         || time(left.nextCheckAt) - time(right.nextCheckAt)
         || time(left.lastCheckedAt) - time(right.lastCheckedAt);
@@ -422,7 +506,7 @@ export async function runUsaJobsDiscovery(): Promise<{
   for (const keyword of USAJOBS_KEYWORDS) {
     const jobs = await searchUsaJobs(keyword, config);
     const relevant = jobs.filter((j) => isTargetEngineeringRole(j.title, j.description));
-    const summary = await ingestDiscoveredJobs(relevant, "usajobs", "usajobs");
+    const summary = await ingestDiscoveredJobs(relevant, "usajobs", "usajobs", new Date());
     newCount += summary.newCount;
     updatedCount += summary.updatedCount;
     await new Promise((resolve) => setTimeout(resolve, 300));

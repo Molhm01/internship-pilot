@@ -1,4 +1,6 @@
 import type { FreshSignalReason } from "@/lib/sync/freshSignalReasons";
+import type { AtsJob } from "@/lib/ats/types";
+import { parseFirstSourceDate } from "@/lib/sync/sourceDate";
 
 export const REPORT_PROVIDERS = [
   "Greenhouse",
@@ -14,6 +16,16 @@ export const REPORT_PROVIDERS = [
   "Unknown",
 ] as const;
 export type ReportProvider = (typeof REPORT_PROVIDERS)[number];
+
+export const ATS_CONFIG_STATES = [
+  "VALIDATED",
+  "STALE",
+  "MALFORMED",
+  "UNTESTED",
+  "UNSUPPORTED",
+  "CUSTOM",
+] as const;
+export type AtsConfigState = (typeof ATS_CONFIG_STATES)[number];
 
 export function reportProvider(raw: string | null | undefined): ReportProvider {
   const provider = (raw ?? "").trim().toLowerCase().replace(/^ats:/, "");
@@ -32,30 +44,91 @@ export function reportProvider(raw: string | null | undefined): ReportProvider {
   return "Unknown";
 }
 
+export function syntacticConfigState(input: {
+  atsType: string | null;
+  atsIdentifier: string | null;
+  careersUrl: string | null;
+}): AtsConfigState {
+  const provider = reportProvider(input.atsType);
+  if (provider === "Unknown") return "UNSUPPORTED";
+  if (provider === "Custom/API") {
+    return "CUSTOM";
+  }
+  if (provider === "SuccessFactors") return input.careersUrl ? "UNTESTED" : "MALFORMED";
+  const identifier = (input.atsIdentifier ?? "").trim();
+  if (!identifier) return "MALFORMED";
+  if (["Greenhouse", "Lever", "Ashby", "SmartRecruiters"].includes(provider)) {
+    if (/^(embed|jobs?|careers?|search|home|external|internal)$/i.test(identifier)) return "MALFORMED";
+    if (!/^[a-z0-9][a-z0-9_-]*$/i.test(identifier)) return "MALFORMED";
+  }
+  if (provider === "Workday") {
+    const site = identifier.split("/")[1] ?? "";
+    const tenant = identifier.split("/")[0] ?? "";
+    if (!tenant || !site || /^[a-z]{2}(?:-[A-Z]{2})?$/i.test(site)) return "MALFORMED";
+    if (!/^[a-z0-9-]+(?:\.wd\d+)?$/i.test(tenant)) return "MALFORMED";
+  }
+  if (provider === "iCIMS" && !/^[a-z0-9-]+$/i.test(identifier)) return "MALFORMED";
+  return "UNTESTED";
+}
+
+/** A usable ATS is proven by a live enumeration, never by an enum alone. */
 export function isUsableProviderConfig(input: {
   atsType: string | null;
   atsIdentifier: string | null;
   careersUrl: string | null;
+  atsConfigState?: string | null;
 }): boolean {
-  const provider = reportProvider(input.atsType);
-  if (provider === "Unknown") return false;
-  if (provider === "SuccessFactors") return Boolean(input.careersUrl);
-  if (provider === "Custom/API") {
-    // An ordinary custom careers URL is provider knowledge, not a usable
-    // structured configuration. Only adapters with a discovered structured
-    // surface count as directly pollable here.
-    return ["spa", "employer-page", "api", "usajobs"].includes((input.atsType ?? "").toLowerCase())
-      && Boolean(input.careersUrl || input.atsIdentifier);
+  return syntacticConfigState(input) === "UNTESTED" && input.atsConfigState === "VALIDATED";
+}
+
+export function normalizedConfigState(input: {
+  atsType: string | null;
+  atsIdentifier: string | null;
+  careersUrl: string | null;
+  atsConfigState?: string | null;
+}): AtsConfigState {
+  const syntax = syntacticConfigState(input);
+  if (syntax !== "UNTESTED") return syntax;
+  return ATS_CONFIG_STATES.includes(input.atsConfigState as AtsConfigState)
+    ? input.atsConfigState as AtsConfigState
+    : "UNTESTED";
+}
+
+export type PostingQualityTelemetry = {
+  fullJdJobs: number;
+  exactTimestampJobs: number;
+  dateOnlyJobs: number;
+  relativeParsedJobs: number;
+  radarFallbackJobs: number;
+  unknownTimestampJobs: number;
+};
+
+export function postingQualityTelemetry(
+  jobs: AtsJob[],
+  capturedAt: Date,
+  radarFallbackIds: ReadonlySet<string> = new Set(),
+): PostingQualityTelemetry {
+  const telemetry: PostingQualityTelemetry = {
+    fullJdJobs: 0,
+    exactTimestampJobs: 0,
+    dateOnlyJobs: 0,
+    relativeParsedJobs: 0,
+    radarFallbackJobs: 0,
+    unknownTimestampJobs: 0,
+  };
+  for (const job of jobs) {
+    if (job.description.trim().length > 200) telemetry.fullJdJobs += 1;
+    if (radarFallbackIds.has(job.sourceJobId)) {
+      telemetry.radarFallbackJobs += 1;
+      continue;
+    }
+    const parsed = parseFirstSourceDate([job.postedAt, job.postedAtText], capturedAt);
+    if (parsed.sourceDateConfidence === "EXACT") telemetry.exactTimestampJobs += 1;
+    else if (parsed.sourceDateConfidence === "DATE_ONLY") telemetry.dateOnlyJobs += 1;
+    else if (parsed.sourceDateConfidence === "RELATIVE_PARSED") telemetry.relativeParsedJobs += 1;
+    else telemetry.unknownTimestampJobs += 1;
   }
-  const identifier = (input.atsIdentifier ?? "").trim();
-  if (["Greenhouse", "Lever", "Ashby", "SmartRecruiters"].includes(provider)) {
-    if (/^(embed|jobs?|careers?|search|home|external|internal)$/i.test(identifier)) return false;
-  }
-  if (provider === "Workday") {
-    const site = identifier.split("/")[1] ?? "";
-    if (!site || /^[a-z]{2}(?:-[A-Z]{2})?$/i.test(site)) return false;
-  }
-  return Boolean(input.atsIdentifier);
+  return telemetry;
 }
 
 export function percentile(values: number[], fraction: number): number | null {
