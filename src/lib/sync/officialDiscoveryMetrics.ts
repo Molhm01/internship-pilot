@@ -158,7 +158,7 @@ export function classifyFreshRecall(input: {
       : "RESOLVED_AFTER_PRIORITY_TRIGGER";
   }
   if (input.state === "CLOSED" || input.reasonCode === "POSTING_CLOSED") return "SOURCE_SIGNAL_STALE";
-  if (["NO_BOARD_MATCH", "TITLE_MATCH_TOO_LOW", "LOCATION_MISMATCH"].includes(input.reasonCode ?? "")) {
+  if (["NO_BOARD_MATCH", "BOARD_ROLE_NOT_INDEXED", "TITLE_MATCH_TOO_LOW", "LOCATION_MISMATCH"].includes(input.reasonCode ?? "")) {
     return "OFFICIAL_JOB_EXISTS_BUT_MATCH_FAILED";
   }
   if (input.reasonCode === "PARSER_FAILURE") return "SOURCE_SIGNAL_IRRELEVANT";
@@ -169,6 +169,7 @@ export type GapGroup =
   | "provider missing"
   | "provider bot wall"
   | "company/domain unknown"
+  | "wrong employer board"
   | "official posting indexing delay"
   | "board fetch failed"
   | "matching failure"
@@ -181,10 +182,12 @@ export function gapGroup(reason: FreshSignalReason | string | null): GapGroup {
     case "NO_ATS_CONFIG": return "provider missing";
     case "BOT_WALL_BLOCKED": return "provider bot wall";
     case "UNKNOWN_COMPANY": return "company/domain unknown";
+    case "BOARD_WRONG_EMPLOYER": return "wrong employer board";
     case "ATS_BOARD_FETCH_FAILED":
     case "NETWORK_FAILURE":
     case "RATE_LIMITED": return "board fetch failed";
-    case "NO_BOARD_MATCH": return "official posting indexing delay";
+    case "NO_BOARD_MATCH":
+    case "BOARD_ROLE_NOT_INDEXED": return "official posting indexing delay";
     case "TITLE_MATCH_TOO_LOW":
     case "LOCATION_MISMATCH": return "matching failure";
     case "POSTING_CLOSED": return "stale source signal";

@@ -18,7 +18,7 @@
 // a retry schedule in FreshSignalResolution. There is no generic "unresolved".
 
 import { prisma } from "@/lib/db";
-import { listJobsForCompany } from "@/lib/ats";
+import { listJobsForCompany, searchJobsForCompany } from "@/lib/ats";
 import { fetchEightfoldJobDescription } from "@/lib/ats/eightfold";
 import { fetchPhenomJobDescription } from "@/lib/ats/phenom";
 import { resolveWithHeadlessBrowser } from "@/lib/ats/headlessResolver";
@@ -744,14 +744,31 @@ async function resolveOneSignal(
     };
   }
 
-  const verdict = classifyOfficialBoardMatch(
+  let verdict = classifyOfficialBoardMatch(
     { title: signal.title, location: signal.location },
     jobs,
   );
   if (!verdict.accepted) {
+    try {
+      const targetedJobs = await searchJobsForCompany(board.config, signal.title);
+      if (targetedJobs.length > 0) {
+        verdict = classifyOfficialBoardMatch(
+          { title: signal.title, location: signal.location },
+          targetedJobs,
+        );
+      }
+    } catch {
+      // The broad board result still gives an honest diagnostic. A targeted
+      // request is an optimization for large providers, not a new failure mode.
+    }
+  }
+  if (!verdict.accepted) {
+    const reason = verdict.reason === "NO_BOARD_MATCH"
+      ? "BOARD_ROLE_NOT_INDEXED"
+      : verdict.reason;
     return {
       state: "PENDING",
-      reason: verdict.reason,
+      reason,
       detail:
         `Best score ${verdict.bestScore.toFixed(2)}, closest title similarity ` +
         `${verdict.bestTitleSimilarity.toFixed(2)} ("${verdict.closestTitle ?? "none"}") across ` +

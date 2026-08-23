@@ -7,6 +7,7 @@ import {
   fetchEightfoldJobDescription,
   listEightfoldJobs,
   parseEightfoldIdentifier,
+  parseEightfoldSmartApplyJobs,
 } from "@/lib/ats/eightfold";
 
 const IDENTIFIER = "careers.gf.com|globalfoundries.com";
@@ -27,6 +28,25 @@ const POSITION = {
   workLocationOption: "onsite",
   positionUrl: "/careers/job/563980770506355",
 };
+
+const SMART_APPLY_POSITION = {
+  id: 43624688,
+  name: "2027 Technology, Data, AI & Ventures Summer Internship Program - Data Engineer Intern",
+  locations: ["New York,New York,United States"],
+  t_create: 1785514511,
+  ats_job_id: "94549",
+  display_job_id: "94549",
+  job_description: "",
+  work_location_option: "hybrid",
+  canonicalPositionUrl: "https://careers.newyorklife.com/careers/job/43624688",
+};
+
+function smartApplyHtml(positions: unknown[]): string {
+  const encoded = JSON.stringify({ positions })
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&#34;");
+  return `<code id="smartApplyData" style="display:none">${encoded}</code>`;
+}
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -116,6 +136,64 @@ describe("listEightfoldJobs", () => {
   it("returns nothing rather than throwing when the API is unavailable", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 503 }) as unknown as Response));
     expect(await listEightfoldJobs(IDENTIFIER, "GlobalFoundries")).toEqual([]);
+  });
+
+  it("falls back to the current public Smart Apply search page when the legacy API is gone", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        calls.push(url);
+        if (url.includes("/api/pcsx/search")) {
+          return { ok: false, status: 404 } as unknown as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => smartApplyHtml([SMART_APPLY_POSITION]),
+        } as unknown as Response;
+      }),
+    );
+
+    const jobs = await listEightfoldJobs(
+      "careers.newyorklife.com|newyorklife.com",
+      "New York Life",
+      { searchTerms: [SMART_APPLY_POSITION.name] },
+    );
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]).toMatchObject({
+      sourceJobId: "43624688",
+      requisitionId: "94549",
+      workplaceType: "Hybrid",
+      applyUrl: "https://careers.newyorklife.com/careers/job/43624688",
+    });
+    expect(calls[1]).toContain("/careers?query=2027%20Technology");
+    expect(calls[1]).toContain("domain=newyorklife.com");
+  });
+});
+
+describe("Smart Apply server-rendered contract", () => {
+  it("parses the employer-hosted smartApplyData block without inventing a destination", () => {
+    const tenant = { careersHost: "careers.newyorklife.com", groupId: "newyorklife.com" };
+    const jobs = parseEightfoldSmartApplyJobs(
+      smartApplyHtml([SMART_APPLY_POSITION]),
+      tenant,
+      "New York Life",
+    );
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]!.title).toContain("Data Engineer Intern");
+    expect(jobs[0]!.company).toBe("New York Life");
+    expect(jobs[0]!.applyUrl).toBe("https://careers.newyorklife.com/careers/job/43624688");
+  });
+
+  it("rejects a canonical URL on a host the employer page does not own", () => {
+    const tenant = { careersHost: "careers.newyorklife.com", groupId: "newyorklife.com" };
+    const jobs = parseEightfoldSmartApplyJobs(
+      smartApplyHtml([{ ...SMART_APPLY_POSITION, canonicalPositionUrl: "https://jobright.ai/jobs/1" }]),
+      tenant,
+      "New York Life",
+    );
+    expect(jobs[0]!.applyUrl).toBe("https://careers.newyorklife.com/careers/job/43624688");
   });
 });
 

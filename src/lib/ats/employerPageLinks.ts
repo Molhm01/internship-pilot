@@ -156,3 +156,177 @@ export async function listEmployerPageJobs(
     return [];
   }
 }
+
+type EmployerSearchResult = { url: string; title: string };
+
+function normalizedTitle(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/**
+ * Read an employer-owned site-search form without assuming its query contract.
+ * The action and input name must both be present in the page HTML, and the
+ * action must remain on the employer's origin.
+ */
+export function employerSearchUrl(
+  html: string,
+  pageUrl: string,
+  query: string,
+): string | null {
+  for (const form of html.matchAll(/<form\b([^>]*)>([\s\S]*?)<\/form>/gi)) {
+    const attributes = form[1] ?? "";
+    const body = form[2] ?? "";
+    const action = attributes.match(/\baction=["']([^"']+)["']/i)?.[1];
+    const input = body.match(/<input\b[^>]*\bname=["']([^"']+)["'][^>]*>/i)?.[1];
+    if (!action || !input || !/^(?:q|query|search)$/i.test(input)) continue;
+    try {
+      const base = new URL(pageUrl);
+      const target = new URL(decodeHtml(action), base);
+      if (target.origin !== base.origin) continue;
+      target.searchParams.set(input, query);
+      return target.toString();
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+/** Same-origin Search page explicitly linked by the employer careers page. */
+export function employerSearchPageUrl(html: string, pageUrl: string): string | null {
+  let origin: string;
+  try {
+    origin = new URL(pageUrl).origin;
+  } catch {
+    return null;
+  }
+  for (const match of html.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>/gi)) {
+    try {
+      const url = new URL(decodeHtml(match[1] ?? ""), pageUrl);
+      if (url.origin === origin && /\/search\/?$/i.test(url.pathname)) return url.toString();
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+/** Exact-title employer job pages returned by the employer's own site search. */
+export function extractEmployerSearchResults(
+  html: string,
+  searchUrl: string,
+  query: string,
+): EmployerSearchResult[] {
+  const results: EmployerSearchResult[] = [];
+  const seen = new Set<string>();
+  const wanted = normalizedTitle(query);
+  let origin: string;
+  try {
+    origin = new URL(searchUrl).origin;
+  } catch {
+    return [];
+  }
+
+  for (const match of html.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]{0,500}?)<\/a>/gi)) {
+    const title = visibleText(match[2] ?? "");
+    if (!title || normalizedTitle(title) !== wanted) continue;
+    try {
+      const url = new URL(decodeHtml(match[1] ?? ""), searchUrl);
+      if (url.origin !== origin || !/\/(?:careers\/openings|jobs?)\//i.test(url.pathname)) continue;
+      url.hash = "";
+      const key = url.toString();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      results.push({ url: key, title });
+    } catch {
+      continue;
+    }
+    if (results.length >= 8) break;
+  }
+  return results;
+}
+
+/**
+ * Search an employer-owned mirror for a signal the configured iCIMS board did
+ * not enumerate. This does not touch the verification wall: it follows the
+ * employer's own public search form to its own job page, then reads the
+ * official iCIMS Apply link that page publishes.
+ */
+export async function searchEmployerMirrorJobs(
+  careersUrl: string,
+  companyName: string,
+  query: string,
+  allowedApplyHost: string,
+): Promise<AtsJob[]> {
+  try {
+    const careersResponse = await fetch(careersUrl, {
+      redirect: "follow",
+      headers: { "User-Agent": USER_AGENT },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!careersResponse.ok) return [];
+    const careersHtml = await careersResponse.text();
+    const finalCareersUrl = careersResponse.url || careersUrl;
+    let searchUrl = employerSearchUrl(careersHtml, finalCareersUrl, query);
+    if (!searchUrl) {
+      const searchPageUrl = employerSearchPageUrl(careersHtml, finalCareersUrl);
+      if (!searchPageUrl) return [];
+      const searchPageResponse = await fetch(searchPageUrl, {
+        redirect: "follow",
+        headers: { "User-Agent": USER_AGENT },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!searchPageResponse.ok) return [];
+      searchUrl = employerSearchUrl(
+        await searchPageResponse.text(),
+        searchPageResponse.url || searchPageUrl,
+        query,
+      );
+    }
+    if (!searchUrl) return [];
+
+    const searchResponse = await fetch(searchUrl, {
+      redirect: "follow",
+      headers: { "User-Agent": USER_AGENT },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!searchResponse.ok) return [];
+    const results = extractEmployerSearchResults(
+      await searchResponse.text(),
+      searchResponse.url || searchUrl,
+      query,
+    );
+
+    const jobs: AtsJob[] = [];
+    const seen = new Set<string>();
+    for (const result of results) {
+      const detailResponse = await fetch(result.url, {
+        redirect: "follow",
+        headers: { "User-Agent": USER_AGENT },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!detailResponse.ok) continue;
+      const detailUrl = detailResponse.url || result.url;
+      const linked = extractOfficialJobLinks(
+        await detailResponse.text(),
+        detailUrl,
+        companyName,
+        false,
+      );
+      for (const job of linked) {
+        let host: string;
+        try {
+          host = new URL(job.applyUrl).hostname.toLowerCase();
+        } catch {
+          continue;
+        }
+        if (host !== allowedApplyHost.toLowerCase() || seen.has(job.applyUrl)) continue;
+        seen.add(job.applyUrl);
+        jobs.push({ ...job, title: result.title });
+      }
+    }
+    return jobs;
+  } catch {
+    return [];
+  }
+}

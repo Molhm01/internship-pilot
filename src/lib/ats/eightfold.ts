@@ -58,6 +58,14 @@ type EightfoldPosition = {
   positionUrl?: string;
   jobDescription?: string;
   workLocationOption?: string;
+  // Eightfold's current Smart Apply pages server-render the same fields with
+  // snake_case names inside <code id="smartApplyData">.
+  t_create?: number;
+  ats_job_id?: string;
+  display_job_id?: string;
+  canonicalPositionUrl?: string;
+  job_description?: string;
+  work_location_option?: string;
 };
 
 async function getJson(url: string, careersHost: string, throwOnFetchError = false): Promise<unknown | null> {
@@ -85,8 +93,38 @@ async function getJson(url: string, careersHost: string, throwOnFetchError = fal
 }
 
 function positionsOf(payload: unknown): EightfoldPosition[] {
-  const data = (payload as { data?: { positions?: unknown } } | null)?.data;
-  return Array.isArray(data?.positions) ? (data.positions as EightfoldPosition[]) : [];
+  const record = payload as { positions?: unknown; data?: { positions?: unknown } } | null;
+  const positions = record?.data?.positions ?? record?.positions;
+  return Array.isArray(positions) ? (positions as EightfoldPosition[]) : [];
+}
+
+function decodeHtml(value: string): string {
+  return value
+    .replace(/&quot;|&#34;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#(\d+);/g, (_match, code: string) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_match, code: string) => String.fromCharCode(Number.parseInt(code, 16)));
+}
+
+/** Parse the public, server-rendered Smart Apply search payload. */
+export function parseEightfoldSmartApplyJobs(
+  html: string,
+  tenant: EightfoldTenant,
+  companyName: string,
+): AtsJob[] {
+  const block = html.match(/<code\b[^>]*\bid=["']smartApplyData["'][^>]*>([\s\S]*?)<\/code>/i)?.[1];
+  if (!block) return [];
+  try {
+    const payload = JSON.parse(decodeHtml(block)) as unknown;
+    return positionsOf(payload)
+      .map((position) => toAtsJob(tenant, position, companyName))
+      .filter((job): job is AtsJob => Boolean(job));
+  } catch {
+    return [];
+  }
 }
 
 function firstLocation(value: unknown): string | null {
@@ -98,7 +136,7 @@ function firstLocation(value: unknown): string | null {
 }
 
 function workplaceTypeOf(position: EightfoldPosition): string | null {
-  const option = position.workLocationOption;
+  const option = position.workLocationOption ?? position.work_location_option;
   if (typeof option !== "string") return null;
   if (/remote/i.test(option)) return "Remote";
   if (/hybrid/i.test(option)) return "Hybrid";
@@ -115,25 +153,35 @@ function toAtsJob(
   const title = typeof position.name === "string" ? position.name.trim() : "";
   if (!title) return null;
 
-  const applyUrl = position.positionUrl
-    ? new URL(position.positionUrl, `https://${tenant.careersHost}`).toString()
-    : eightfoldJobUrl(tenant, position.id);
+  let applyUrl = eightfoldJobUrl(tenant, position.id);
+  const publishedUrl = position.positionUrl ?? position.canonicalPositionUrl;
+  if (publishedUrl) {
+    try {
+      const candidate = new URL(publishedUrl, `https://${tenant.careersHost}`);
+      if (candidate.hostname.toLowerCase() === tenant.careersHost) applyUrl = candidate.toString();
+    } catch {
+      // Keep the deterministic employer-hosted fallback URL.
+    }
+  }
 
   // postedTs is epoch SECONDS on this API.
   const postedAt =
-    typeof position.postedTs === "number" && position.postedTs > 0
-      ? new Date(position.postedTs * 1000)
+    typeof (position.postedTs ?? position.t_create) === "number" && (position.postedTs ?? position.t_create)! > 0
+      ? new Date((position.postedTs ?? position.t_create)! * 1000)
       : null;
 
   return {
     sourceJobId: String(position.id),
-    requisitionId: position.atsJobId ?? position.displayJobId ?? null,
+    requisitionId: position.atsJobId ?? position.ats_job_id ?? position.displayJobId ?? position.display_job_id ?? null,
     title,
     company: companyName,
     location: firstLocation(position.locations),
     workplaceType: workplaceTypeOf(position),
     applyUrl,
-    description: typeof position.jobDescription === "string" ? position.jobDescription : "",
+    description:
+      typeof (position.jobDescription ?? position.job_description) === "string"
+        ? (position.jobDescription ?? position.job_description)!
+        : "",
     postedAt,
     postedAtText: null,
   };
@@ -149,26 +197,69 @@ function toAtsJob(
 export async function listEightfoldJobs(
   atsIdentifier: string,
   companyName: string,
-  options: { throwOnFetchError?: boolean } = {},
+  options: { throwOnFetchError?: boolean; searchTerms?: string[] } = {},
 ): Promise<AtsJob[]> {
   const tenant = parseEightfoldIdentifier(atsIdentifier);
   if (!tenant) return [];
 
   const byId = new Map<string, AtsJob>();
-  for (const term of SEARCH_TERMS) {
-    for (let page = 0; page < PAGES_PER_TERM; page += 1) {
-      const url =
-        `https://${tenant.careersHost}/api/pcsx/search` +
-        `?domain=${encodeURIComponent(tenant.groupId)}` +
-        `&query=${encodeURIComponent(term)}` +
-        `&location=&start=${page * PAGE_SIZE}&num=${PAGE_SIZE}&sort_by=relevance`;
+  const terms = (options.searchTerms?.length ? options.searchTerms : [...SEARCH_TERMS])
+    .map((term) => term.trim())
+    .filter(Boolean);
+  let legacyAvailable = true;
 
-      const positions = positionsOf(await getJson(url, tenant.careersHost, options.throwOnFetchError));
-      for (const position of positions) {
-        const job = toAtsJob(tenant, position, companyName);
-        if (job) byId.set(job.sourceJobId, job);
+  for (const term of terms) {
+    if (legacyAvailable) {
+      try {
+        for (let page = 0; page < PAGES_PER_TERM; page += 1) {
+          const url =
+            `https://${tenant.careersHost}/api/pcsx/search` +
+            `?domain=${encodeURIComponent(tenant.groupId)}` +
+            `&query=${encodeURIComponent(term)}` +
+            `&location=&start=${page * PAGE_SIZE}&num=${PAGE_SIZE}&sort_by=relevance`;
+
+          const positions = positionsOf(await getJson(url, tenant.careersHost, true));
+          for (const position of positions) {
+            const job = toAtsJob(tenant, position, companyName);
+            if (job) byId.set(job.sourceJobId, job);
+          }
+          if (positions.length < PAGE_SIZE) break;
+        }
+      } catch {
+        legacyAvailable = false;
       }
-      if (positions.length < PAGE_SIZE) break;
+    }
+
+    // Eightfold's current Smart Apply frontend server-renders search results
+    // into smartApplyData. This URL shape is published by the page's own "View
+    // All Jobs" and campaign links; it is a public page, not a guessed API.
+    if (!legacyAvailable) {
+      const searchUrl =
+        `https://${tenant.careersHost}/careers` +
+        `?query=${encodeURIComponent(term)}` +
+        `&location=any&domain=${encodeURIComponent(tenant.groupId)}` +
+        `&sort_by=relevance&triggerGoButton=true`;
+      try {
+        const response = await fetch(searchUrl, {
+          headers: {
+            "User-Agent": USER_AGENT,
+            Accept: "text/html,application/xhtml+xml",
+            Referer: `https://${tenant.careersHost}/careers`,
+          },
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+        if (!response.ok) throw new Error(`Eightfold Smart Apply returned HTTP ${response.status}.`);
+        for (const job of parseEightfoldSmartApplyJobs(await response.text(), tenant, companyName)) {
+          byId.set(job.sourceJobId, job);
+        }
+      } catch (error) {
+        if (options.throwOnFetchError && byId.size === 0) {
+          throw Object.assign(new Error("Eightfold Smart Apply request failed."), {
+            code: "ATS_NETWORK",
+            cause: error,
+          });
+        }
+      }
     }
   }
   return [...byId.values()];

@@ -95,7 +95,10 @@ async function main() {
       const requestUrl = response.url();
       if (NOISE.test(requestUrl)) return;
       if (!looksLikeJobData(requestUrl)) return;
-      const key = `${request.method()} ${requestUrl.split("?")[0]}`;
+      // Query parameters often ARE the search interaction. Collapsing every
+      // request to its pathname hid the second call when a user changed a
+      // keyword or page, which defeats the point of observing the frontend.
+      const key = `${request.method()} ${requestUrl}`;
       if (seen.has(key)) return;
       seen.add(key);
 
@@ -142,13 +145,16 @@ async function main() {
     if (search) {
       // Ordinary use of the employer's own search box.
       const box = page
-        .locator('input[type="search"], input[name*="search" i], input[placeholder*="search" i], input[id*="search" i]')
+        .locator(
+          'input[type="search"], input[name*="search" i], input[placeholder*="search" i], input[id*="search" i], input[aria-label*="search" i], [role="searchbox"]',
+        )
         .first();
       if (await box.count()) {
         await box.fill(search).catch(() => undefined);
         await box.press("Enter").catch(() => undefined);
         console.log(`[observe] searched for "${search}"`);
         await page.waitForTimeout(settleMs);
+        console.log(`[observe] after search -> ${page.url()}`);
       } else {
         console.log("[observe] no search input found on this page");
       }
@@ -160,6 +166,7 @@ async function main() {
         await target.click({ timeout: 10_000 }).catch(() => undefined);
         console.log(`[observe] clicked ${clickTarget}`);
         await page.waitForTimeout(settleMs);
+        console.log(`[observe] after click -> ${page.url()}`);
       } else {
         console.log(`[observe] no element matched ${clickTarget}`);
       }
@@ -171,6 +178,16 @@ async function main() {
       console.log("[observe] BOT VERIFICATION WALL — stopping. No circumvention attempted.");
     }
     console.log(`[observe] page text bytes ${body.length}`);
+    const navigationLinks = await page
+      .locator("a")
+      .evaluateAll((links) =>
+        links
+          .map((link) => ({ text: (link.textContent ?? "").trim(), href: (link as HTMLAnchorElement).href }))
+          .filter((link) => /search|jobs?|careers?|open roles?/i.test(`${link.text} ${link.href}`))
+          .slice(0, 20),
+      )
+      .catch(() => []);
+    console.log(`[observe] career navigation ${JSON.stringify(navigationLinks)}`);
   } finally {
     await browser.close().catch(() => undefined);
   }

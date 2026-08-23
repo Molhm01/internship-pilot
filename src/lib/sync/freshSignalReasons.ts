@@ -17,6 +17,10 @@ export const FRESH_SIGNAL_REASONS = [
   "ATS_BOARD_FETCH_FAILED",
   /** The board was read successfully and contains no plausible counterpart. */
   "NO_BOARD_MATCH",
+  /** The official board is readable, but the signaled role is not in its current index. */
+  "BOARD_ROLE_NOT_INDEXED",
+  /** A cached/discovered board identifies a different employer and is rejected. */
+  "BOARD_WRONG_EMPLOYER",
   /** A counterpart exists but the title similarity stayed under the accept bar. */
   "TITLE_MATCH_TOO_LOW",
   /** Title matched but the states/locations conflict — a different posting. */
@@ -40,9 +44,9 @@ export const FRESH_SIGNAL_REASONS = [
    * The employer publishes nothing an ordinary public client can read: the
    * careers host answers 403/404 to a real browser, not just to a fetch.
    * Distinct from a bot wall because there is no page to render and nothing to
-   * retry soon — Marathon Petroleum answers 404 to Chromium on every host it
-   * publishes. Retried on a long cooldown so a five-minute lane never spends
-   * budget on it, but never abandoned: a careers site can come back.
+   * retry soon. Retried on a long cooldown so a five-minute lane never spends
+   * budget on a confirmed inaccessible provider, but never abandoned: a
+   * careers site can come back.
    */
   "PROVIDER_ACCESS_BLOCKED",
   /** The signal itself could not be parsed into a usable identity. */

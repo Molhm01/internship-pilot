@@ -49,11 +49,14 @@ describe("official discovery reporting", () => {
     expect(classifyFreshRecall({ state: "RESOLVED", resolutionPath: "already_official", reasonCode: null })).toBe("ALREADY_FOUND_OFFICIALLY");
     expect(classifyFreshRecall({ state: "RESOLVED", resolutionPath: "employer_board", reasonCode: null })).toBe("RESOLVED_AFTER_PRIORITY_TRIGGER");
     expect(classifyFreshRecall({ state: "PENDING", resolutionPath: null, reasonCode: "TITLE_MATCH_TOO_LOW" })).toBe("OFFICIAL_JOB_EXISTS_BUT_MATCH_FAILED");
+    expect(classifyFreshRecall({ state: "PENDING", resolutionPath: null, reasonCode: "BOARD_ROLE_NOT_INDEXED" })).toBe("OFFICIAL_JOB_EXISTS_BUT_MATCH_FAILED");
   });
 
   it("reports measured gap groups and p90", () => {
     expect(gapGroup("BOT_WALL_BLOCKED")).toBe("provider bot wall");
     expect(gapGroup("NO_ATS_CONFIG")).toBe("provider missing");
+    expect(gapGroup("BOARD_WRONG_EMPLOYER")).toBe("wrong employer board");
+    expect(gapGroup("BOARD_ROLE_NOT_INDEXED")).toBe("official posting indexing delay");
     expect(percentile([10, 20, 30, 40, 50], 0.9)).toBe(50);
   });
 });

@@ -11,6 +11,18 @@ const PATTERNS: Pattern[] = [
   // is apply.workable.com/<account>. Excluding the literal "j" segment keeps a
   // posting link from being read as the tenant.
   { atsType: "workable", regex: /apply\.workable\.com\/(?!j\/)([a-z0-9][a-z0-9-]{1,60})/i, extractId: (m) => m[1] },
+  {
+    atsType: "oracle-recruiting-cloud",
+    regex:
+      /https?:\/\/([a-z0-9.-]+)\/hcmUI\/CandidateExperience\/([a-z]{2}(?:-[a-z]{2})?)\/sites\/([a-z0-9_-]+)/i,
+    extractId: (m) => `${m[1]}|${m[2]}|${m[3]}`,
+  },
+  {
+    atsType: "paylocity",
+    regex:
+      /recruiting\.paylocity\.com\/recruiting\/jobs\/all\/([0-9a-f-]{36})\/([a-z0-9_-]+)/i,
+    extractId: (m) => `${m[1]}|${m[2]}`,
+  },
   // ByteDance-family brands (TikTok, ByteDance) share one public search
   // platform on per-brand hosts. The identifier carries the API host, the
   // brand routing value and the site host — all three read from the

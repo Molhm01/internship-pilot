@@ -26,7 +26,10 @@ import {
   nextAttemptDelayMs,
   normalizeCompanyKey,
 } from "@/lib/sync/freshSignalReasons";
-import { findApprovedCompany } from "@/lib/sync/employerBoardResolution";
+import {
+  findApprovedCompany,
+  providerConfigFromPublishedCareersUrl,
+} from "@/lib/sync/employerBoardResolution";
 import { canonicalizeJobUrl } from "@/lib/sync/ingest";
 import type { RawInternListJob } from "@/lib/sync/internListAdapter";
 import type { AtsJob } from "@/lib/ats/types";
@@ -157,6 +160,35 @@ describe("Gate 6 — an unknown company enters automatic resolution", () => {
     expect(normalizeCompanyKey("Procter & Gamble")).toBe(normalizeCompanyKey("Procter and Gamble"));
     expect(normalizeCompanyKey("Acme Corp.")).toBe(normalizeCompanyKey("ACME Corporation"));
     expect(normalizeCompanyKey("Acme")).not.toBe(normalizeCompanyKey("Acumen"));
+  });
+});
+
+describe("an employer-published provider URL outranks a weak cached page scan", () => {
+  it("routes IBM's approved careers URL to IBM's observed public search adapter", () => {
+    expect(
+      providerConfigFromPublishedCareersUrl({
+        name: "IBM",
+        careersUrl: "https://www.ibm.com/careers",
+        atsType: "custom",
+        atsIdentifier: null,
+      }),
+    ).toMatchObject({
+      atsType: "ibm-careers",
+      atsIdentifier: "ibm",
+      careersUrl: "https://www.ibm.com/careers",
+      origin: "approved_company",
+    });
+  });
+
+  it("does not invent a provider for a generic careers URL", () => {
+    expect(
+      providerConfigFromPublishedCareersUrl({
+        name: "Acme",
+        careersUrl: "https://acme.example/careers",
+        atsType: "custom",
+        atsIdentifier: null,
+      }),
+    ).toBeNull();
   });
 });
 
@@ -402,10 +434,8 @@ describe("Gate 10 (observability) — unresolved is never one generic bucket", (
 
 describe("a verified public-access block is its own retry class", () => {
   it("backs off for days, not minutes — and never abandons the employer", () => {
-    // Marathon Petroleum answers 404 to a real Chromium on every careers host
-    // it publishes. Retrying that on the structural hour-scale schedule spends
-    // fresh-lane budget that a recoverable employer could have used, and no
-    // amount of retrying today changes the answer.
+    // A provider confirmed inaccessible in a real browser should not consume
+    // the fresh lane every hour; retrying today cannot change that answer.
     const first = nextAttemptDelayMs("PROVIDER_ACCESS_BLOCKED", 1);
     const later = nextAttemptDelayMs("PROVIDER_ACCESS_BLOCKED", 5);
 

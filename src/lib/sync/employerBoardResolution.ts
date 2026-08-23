@@ -33,6 +33,11 @@ import {
   detectClientRenderedAts,
 } from "@/lib/ats/detect";
 import { renderCareersPage } from "@/lib/ats/headlessResolver";
+import {
+  oracleRecruitingCloudBoardName,
+  parseOracleRecruitingCloudIdentifier,
+} from "@/lib/ats/oracleRecruitingCloud";
+import { parsePaylocityIdentifier } from "@/lib/ats/paylocity";
 import { boardNameMatchesCompany, resolveAtsForCompany } from "@/lib/ats/resolve";
 import {
   discoverFromRenderedShell,
@@ -50,13 +55,14 @@ export type EmployerBoardConfig = CompanyForListing & {
 
 export type EmployerBoardOutcome =
   | { ok: true; config: EmployerBoardConfig }
-  | { ok: false; reason: Extract<FreshSignalReason, "UNKNOWN_COMPANY" | "NO_ATS_CONFIG"> };
+  | { ok: false; reason: Extract<FreshSignalReason, "UNKNOWN_COMPANY" | "NO_ATS_CONFIG" | "BOARD_WRONG_EMPLOYER"> };
 
 const ONE_HOUR_MS = 60 * 60 * 1000;
 /** How long a successful board resolution is reused before being re-proved. */
 const RESOLVED_TTL_MS = 7 * 24 * ONE_HOUR_MS;
 /** Backoff ceiling for employers we could not resolve. */
 const MAX_NEGATIVE_BACKOFF_MS = 14 * 24 * ONE_HOUR_MS;
+const RESOLUTION_STRATEGY_VERSION = "approved-careers-page-v1";
 
 /** Careers paths to try, in descending order of how conventional they are. */
 const CAREERS_PATHS = [
@@ -210,6 +216,8 @@ function isReadableBoard(atsType: string, atsIdentifier: string | null): boolean
     // page rather than guessed. Their identifier is the employer, not a tenant.
     "ibm-careers",
     "bytedance-careers",
+    "oracle-recruiting-cloud",
+    "paylocity",
     "icims",
     "taleo",
     // Client-rendered career-site vendors. Their identifier is
@@ -221,6 +229,68 @@ function isReadableBoard(atsType: string, atsIdentifier: string | null): boolean
     "spa",
     "employer-page",
   ].includes(atsType);
+}
+
+/**
+ * A provider stated directly by an approved employer's published careers URL.
+ *
+ * This evidence is stronger than a cached generic page scan. IBM's approved
+ * URL is `ibm.com/careers`, which unambiguously routes to IBM's observed public
+ * search adapter; an older rendered scan had cached one unrelated Taiwan link
+ * as an `employer-page` and otherwise hid the real board for seven days.
+ */
+export function providerConfigFromPublishedCareersUrl(
+  company: CompanyForListing,
+): EmployerBoardConfig | null {
+  if (!company.careersUrl) return null;
+  const detected = detectAtsFromText(company.careersUrl);
+  if (!isReadableBoard(detected.atsType, detected.atsIdentifier)) return null;
+  return {
+    ...company,
+    atsType: detected.atsType,
+    atsIdentifier: detected.atsIdentifier ?? detected.atsType,
+    origin: "approved_company",
+  };
+}
+
+/**
+ * Inspect the exact approved careers page before deriving generic paths from
+ * its domain. Paths can be case-sensitive: Marathon publishes `/Jobs/`, whose
+ * HTML links its Workday board, while a derived lowercase `/jobs` returns a
+ * different answer. The exact employer-approved URL is the strongest starting
+ * evidence available.
+ */
+export async function discoverProviderFromPublishedCareersPage(
+  company: CompanyForListing,
+  domain: string | null,
+): Promise<EmployerBoardConfig | null> {
+  const direct = providerConfigFromPublishedCareersUrl(company);
+  if (direct) return direct;
+  if (!company.careersUrl) return null;
+  let detected = await detectAtsForCareersPage(company.careersUrl);
+  if (!isReadableBoard(detected.atsType, detected.atsIdentifier)) {
+    const rendered = await renderCareersPage(company.careersUrl);
+    if (rendered) {
+      const fromUrl = detectAtsFromText(rendered.finalUrl);
+      const linked = detectAtsFromText(rendered.html);
+      const clientRendered = detectClientRenderedAts(rendered.html, rendered.finalUrl);
+      detected = isReadableBoard(fromUrl.atsType, fromUrl.atsIdentifier)
+        ? fromUrl
+        : isReadableBoard(linked.atsType, linked.atsIdentifier)
+          ? linked
+          : clientRendered;
+    }
+  }
+  if (!isReadableBoard(detected.atsType, detected.atsIdentifier)) return null;
+  if (!(await boardBelongsToEmployer(detected.atsType, detected.atsIdentifier, company.name, domain))) {
+    return null;
+  }
+  return {
+    ...company,
+    atsType: detected.atsType,
+    atsIdentifier: detected.atsIdentifier ?? detected.atsType,
+    origin: "approved_company",
+  };
 }
 
 /**
@@ -454,13 +524,33 @@ export async function careersLinksFromHomepage(domain: string): Promise<string[]
  * case with no network at all, and only a slug that agrees with nothing costs
  * one request to the vendor's own board-metadata endpoint.
  */
-async function boardBelongsToEmployer(
+export async function boardBelongsToEmployer(
   atsType: string,
   atsIdentifier: string | null,
   companyName: string,
   domain: string | null,
 ): Promise<boolean> {
   if (!atsIdentifier) return true;
+  if (atsType === "paylocity") {
+    const tenant = parsePaylocityIdentifier(atsIdentifier);
+    return Boolean(tenant && slugLooksLikeEmployer(tenant.slug, companyName, domain));
+  }
+  if (atsType === "oracle-recruiting-cloud") {
+    const tenant = parseOracleRecruitingCloudIdentifier(atsIdentifier);
+    if (!tenant) return false;
+    try {
+      const response = await fetch(
+        `https://${tenant.host}/hcmUI/CandidateExperience/${encodeURIComponent(tenant.locale)}` +
+          `/sites/${encodeURIComponent(tenant.siteNumber)}`,
+        { headers: { "User-Agent": BOARD_PROBE_UA }, signal: AbortSignal.timeout(8_000) },
+      );
+      if (!response.ok) return false;
+      const boardName = oracleRecruitingCloudBoardName(await response.text());
+      return Boolean(boardName && boardNameMatchesCompany(boardName, companyName));
+    } catch {
+      return false;
+    }
+  }
   if (!TENANT_SLUG_VENDORS.has(atsType)) return true;
   if (slugLooksLikeEmployer(atsIdentifier, companyName, domain)) return true;
 
@@ -720,7 +810,10 @@ export async function resolveEmployerBoard(
   if (approved && usableAts(approved.atsType) && approved.atsIdentifier) {
     return { ok: true, config: { ...approved, origin: "approved_company" } };
   }
+  const publishedProvider = approved ? providerConfigFromPublishedCareersUrl(approved) : null;
+  if (publishedProvider) return { ok: true, config: publishedProvider };
 
+  const approvedDomain = approvedCareersDomain(approved);
   const key = normalizeCompanyKey(companyName);
   if (!key) return { ok: false, reason: "UNKNOWN_COMPANY" };
 
@@ -728,6 +821,7 @@ export async function resolveEmployerBoard(
     where: { normalizedCompany: key },
   });
 
+  let cachedBoardWrongEmployer = false;
   if (
     cached?.state === "RESOLVED" &&
     usableAts(cached.atsType) &&
@@ -735,35 +829,109 @@ export async function resolveEmployerBoard(
     cached.lastAttemptAt &&
     now.getTime() - cached.lastAttemptAt.getTime() < RESOLVED_TTL_MS
   ) {
-    return {
-      ok: true,
-      config: {
-        name: cached.companyName,
-        atsType: cached.atsType,
-        atsIdentifier: cached.atsIdentifier,
-        careersUrl: cached.careersUrl,
-        lastETag: null,
-        lastModified: null,
-        contentHash: null,
-        origin: "cached_resolution",
+    const belongs = await boardBelongsToEmployer(
+      cached.atsType!,
+      cached.atsIdentifier,
+      companyName,
+      sourceDomain ?? cached.companyDomain ?? approvedDomain,
+    );
+    if (belongs) {
+      return {
+        ok: true,
+        config: {
+          name: cached.companyName,
+          atsType: cached.atsType,
+          atsIdentifier: cached.atsIdentifier,
+          careersUrl: cached.careersUrl,
+          lastETag: null,
+          lastModified: null,
+          contentHash: null,
+          origin: "cached_resolution",
+        },
+      };
+    }
+    cachedBoardWrongEmployer = true;
+  }
+
+  // Prefer the domain the source published; fall back to a domain a previous
+  // pass already recorded for this employer (also source-published).
+  const domain = sourceDomain ?? cached?.companyDomain ?? approvedDomain;
+  const attempts = (cached?.attempts ?? 0) + 1;
+
+  // A stale negative must not hide a provider linked by the exact approved
+  // careers page. This may require one bounded render when plain HTTP is
+  // blocked, then the positive result is persisted so later ticks stay cheap.
+  const shouldProbePublishedPage = Boolean(
+    approved
+    && (
+      !cached
+      || cached.state === "RESOLVED"
+      || !cached.evidence?.includes(RESOLUTION_STRATEGY_VERSION)
+      || !cached.nextAttemptAt
+      || cached.nextAttemptAt <= now
+    ),
+  );
+  const publishedPageProvider = shouldProbePublishedPage && approved
+    ? await discoverProviderFromPublishedCareersPage(approved, domain)
+    : null;
+  if (publishedPageProvider) {
+    await prisma.employerBoardResolution.upsert({
+      where: { normalizedCompany: key },
+      create: {
+        normalizedCompany: key,
+        companyName,
+        companyDomain: domain,
+        careersUrl: publishedPageProvider.careersUrl,
+        atsType: publishedPageProvider.atsType,
+        atsIdentifier: publishedPageProvider.atsIdentifier,
+        state: "RESOLVED",
+        reasonCode: null,
+        evidence: JSON.stringify({
+          method: "approved-careers-page",
+          strategyVersion: RESOLUTION_STRATEGY_VERSION,
+          crawledPage: publishedPageProvider.careersUrl,
+          confirmedAt: now.toISOString(),
+        }),
+        attempts,
+        lastAttemptAt: now,
+        nextAttemptAt: null,
       },
-    };
+      update: {
+        companyName,
+        companyDomain: domain,
+        careersUrl: publishedPageProvider.careersUrl,
+        atsType: publishedPageProvider.atsType,
+        atsIdentifier: publishedPageProvider.atsIdentifier,
+        state: "RESOLVED",
+        reasonCode: null,
+        evidence: JSON.stringify({
+          method: "approved-careers-page",
+          strategyVersion: RESOLUTION_STRATEGY_VERSION,
+          crawledPage: publishedPageProvider.careersUrl,
+          confirmedAt: now.toISOString(),
+        }),
+        attempts,
+        lastAttemptAt: now,
+        nextAttemptAt: null,
+      },
+    });
+    return { ok: true, config: publishedPageProvider };
   }
 
   // A cached negative that has not aged out is answered from cache: re-crawling
   // the same employer every five minutes is exactly the load this cache exists
   // to prevent.
   if (cached && cached.state !== "RESOLVED" && cached.nextAttemptAt && cached.nextAttemptAt > now) {
+    const cachedReason = cached.reasonCode === "UNKNOWN_COMPANY"
+      ? "UNKNOWN_COMPANY"
+      : cached.reasonCode === "BOARD_WRONG_EMPLOYER"
+        ? "BOARD_WRONG_EMPLOYER"
+        : "NO_ATS_CONFIG";
     return {
       ok: false,
-      reason: cached.reasonCode === "UNKNOWN_COMPANY" ? "UNKNOWN_COMPANY" : "NO_ATS_CONFIG",
+      reason: cachedReason,
     };
   }
-
-  // Prefer the domain the source published; fall back to a domain a previous
-  // pass already recorded for this employer (also source-published).
-  const domain = sourceDomain ?? cached?.companyDomain ?? approvedCareersDomain(approved);
-  const attempts = (cached?.attempts ?? 0) + 1;
 
   if (!domain) {
     await recordResolutionAttempt({
@@ -779,15 +947,16 @@ export async function resolveEmployerBoard(
 
   const discovered = await discoverEmployerBoardConfig(companyName, domain);
   if (!discovered) {
+    const reason = cachedBoardWrongEmployer ? "BOARD_WRONG_EMPLOYER" : "NO_ATS_CONFIG";
     await recordResolutionAttempt({
       key,
       companyName,
       domain,
       attempts,
       now,
-      reason: "NO_ATS_CONFIG",
+      reason,
     });
-    return { ok: false, reason: "NO_ATS_CONFIG" };
+    return { ok: false, reason };
   }
 
   await prisma.employerBoardResolution.upsert({
@@ -862,6 +1031,7 @@ async function recordResolutionAttempt(args: {
     attempts: args.attempts,
     lastAttemptAt: args.now,
     nextAttemptAt,
+    evidence: JSON.stringify({ strategyVersion: RESOLUTION_STRATEGY_VERSION }),
   };
   await prisma.employerBoardResolution.upsert({
     where: { normalizedCompany: args.key },

@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { prisma } from "@/lib/db";
 import { detectAtsFromText, detectClientRenderedAts } from "@/lib/ats/detect";
+import { searchJobsForCompany } from "@/lib/ats";
 import type { AtsJob } from "@/lib/ats/types";
 import { classifyOfficialBoardMatch } from "@/lib/sync/officialBoardMatch";
 import { normalizeCompanyKey } from "@/lib/sync/freshSignalReasons";
@@ -23,6 +24,10 @@ import {
   careersLinksFromHomepage,
   discoverEmployerBoardConfig,
   hostCandidates,
+  providerConfigFromPublishedCareersUrl,
+  discoverProviderFromPublishedCareersPage,
+  boardBelongsToEmployer,
+  type EmployerBoardConfig,
 } from "@/lib/sync/employerBoardResolution";
 import { isTargetEngineeringRole } from "@/lib/sync/classify";
 import { readFile } from "node:fs/promises";
@@ -57,6 +62,7 @@ const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 const CONCURRENCY = 6;
+const publishedPageProviderCache = new Map<string, Promise<EmployerBoardConfig | null>>();
 
 /** --no-discovery reproduces the cached-verdict view, for before/after runs. */
 const NO_DISCOVERY = process.argv.includes("--no-discovery");
@@ -332,10 +338,38 @@ async function diagnose(
   // What configuration would the pipeline actually have?
   const domain = base.publishedDomain ?? cached?.companyDomain ?? null;
 
+  let publishedProvider = registry ? providerConfigFromPublishedCareersUrl(registry) : null;
+  if (!publishedProvider && registry) {
+    const key = normalizeCompanyKey(registry.name);
+    let pending = publishedPageProviderCache.get(key);
+    if (!pending) {
+      pending = discoverProviderFromPublishedCareersPage(registry, domain);
+      publishedPageProviderCache.set(key, pending);
+    }
+    publishedProvider = await pending;
+  }
+  const cachedCandidate = Boolean(
+    cached?.state === "RESOLVED" && cached.atsType && cached.atsIdentifier,
+  );
+  const cachedBelongs = cachedCandidate
+    ? await boardBelongsToEmployer(
+        cached!.atsType!,
+        cached!.atsIdentifier!,
+        signal.company,
+        domain,
+      )
+    : false;
+  const cachedBoardWrongEmployer = cachedCandidate && !cachedBelongs;
   let config =
     registry?.atsType && registry.atsType !== "unknown" && registry.atsType !== "custom" && registry.atsIdentifier
       ? { atsType: registry.atsType, atsIdentifier: registry.atsIdentifier, careersUrl: registry.careersUrl }
-      : cached?.state === "RESOLVED" && cached.atsType && cached.atsIdentifier
+      : publishedProvider
+        ? {
+            atsType: publishedProvider.atsType,
+            atsIdentifier: publishedProvider.atsIdentifier,
+            careersUrl: publishedProvider.careersUrl,
+          }
+      : cachedBelongs && cached?.atsType && cached.atsIdentifier
         ? { atsType: cached.atsType, atsIdentifier: cached.atsIdentifier, careersUrl: cached.careersUrl }
         : null;
 
@@ -365,17 +399,18 @@ async function diagnose(
     base.boardCareersUrl = config.careersUrl;
 
     // The production reader, fallbacks included.
+    const boardConfig = {
+      name: signal.company,
+      atsType: config.atsType,
+      atsIdentifier: config.atsIdentifier,
+      careersUrl: config.careersUrl,
+      lastETag: null,
+      lastModified: null,
+      contentHash: null,
+      origin: "discovered" as const,
+    };
     const read = await boardJobsFor(
-      {
-        name: signal.company,
-        atsType: config.atsType,
-        atsIdentifier: config.atsIdentifier,
-        careersUrl: config.careersUrl,
-        lastETag: null,
-        lastModified: null,
-        contentHash: null,
-        origin: "discovered" as const,
-      },
+      boardConfig,
       signal.company,
       boardCache,
     );
@@ -385,7 +420,20 @@ async function diagnose(
     base.boardPostings = jobs.length;
 
     if (jobs.length > 0) {
-      const verdict = classifyOfficialBoardMatch({ title: signal.title, location: signal.location }, jobs);
+      let verdict = classifyOfficialBoardMatch({ title: signal.title, location: signal.location }, jobs);
+      if (!verdict.accepted) {
+        try {
+          const targeted = await searchJobsForCompany(boardConfig, signal.title);
+          if (targeted.length > 0) {
+            verdict = classifyOfficialBoardMatch(
+              { title: signal.title, location: signal.location },
+              targeted,
+            );
+          }
+        } catch {
+          // Keep the broad-board diagnosis when the bounded exact query fails.
+        }
+      }
       base.bestScore = verdict.accepted ? 1 : verdict.bestScore;
       base.bestTitleSimilarity = verdict.accepted ? 1 : verdict.bestTitleSimilarity;
       base.closestTitle = verdict.accepted ? verdict.job.title : verdict.closestTitle;
@@ -393,12 +441,18 @@ async function diagnose(
         base.outcome = "BOARD_MATCHED";
         return base;
       }
-      base.failureReason = verdict.reason;
+      base.failureReason = verdict.reason === "NO_BOARD_MATCH"
+        ? "BOARD_ROLE_NOT_INDEXED"
+        : verdict.reason;
       return base;
     }
     base.failureReason = base.botWalled ? "BOT_WALL_BLOCKED" : "ATS_BOARD_FETCH_FAILED";
   } else {
-    base.failureReason = domain ? "NO_ATS_CONFIG" : "UNKNOWN_COMPANY";
+    base.failureReason = cachedBoardWrongEmployer
+      ? "BOARD_WRONG_EMPLOYER"
+      : domain
+        ? "NO_ATS_CONFIG"
+        : "UNKNOWN_COMPANY";
   }
 
   // ---- The recovery probe -------------------------------------------------
