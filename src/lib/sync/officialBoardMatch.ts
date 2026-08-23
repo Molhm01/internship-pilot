@@ -10,6 +10,13 @@ export type DiscoveryJobIdentity = {
 function normalizedText(value: string): string {
   return value
     .toLowerCase()
+    // Feeds routinely carry the employer's page <title> rather than the job
+    // title — "Controls Engineering Summer 2027 Internship (Bettendorf, IA)
+    // Job Details | Lincoln Electric". The site-name suffix and the "job
+    // details" boilerplate are about the page, not the role, and leaving them
+    // in drags the similarity of a perfect match below the accept bar.
+    .replace(/\s*\|.*$/, " ")
+    .replace(/\bjob details\b/g, " ")
     .replace(/\b(202[0-9]|summer|spring|fall|winter)\b/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
@@ -71,6 +78,105 @@ export function scoreOfficialBoardMatch(
   }
 
   return Math.min(1, score);
+}
+
+/** The accept bar for treating a board posting as the same job as a signal. */
+export const OFFICIAL_BOARD_MATCH_THRESHOLD = 0.72;
+
+export type BoardMatchRejection =
+  | "OFFICIAL_URL_REJECTED"
+  | "TITLE_MATCH_TOO_LOW"
+  | "LOCATION_MISMATCH";
+
+export type BoardMatchVerdict =
+  | { accepted: true; job: AtsJob; score: number }
+  | {
+      accepted: false;
+      reason: BoardMatchRejection | "NO_BOARD_MATCH";
+      /** Best combined match score. Zero whenever a hard gate rejected everything. */
+      bestScore: number;
+      /**
+       * Best RAW title similarity on the board, independent of the gates. This
+       * is the number that tells a human whether the counterpart was there at
+       * all — bestScore alone reads 0.00 for "no such job" and for "same job,
+       * wrong state" alike.
+       */
+      bestTitleSimilarity: number;
+      /** Title of the closest posting by raw similarity, for eyeballing. */
+      closestTitle: string | null;
+    };
+
+/**
+ * Pick the best counterpart on a board AND say why nothing was accepted.
+ *
+ * scoreOfficialBoardMatch collapses every failure to 0, which is what produced
+ * a single undifferentiated "unresolved" bucket. This keeps the same accept
+ * decision but reports the most specific reason available, so diagnostics can
+ * distinguish "the board had nothing like this" from "the title matched but the
+ * states disagree" from "the board's own link is not an official apply URL".
+ */
+export function classifyOfficialBoardMatch(
+  discovery: DiscoveryJobIdentity,
+  jobs: AtsJob[],
+): BoardMatchVerdict {
+  if (jobs.length === 0) {
+    return {
+      accepted: false,
+      reason: "NO_BOARD_MATCH",
+      bestScore: 0,
+      bestTitleSimilarity: 0,
+      closestTitle: null,
+    };
+  }
+
+  let best: { job: AtsJob; score: number } | null = null;
+  let closest: { title: string; similarity: number } | null = null;
+  let sawTitleCandidate = false;
+  let sawLocationConflict = false;
+  let sawRejectedUrl = false;
+
+  for (const job of jobs) {
+    const score = scoreOfficialBoardMatch(discovery, job);
+    if (!best || score > best.score) best = { job, score };
+    const similarity = titleSimilarity(discovery.title, job.title);
+    if (!closest || similarity > closest.similarity) closest = { title: job.title, similarity };
+    if (score > 0) continue;
+
+    // score === 0: work out which gate closed. Only postings whose TITLE is
+    // already a plausible counterpart are diagnosed further — a board of 500
+    // unrelated roles must read as "nothing like this here", not as a URL or
+    // location problem.
+    if (similarity < 0.55) continue;
+    sawTitleCandidate = true;
+    if (!job.applyUrl || isAggregatorUrl(job.applyUrl)) {
+      sawRejectedUrl = true;
+      continue;
+    }
+    sawLocationConflict = true;
+  }
+
+  if (best && best.score >= OFFICIAL_BOARD_MATCH_THRESHOLD) {
+    return { accepted: true, job: best.job, score: best.score };
+  }
+
+  const context = {
+    bestScore: best?.score ?? 0,
+    bestTitleSimilarity: closest?.similarity ?? 0,
+    closestTitle: closest?.title ?? null,
+  };
+  const rejected = (reason: BoardMatchRejection | "NO_BOARD_MATCH"): BoardMatchVerdict => ({
+    accepted: false,
+    reason,
+    ...context,
+  });
+
+  // A near-miss on score is the most actionable signal, so it outranks the
+  // hard-gate diagnoses below it.
+  if (context.bestScore > 0) return rejected("TITLE_MATCH_TOO_LOW");
+  if (sawLocationConflict) return rejected("LOCATION_MISMATCH");
+  if (sawRejectedUrl) return rejected("OFFICIAL_URL_REJECTED");
+  if (sawTitleCandidate) return rejected("TITLE_MATCH_TOO_LOW");
+  return rejected("NO_BOARD_MATCH");
 }
 
 export async function findOfficialBoardMatch(

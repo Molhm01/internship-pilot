@@ -128,6 +128,17 @@ export default function JobCard({ job }: { job: JobCardData }) {
         <div className="flex flex-wrap gap-2">
           <StatusBadge status={job.status} />
           {job.verificationStatus && <VerificationBadge status={job.verificationStatus} />}
+          {/* A freshly resolved posting is shown IMMEDIATELY, before its full
+              employer job description has been fetched. Saying so is better
+              than hiding the job until hydration catches up. */}
+          {!canRunMatch && (
+            <span
+              title="The employer's full job description is still being fetched. AI Match runs automatically once it arrives."
+              className="inline-flex items-center rounded-full border border-hairline bg-sunken px-2.5 py-1 text-xs font-medium text-secondary"
+            >
+              Job details loading
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <button

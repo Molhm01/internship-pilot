@@ -1,5 +1,24 @@
+// Fresh engineering-internship radar.
+//
+// This is the pipeline that answers "what legitimate engineering internships
+// were posted most recently, and can I apply through the real employer page
+// right now?". Public feeds are DISCOVERY SIGNALS only — nothing they publish
+// becomes an Apply destination. A signal becomes a visible job only after this
+// module independently reaches the employer's own posting.
+//
+//   fresh signal
+//     → normalize company / title / location
+//     → official URL stated by the feed row?            (direct)
+//     → official URL stated by the feed's detail page?  (source original post)
+//     → otherwise resolve the employer's own board and match the posting
+//     → verify the official destination is alive
+//     → promote to Discover immediately (ATS scoring happens afterwards)
+//
+// Every signal that does not make it through carries a CONCRETE reason code and
+// a retry schedule in FreshSignalResolution. There is no generic "unresolved".
+
 import { prisma } from "@/lib/db";
-import { listJobsForCompany, type CompanyForListing } from "@/lib/ats";
+import { listJobsForCompany } from "@/lib/ats";
 import type { AtsJob } from "@/lib/ats/types";
 import {
   isAggregatorUrl,
@@ -13,57 +32,61 @@ import {
   type RawInternListJob,
 } from "@/lib/sync/internListAdapter";
 import { isTargetEngineeringRole } from "@/lib/sync/classify";
-import { scoreOfficialBoardMatch } from "@/lib/sync/officialBoardMatch";
+import { classifyOfficialBoardMatch } from "@/lib/sync/officialBoardMatch";
 import { probeOfficialJobAvailability } from "@/lib/sync/freshness";
 import { upsertClassifiedAtsJob } from "@/lib/sync/ingest";
+import {
+  countReason,
+  emptyReasonCounts,
+  formatReasonCounts,
+  nextAttemptDelayMs,
+  normalizeCompanyKey,
+  type FreshSignalReason,
+  type FreshSignalReasonCounts,
+} from "@/lib/sync/freshSignalReasons";
+import {
+  loadApprovedCompanyIndex,
+  resolveEmployerBoard,
+  type EmployerBoardConfig,
+  type EmployerBoardOutcome,
+} from "@/lib/sync/employerBoardResolution";
+import {
+  EMPTY_SIGNAL_DETAIL,
+  fetchJobrightSignalDetail,
+  type JobrightSignalDetail,
+} from "@/lib/sync/jobrightSignalDetail";
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-// Jobright's public internship hub currently exposes these technical categories.
-// The known engineering_development slug is kept first; alternate ML aliases are
-// harmless because an invalid/public-empty category simply contributes zero rows.
+export const FRESH_SIGNAL_SOURCE = "jobright";
+
+// Jobright's public internship hub is organized by taxonomy slug. Only these
+// carry technical internship volume — probing on 2026-08-22 showed
+// engineering_development at 5,384 open postings, data_engineer 144,
+// data_science 131, product_management 198, and every other candidate slug
+// ("software_engineer", "machine_learning_ai", "hardware_engineering",
+// "devops", ...) returning zero. Invalid slugs answer HTTP 200 with an empty
+// list rather than a 404, so a dead slug costs a request and yields nothing;
+// the list below is the measured set that actually carries rows.
 const CATEGORY_SLUGS = [
   "engineering_development",
-  "software_engineering",
-  "machine_learning_ai",
-  "machine_learning_and_ai",
   "data_engineer",
-  "data_analyst",
+  "data_science",
 ] as const;
 
 const FRESH_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const THREE_DAYS_MS = 3 * ONE_DAY_MS;
 
+/** Signals examined per tick. Sized for a ~5 minute cadence. */
+const DEFAULT_LIMIT = 400;
+const MAX_LIMIT = 1000;
+
+const SIGNAL_CONCURRENCY = 12;
+
 function categoryUrl(slug: string): string {
   return `https://jobright.ai/minisites-jobs/intern/us/${slug}?embed=true`;
-}
-
-function companyKey(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/&/g, " and ")
-    .replace(/\b(inc|incorporated|llc|ltd|limited|corp|corporation|company|co|holdings|group)\b/g, " ")
-    .replace(/[^a-z0-9]+/g, "")
-    .trim();
-}
-
-function findCompanyConfig(
-  companyName: string,
-  companies: CompanyForListing[],
-  exactMap: Map<string, CompanyForListing>,
-): CompanyForListing | null {
-  const key = companyKey(companyName);
-  const exact = exactMap.get(key);
-  if (exact) return exact;
-  if (key.length < 5) return null;
-  return (
-    companies.find((company) => {
-      const candidate = companyKey(company.name);
-      return candidate.length >= 5 && (candidate.includes(key) || key.includes(candidate));
-    }) ?? null
-  );
 }
 
 function signalIdentity(job: RawInternListJob): string {
@@ -129,7 +152,21 @@ export async function fetchJobrightFreshSignals(now = new Date()): Promise<{
   };
 }
 
-function asAtsJob(signal: RawInternListJob, applyUrl: string, boardJob?: AtsJob | null): AtsJob {
+/**
+ * Build the record we persist for a resolved signal.
+ *
+ * The description ALWAYS comes from the employer's own board posting. A feed's
+ * qualification bullets are its own summary of the job, not the employer's job
+ * description, and writing them into `description` would make a synthesized JD
+ * indistinguishable from a real one to the ATS scorer. When the board gave no
+ * body text the field stays empty and JD hydration fills it later — the job is
+ * still promoted immediately, marked as scoring-pending.
+ */
+export function asOfficialAtsJob(
+  signal: RawInternListJob,
+  applyUrl: string,
+  boardJob?: AtsJob | null,
+): AtsJob {
   return {
     sourceJobId: boardJob?.sourceJobId ?? `jobright-fresh:${signal.sourceJobId}`,
     requisitionId: boardJob?.requisitionId ?? null,
@@ -138,13 +175,19 @@ function asAtsJob(signal: RawInternListJob, applyUrl: string, boardJob?: AtsJob 
     location: boardJob?.location ?? signal.location,
     workplaceType: boardJob?.workplaceType ?? signal.workModel,
     applyUrl,
-    description: boardJob?.description || signal.qualifications || "",
-    postedAt: boardJob?.postedAt ?? signal.sourcePostedAt,
-    postedAtText: boardJob?.postedAtText ?? signal.sourcePostedText,
+    description: boardJob?.description ?? "",
+    // Freshness comes from the DISCOVERY signal's exact source timestamp when it
+    // has one, because that is the moment the posting actually appeared. A
+    // board's own postedAt is used only when the signal has none.
+    postedAt: signal.sourcePostedAt ?? boardJob?.postedAt ?? null,
+    postedAtText: signal.sourcePostedText ?? boardJob?.postedAtText ?? null,
   };
 }
 
-async function persistOfficialSignal(signal: RawInternListJob, job: AtsJob): Promise<"new" | "updated" | "unchanged"> {
+async function persistOfficialSignal(job: AtsJob): Promise<{
+  outcome: "new" | "updated" | "unchanged";
+  jobId: string | null;
+}> {
   const resolved = inferResolvedSource(job.applyUrl);
   const outcome = await upsertClassifiedAtsJob({
     job,
@@ -157,153 +200,478 @@ async function persistOfficialSignal(signal: RawInternListJob, job: AtsJob): Pro
     now: new Date(),
   });
   await promoteCanonicalDirectJob(job, resolved.source, resolved.atsTenant);
-  return outcome;
+
+  const stored = await prisma.job.findFirst({
+    where: { officialApplicationUrl: job.applyUrl },
+    select: { id: true },
+  });
+  return { outcome, jobId: stored?.id ?? null };
 }
 
-function bestBoardMatch(signal: RawInternListJob, jobs: AtsJob[]): AtsJob | null {
-  let best: { job: AtsJob; score: number } | null = null;
-  for (const job of jobs) {
-    const score = scoreOfficialBoardMatch(
-      { title: signal.title, location: signal.location },
-      job,
-    );
-    if (!best || score > best.score) best = { job, score };
-  }
-  return best && best.score >= 0.72 ? best.job : null;
-}
+// ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
 
-export async function runJobrightFreshDiscovery(limit = 150): Promise<{
+export type FreshRadarDiagnostics = {
   categoriesAttempted: number;
   categoryCounts: Record<string, number>;
-  sourceFresh: number;
-  freshUnder24h: number;
-  freshUnder72h: number;
+  /** Fresh, engineering-filtered, de-duplicated signals the source offered. */
+  signalsFetched: number;
+  under24h: number;
+  under72h: number;
+  /** Signals actually put through resolution this tick. */
   examined: number;
-  directResolved: number;
+  /** Skipped because a previous tick already resolved them. */
+  alreadyResolved: number;
+  /** Skipped because their retry backoff has not elapsed. */
+  deferred: number;
+  officialUrlDirect: number;
+  sourceOriginalPost: number;
+  /** Employers resolved to a board automatically (i.e. not from the CSV). */
+  companyResolved: number;
   boardResolved: number;
   unresolved: number;
   closed: number;
-  newCount: number;
-  updatedCount: number;
-}> {
-  const boundedLimit = Math.max(1, Math.min(limit, 200));
+  /** Resolved signals that collapsed onto a Job that already existed. */
+  duplicates: number;
+  newJobs: number;
+  updatedJobs: number;
+  medianResolutionMs: number | null;
+  reasonCounts: FreshSignalReasonCounts;
+};
+
+/** One-line render used by the scheduler log and the diagnostic script. */
+export function formatFreshRadarDiagnostics(d: FreshRadarDiagnostics): string {
+  const resolved = d.officialUrlDirect + d.sourceOriginalPost + d.boardResolved;
+  const rate = d.examined > 0 ? Math.round((resolved / d.examined) * 100) : 0;
+  return (
+    `signals=${d.signalsFetched} <24h=${d.under24h} <72h=${d.under72h} ` +
+    `examined=${d.examined} direct=${d.officialUrlDirect} original=${d.sourceOriginalPost} ` +
+    `boardResolved=${d.boardResolved} companyResolved=${d.companyResolved} ` +
+    `resolved=${resolved} (${rate}%) unresolved=${d.unresolved} closed=${d.closed} ` +
+    `duplicates=${d.duplicates} new=${d.newJobs} updated=${d.updatedJobs} ` +
+    `alreadyResolved=${d.alreadyResolved} deferred=${d.deferred} ` +
+    `medianResolutionMs=${d.medianResolutionMs ?? "n/a"} | reasons: ${formatReasonCounts(d.reasonCounts)}`
+  );
+}
+
+function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? sorted[mid]!
+    : Math.round((sorted[mid - 1]! + sorted[mid]!) / 2);
+}
+
+// ---------------------------------------------------------------------------
+// Resolution
+// ---------------------------------------------------------------------------
+
+type SignalOutcome =
+  | {
+      state: "RESOLVED";
+      path: "direct_official_url" | "source_original_post" | "employer_board";
+      url: string;
+      jobId: string | null;
+      persistOutcome: "new" | "updated" | "unchanged";
+      /** True when the employer's board was found automatically, not from the CSV. */
+      autoResolvedEmployer: boolean;
+    }
+  | { state: "CLOSED"; url: string; reason: string }
+  | { state: "PENDING"; reason: FreshSignalReason; detail: string };
+
+/**
+ * Verify a candidate official destination, then persist it.
+ *
+ * A transient network failure is never read as a closure: probeOfficialJobAvailability
+ * answers "unknown" for anything that is not an explicit 404/410 or an explicit
+ * closed-posting statement, and "unknown" is treated as still open. A posting
+ * that later really is gone is caught by the freshness verification batch,
+ * which re-checks live jobs on its own schedule.
+ */
+export function shouldPromoteAfterProbe(state: "open" | "closed" | "unknown"): boolean {
+  // "unknown" means the check itself failed (timeout, 5xx, blocked bot check),
+  // which says nothing about the posting. Treating it as a closure would delete
+  // real internships from the feed every time a board had a bad minute.
+  return state !== "closed";
+}
+
+/** The candidate destinations a feed row can offer, strongest first. */
+export function directOfficialUrlFrom(signal: {
+  officialApplicationUrl?: string | null;
+  originalJobPostUrl?: string | null;
+  applyUrl?: string | null;
+}): string | null {
+  return (
+    [signal.officialApplicationUrl, signal.originalJobPostUrl, signal.applyUrl].find(
+      (value): value is string =>
+        Boolean(value) && !isAggregatorUrl(value) && isValidOfficialApplicationUrl(value),
+    ) ?? null
+  );
+}
+
+async function verifyAndPersist(
+  signal: RawInternListJob,
+  url: string,
+  boardJob: AtsJob | null,
+  path: "direct_official_url" | "source_original_post" | "employer_board",
+  autoResolvedEmployer: boolean,
+): Promise<SignalOutcome> {
+  const probe = await probeOfficialJobAvailability(url);
+  if (!shouldPromoteAfterProbe(probe.state)) {
+    return { state: "CLOSED", url, reason: probe.reason };
+  }
+
+  try {
+    const { outcome, jobId } = await persistOfficialSignal(asOfficialAtsJob(signal, url, boardJob));
+    return { state: "RESOLVED", path, url, jobId, persistOutcome: outcome, autoResolvedEmployer };
+  } catch (error) {
+    return {
+      state: "PENDING",
+      reason: "PARSER_FAILURE",
+      detail: `Persisting the resolved posting failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+/** Board contents, fetched at most once per employer per tick. */
+type BoardCache = Map<string, { jobs: AtsJob[]; fetchFailed: boolean }>;
+
+/**
+ * In-flight employer resolutions, keyed by normalized company.
+ *
+ * The database cache alone is not enough: a single sweep frequently carries a
+ * dozen postings from the same employer, and with concurrent workers they all
+ * start resolving before any of them has written a cache row. Sharing the
+ * PROMISE means one careers-page crawl per employer per tick instead of one
+ * per posting.
+ */
+type EmployerResolutionCache = Map<string, Promise<EmployerBoardOutcome>>;
+
+async function boardJobsFor(
+  config: EmployerBoardConfig,
+  cache: BoardCache,
+): Promise<{ jobs: AtsJob[]; fetchFailed: boolean }> {
+  const key = `${config.atsType}:${config.atsIdentifier}`;
+  const cached = cache.get(key);
+  if (cached) return cached;
+
+  let result: { jobs: AtsJob[]; fetchFailed: boolean };
+  try {
+    const listed = await listJobsForCompany({
+      ...config,
+      lastETag: null,
+      lastModified: null,
+      contentHash: null,
+    });
+    result = listed.supported
+      ? { jobs: listed.jobs, fetchFailed: false }
+      : { jobs: [], fetchFailed: true };
+  } catch {
+    result = { jobs: [], fetchFailed: true };
+  }
+  cache.set(key, result);
+  return result;
+}
+
+async function resolveOneSignal(
+  signal: RawInternListJob,
+  approvedIndex: Awaited<ReturnType<typeof loadApprovedCompanyIndex>>,
+  boardCache: BoardCache,
+  employerCache: EmployerResolutionCache,
+  now: Date,
+): Promise<SignalOutcome> {
+  if (!signal.company.trim() || !signal.title.trim()) {
+    return { state: "PENDING", reason: "PARSER_FAILURE", detail: "Signal had no usable company/title." };
+  }
+
+  // 1. An official destination the feed row states outright.
+  const direct = directOfficialUrlFrom(signal);
+  if (direct) {
+    return verifyAndPersist(signal, direct, null, "direct_official_url", false);
+  }
+
+  // 2. Enrichment: the feed's per-job page may state the employer destination,
+  //    and reliably states the employer's own website.
+  let detail: JobrightSignalDetail = EMPTY_SIGNAL_DETAIL;
+  if (signal.sourceJobId && !signal.sourceJobId.startsWith("intern-list-public:")) {
+    detail = await fetchJobrightSignalDetail(signal.sourceJobId);
+  }
+
+  if (detail.removedAtSource) {
+    return { state: "PENDING", reason: "POSTING_CLOSED", detail: "The discovery source marks this posting as removed." };
+  }
+
+  if (detail.originalJobPostUrl) {
+    return verifyAndPersist(signal, detail.originalJobPostUrl, null, "source_original_post", false);
+  }
+
+  // 3. Resolve the employer's own board — including employers that are not in
+  //    the approved-employer CSV.
+  const employerKey = normalizeCompanyKey(signal.company);
+  let pending = employerCache.get(employerKey);
+  if (!pending) {
+    pending = resolveEmployerBoard(signal.company, detail.companyDomain, approvedIndex, now);
+    employerCache.set(employerKey, pending);
+  }
+  const board = await pending;
+  if (!board.ok) {
+    return {
+      state: "PENDING",
+      reason: board.reason,
+      detail:
+        board.reason === "UNKNOWN_COMPANY"
+          ? `No approved company row and no source-published website for "${signal.company}".`
+          : `No official job board could be established for "${signal.company}".`,
+    };
+  }
+
+  const { jobs, fetchFailed } = await boardJobsFor(board.config, boardCache);
+  // An empty result is reported as a FETCH failure, not as "the board has
+  // nothing like this". Vendors such as iCIMS answer automated reads with a
+  // bot wall (HTTP 405 "Human Verification"), which is indistinguishable from
+  // an employer with zero openings — and the two want opposite handling. Erring
+  // towards "retry soon" keeps a real internship in the queue instead of
+  // classifying it as a settled miss and backing off for a day.
+  if (fetchFailed || jobs.length === 0) {
+    return {
+      state: "PENDING",
+      reason: "ATS_BOARD_FETCH_FAILED",
+      detail: `Read no postings from ${board.config.atsType}/${board.config.atsIdentifier} for "${signal.company}".`,
+    };
+  }
+
+  const verdict = classifyOfficialBoardMatch(
+    { title: signal.title, location: signal.location },
+    jobs,
+  );
+  if (!verdict.accepted) {
+    return {
+      state: "PENDING",
+      reason: verdict.reason,
+      detail:
+        `Best score ${verdict.bestScore.toFixed(2)}, closest title similarity ` +
+        `${verdict.bestTitleSimilarity.toFixed(2)} ("${verdict.closestTitle ?? "none"}") across ` +
+        `${jobs.length} posting(s) on ${board.config.atsType}/${board.config.atsIdentifier}.`,
+    };
+  }
+
+  // Final destination gate. scoreOfficialBoardMatch only rejects aggregator
+  // hosts; a generic/low-confidence adapter can still hand back a careers
+  // landing page or a search URL, and neither is something to send an applicant
+  // to as "the official posting".
+  if (!isValidOfficialApplicationUrl(verdict.job.applyUrl)) {
+    return {
+      state: "PENDING",
+      reason: "OFFICIAL_URL_REJECTED",
+      detail: `Board match resolved to a non-job destination: ${verdict.job.applyUrl}`,
+    };
+  }
+
+  return verifyAndPersist(
+    signal,
+    verdict.job.applyUrl,
+    verdict.job,
+    "employer_board",
+    board.config.origin !== "approved_company",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Retry-queue bookkeeping
+// ---------------------------------------------------------------------------
+
+type QueueRow = {
+  id: string;
+  state: string;
+  attempts: number;
+  nextAttemptAt: Date | null;
+};
+
+async function loadQueueRows(signalJobIds: string[]): Promise<Map<string, QueueRow>> {
+  if (signalJobIds.length === 0) return new Map();
+  const rows = await prisma.freshSignalResolution.findMany({
+    where: { signalSource: FRESH_SIGNAL_SOURCE, signalJobId: { in: signalJobIds } },
+    select: { id: true, signalJobId: true, state: true, attempts: true, nextAttemptAt: true },
+  });
+  return new Map(rows.map((row) => [row.signalJobId, row]));
+}
+
+async function recordSignalOutcome(args: {
+  signal: RawInternListJob;
+  outcome: SignalOutcome;
+  attempts: number;
+  now: Date;
+  elapsedMs: number;
+}): Promise<void> {
+  const { signal, outcome, attempts, now } = args;
+  const identity = {
+    company: signal.company,
+    normalizedCompany: normalizeCompanyKey(signal.company),
+    title: signal.title,
+    location: signal.location,
+    sourcePostedAt: signal.sourcePostedAt,
+    sourceCapturedAt: now,
+    attempts,
+    lastAttemptAt: now,
+  };
+
+  const specific =
+    outcome.state === "RESOLVED"
+      ? {
+          state: "RESOLVED",
+          reasonCode: null,
+          reasonDetail: null,
+          resolutionPath: outcome.path,
+          resolvedUrl: outcome.url,
+          resolvedJobId: outcome.jobId,
+          resolutionMs: args.elapsedMs,
+          nextAttemptAt: null,
+        }
+      : outcome.state === "CLOSED"
+        ? {
+            state: "CLOSED",
+            reasonCode: "POSTING_CLOSED" satisfies FreshSignalReason,
+            reasonDetail: outcome.reason,
+            resolutionPath: null,
+            resolvedUrl: outcome.url,
+            resolvedJobId: null,
+            resolutionMs: null,
+            nextAttemptAt: null,
+          }
+        : {
+            state: "PENDING",
+            reasonCode: outcome.reason,
+            reasonDetail: outcome.detail,
+            resolutionPath: null,
+            resolvedUrl: null,
+            resolvedJobId: null,
+            resolutionMs: null,
+            nextAttemptAt: new Date(now.getTime() + nextAttemptDelayMs(outcome.reason, attempts)),
+          };
+
+  await prisma.freshSignalResolution.upsert({
+    where: {
+      signalSource_signalJobId: {
+        signalSource: FRESH_SIGNAL_SOURCE,
+        signalJobId: signal.sourceJobId,
+      },
+    },
+    create: {
+      signalSource: FRESH_SIGNAL_SOURCE,
+      signalJobId: signal.sourceJobId,
+      ...identity,
+      ...specific,
+    },
+    update: { ...identity, ...specific },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+export async function runJobrightFreshDiscovery(
+  limit = DEFAULT_LIMIT,
+): Promise<FreshRadarDiagnostics> {
+  const boundedLimit = Math.max(1, Math.min(limit, MAX_LIMIT));
   const now = new Date();
   const source = await fetchJobrightFreshSignals(now);
   const selected = source.jobs.slice(0, boundedLimit);
 
-  const companies: CompanyForListing[] = await prisma.company.findMany({
-    where: { allowlisted: true, monitoringStatus: "active" },
-    select: {
-      name: true,
-      atsType: true,
-      atsIdentifier: true,
-      careersUrl: true,
-      lastETag: true,
-      lastModified: true,
-      contentHash: true,
-    },
-  });
-  const exactMap = new Map(companies.map((company) => [companyKey(company.name), company]));
+  const approvedIndex = await loadApprovedCompanyIndex();
+  const queueRows = await loadQueueRows(selected.map((signal) => signal.sourceJobId));
+  const boardCache: BoardCache = new Map();
+  const employerCache: EmployerResolutionCache = new Map();
+  const reasonCounts = emptyReasonCounts();
+  const resolutionTimes: number[] = [];
 
-  let directResolved = 0;
-  let boardResolved = 0;
-  let unresolved = 0;
-  let closed = 0;
-  let newCount = 0;
-  let updatedCount = 0;
-
-  const withoutDirect: RawInternListJob[] = [];
-  let cursor = 0;
-  const directWorkers = Array.from({ length: Math.min(16, selected.length) }, async () => {
-    while (cursor < selected.length) {
-      const signal = selected[cursor++]!;
-      const direct = [signal.officialApplicationUrl, signal.originalJobPostUrl, signal.applyUrl]
-        .find((value): value is string => Boolean(value) && !isAggregatorUrl(value) && isValidOfficialApplicationUrl(value));
-      if (!direct) {
-        withoutDirect.push(signal);
-        continue;
-      }
-
-      const probe = await probeOfficialJobAvailability(direct);
-      if (probe.state === "closed") {
-        closed += 1;
-        continue;
-      }
-
-      try {
-        const outcome = await persistOfficialSignal(signal, asAtsJob(signal, direct));
-        directResolved += 1;
-        if (outcome === "new") newCount += 1;
-        else if (outcome === "updated") updatedCount += 1;
-      } catch {
-        unresolved += 1;
-      }
-    }
-  });
-  await Promise.all(directWorkers);
-
-  const grouped = new Map<string, { config: CompanyForListing; signals: RawInternListJob[] }>();
-  for (const signal of withoutDirect) {
-    const config = findCompanyConfig(signal.company, companies, exactMap);
-    if (!config) {
-      unresolved += 1;
-      continue;
-    }
-    const key = config.name;
-    const group = grouped.get(key) ?? { config, signals: [] };
-    group.signals.push(signal);
-    grouped.set(key, group);
-  }
-
-  const groups = [...grouped.values()];
-  let groupCursor = 0;
-  const boardWorkers = Array.from({ length: Math.min(8, groups.length) }, async () => {
-    while (groupCursor < groups.length) {
-      const group = groups[groupCursor++]!;
-      let boardJobs: AtsJob[] = [];
-      try {
-        const result = await listJobsForCompany({
-          ...group.config,
-          lastETag: null,
-          lastModified: null,
-          contentHash: null,
-        });
-        if (result.supported) boardJobs = result.jobs;
-      } catch {
-        boardJobs = [];
-      }
-
-      for (const signal of group.signals) {
-        const match = bestBoardMatch(signal, boardJobs);
-        if (!match?.applyUrl || isAggregatorUrl(match.applyUrl)) {
-          unresolved += 1;
-          continue;
-        }
-        try {
-          const outcome = await persistOfficialSignal(signal, asAtsJob(signal, match.applyUrl, match));
-          boardResolved += 1;
-          if (outcome === "new") newCount += 1;
-          else if (outcome === "updated") updatedCount += 1;
-        } catch {
-          unresolved += 1;
-        }
-      }
-    }
-  });
-  await Promise.all(boardWorkers);
-
-  return {
+  const diagnostics: FreshRadarDiagnostics = {
     categoriesAttempted: CATEGORY_SLUGS.length,
     categoryCounts: source.categoryCounts,
-    sourceFresh: source.jobs.length,
-    freshUnder24h: source.freshUnder24h,
-    freshUnder72h: source.freshUnder72h,
-    examined: selected.length,
-    directResolved,
-    boardResolved,
-    unresolved,
-    closed,
-    newCount,
-    updatedCount,
+    signalsFetched: source.jobs.length,
+    under24h: source.freshUnder24h,
+    under72h: source.freshUnder72h,
+    examined: 0,
+    alreadyResolved: 0,
+    deferred: 0,
+    officialUrlDirect: 0,
+    sourceOriginalPost: 0,
+    companyResolved: 0,
+    boardResolved: 0,
+    unresolved: 0,
+    closed: 0,
+    duplicates: 0,
+    newJobs: 0,
+    updatedJobs: 0,
+    medianResolutionMs: null,
+    reasonCounts,
   };
+
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(SIGNAL_CONCURRENCY, selected.length) }, async () => {
+    while (cursor < selected.length) {
+      const signal = selected[cursor++]!;
+      const queued = queueRows.get(signal.sourceJobId);
+
+      if (queued?.state === "RESOLVED") {
+        diagnostics.alreadyResolved += 1;
+        continue;
+      }
+      // Honour the retry backoff. A signal is never dropped — only postponed.
+      if (queued?.nextAttemptAt && queued.nextAttemptAt > now) {
+        diagnostics.deferred += 1;
+        continue;
+      }
+
+      const attempts = (queued?.attempts ?? 0) + 1;
+      const startedAt = Date.now();
+      let outcome: SignalOutcome;
+      try {
+        outcome = await resolveOneSignal(signal, approvedIndex, boardCache, employerCache, now);
+      } catch (error) {
+        outcome = {
+          state: "PENDING",
+          reason: "NETWORK_FAILURE",
+          detail: error instanceof Error ? error.message : String(error),
+        };
+      }
+      const elapsedMs = Date.now() - startedAt;
+
+      diagnostics.examined += 1;
+      if (outcome.state === "RESOLVED") {
+        resolutionTimes.push(elapsedMs);
+        if (outcome.path === "direct_official_url") diagnostics.officialUrlDirect += 1;
+        else if (outcome.path === "source_original_post") diagnostics.sourceOriginalPost += 1;
+        else diagnostics.boardResolved += 1;
+        if (outcome.autoResolvedEmployer) diagnostics.companyResolved += 1;
+        if (outcome.persistOutcome === "new") diagnostics.newJobs += 1;
+        else if (outcome.persistOutcome === "updated") {
+          diagnostics.updatedJobs += 1;
+          diagnostics.duplicates += 1;
+        } else diagnostics.duplicates += 1;
+      } else if (outcome.state === "CLOSED") {
+        diagnostics.closed += 1;
+        countReason(reasonCounts, "POSTING_CLOSED");
+      } else {
+        diagnostics.unresolved += 1;
+        countReason(reasonCounts, outcome.reason);
+      }
+
+      try {
+        await recordSignalOutcome({ signal, outcome, attempts, now, elapsedMs });
+      } catch (error) {
+        // Bookkeeping must never lose a job that was already promoted.
+        console.error("[fresh-radar] could not record signal outcome", {
+          signalJobId: signal.sourceJobId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  });
+  await Promise.all(workers);
+
+  diagnostics.medianResolutionMs = median(resolutionTimes);
+  return diagnostics;
 }

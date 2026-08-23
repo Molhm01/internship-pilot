@@ -10,7 +10,10 @@ import { prepareAutomaticScoringQueues } from "@/lib/matching/automaticScoring";
 import { hydrateMissingDescriptionsForScoring } from "@/lib/matching/jobDescriptionHydration";
 import { requeueStaleFailedScores } from "@/lib/matching/recoverFailedScores";
 import { triggerInitialAiMatchWorker } from "@/lib/matching/initialAiMatchQueue";
-import { runJobrightFreshDiscovery } from "@/lib/sync/jobrightFreshDiscovery";
+import {
+  formatFreshRadarDiagnostics,
+  runJobrightFreshDiscovery,
+} from "@/lib/sync/jobrightFreshDiscovery";
 import { runMassTechnicalFeedDiscovery } from "@/lib/sync/massTechnicalFeeds";
 import { runExpandedPublicDirectFeedDiscovery } from "@/lib/sync/publicDirectFeedsExpanded";
 
@@ -27,7 +30,10 @@ const WEEK = 7 * DAY;
 // employer/ATS destination. Broad feeds already expose job-specific official
 // URLs and keep catalogue depth high without depending on one aggregator.
 const SCHEDULES = {
-  freshRadar: { label: "Fresh engineering radar", intervalMs: 10 * MINUTE },
+  // Five minutes is the freshness target: a posting that appeared "20 minutes
+  // ago" on a public feed should already be in Discover. Repeat ticks are cheap
+  // because resolved signals are skipped and unresolved ones honour a backoff.
+  freshRadar: { label: "Fresh engineering radar", intervalMs: 5 * MINUTE },
   broadRadar: { label: "Broad technical radar", intervalMs: 30 * MINUTE },
   internList: { label: "Intern List sync", intervalMs: 30 * MINUTE },
   csvSync: { label: "CSV allowlist sync", intervalMs: 30 * MINUTE },
@@ -95,12 +101,10 @@ export function startScheduler() {
   const runFreshRadar = () =>
     runIfNotPaused(
       "freshRadar",
-      () => runJobrightFreshDiscovery(200),
+      () => runJobrightFreshDiscovery(),
       (r) => ({
-        summary:
-          `signals=${r.sourceFresh}, <24h=${r.freshUnder24h}, <72h=${r.freshUnder72h}, ` +
-          `resolved=${r.directResolved + r.boardResolved}, new=${r.newCount}, updated=${r.updatedCount}, unresolved=${r.unresolved}`,
-        newJobs: r.newCount,
+        summary: formatFreshRadarDiagnostics(r),
+        newJobs: r.newJobs,
       }),
     );
 

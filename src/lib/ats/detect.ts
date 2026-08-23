@@ -12,7 +12,16 @@ const PATTERNS: Pattern[] = [
     // Keep the Workday shard in the identifier. Older rows stored
     // `tenant/site`; newer detections store `tenant.wdN/site`. The adapter
     // supports both, which avoids silently routing a wd5/wd12 tenant to wd1.
-    regex: /([a-z0-9-]+\.wd\d+)\.myworkdayjobs\.com\/([a-zA-Z0-9-]+)/i,
+    //
+    // Two details matter for real employer links:
+    //  - Many Workday sites are served under a locale segment
+    //    (".../en-US/hubbell_careers/..."). Reading "en-US" as the site name
+    //    made every such tenant resolve to a career site that does not exist,
+    //    so a leading locale is skipped.
+    //  - Site names commonly contain underscores ("hubbell_careers"), which the
+    //    previous character class truncated.
+    regex:
+      /([a-z0-9-]+\.wd\d+)\.myworkdayjobs\.com\/(?:[a-z]{2}[-_][a-z]{2}\/)?([a-zA-Z0-9_-]+)/i,
     extractId: (m) => `${m[1]}/${m[2]}`,
   },
   { atsType: "icims", regex: /([a-z0-9-]+)\.icims\.com/i, extractId: (m) => m[1] },

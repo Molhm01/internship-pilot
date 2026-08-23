@@ -317,6 +317,100 @@ model ApprovedAtsTenant {
   @@unique([companyId, atsType, atsIdentifier])
 }
 
+// Cache of "which official job board does this employer actually use?".
+//
+// A fresh discovery signal names an employer that is very often NOT in the
+// approved-employer CSV. Rather than dropping that internship, the fresh radar
+// resolves the employer independently: it takes the DOMAIN THE SOURCE ITSELF
+// PUBLISHED for the company (never a guessed one), crawls that domain's own
+// careers page, and only accepts an ATS tenant the employer's own page links
+// to. The outcome — positive or negative — is cached here so a five-minute
+// radar cadence never re-crawls the same employer.
+//
+// This table is deliberately SEPARATE from `Company`: `Company` is the curated
+// approved-employer registry that drives the scheduled sweep, and auto-resolved
+// employers must not silently join it.
+model EmployerBoardResolution {
+  id String @id @default(cuid())
+
+  /// Normalized company key (see normalizeCompanyKey) — the lookup identity.
+  normalizedCompany String @unique
+  /// Last raw company name seen from a source, for humans reading diagnostics.
+  companyName       String
+
+  /// Hostname the SOURCE published for this employer. Never inferred.
+  companyDomain String?
+  /// The employer page that produced the ATS evidence.
+  careersUrl    String?
+  atsType       String?
+  atsIdentifier String?
+
+  /// RESOLVED — a usable board config; UNRESOLVED — none found yet.
+  state      String  @default("UNRESOLVED")
+  /// One FreshSignalReason value explaining an UNRESOLVED state.
+  reasonCode String?
+  /// JSON: how the tenant was established (method, boardUrl, postingCount).
+  evidence   String?
+
+  attempts      Int       @default(0)
+  lastAttemptAt DateTime?
+  /// Negative results back off instead of being retried every radar tick.
+  nextAttemptAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([state, nextAttemptAt])
+}
+
+// Per-signal outcome of the fresh radar's official-resolution pipeline.
+//
+// The point of this table is that a fresh internship signal is NEVER silently
+// dropped. Every signal the radar sees gets a row, and every row carries a
+// CONCRETE reason code — not one generic "unresolved" bucket — plus a retry
+// schedule, so an employer whose board was briefly unreachable is tried again
+// instead of being lost.
+model FreshSignalResolution {
+  id String @id @default(cuid())
+
+  /// Discovery surface the signal came from ("jobright", "intern-list", ...).
+  signalSource String
+  /// The source's own stable id for the posting.
+  signalJobId  String
+
+  company           String
+  normalizedCompany String
+  title             String
+  location          String?
+
+  sourcePostedAt   DateTime?
+  sourceCapturedAt DateTime
+
+  /// PENDING | RESOLVED | CLOSED | DUPLICATE | ABANDONED
+  state        String  @default("PENDING")
+  /// A FreshSignalReason value. Null once state is RESOLVED.
+  reasonCode   String?
+  reasonDetail String?
+
+  /// direct_official_url | source_original_post | employer_board — how the
+  /// official destination was reached, once it was.
+  resolutionPath String?
+  resolvedUrl    String?
+  resolvedJobId  String?
+  /// Wall-clock milliseconds the successful resolution took.
+  resolutionMs   Int?
+
+  attempts      Int       @default(0)
+  firstSeenAt   DateTime  @default(now())
+  lastAttemptAt DateTime?
+  nextAttemptAt DateTime?
+
+  @@unique([signalSource, signalJobId])
+  @@index([state, nextAttemptAt])
+  @@index([reasonCode])
+  @@index([sourcePostedAt])
+}
+
 // An employer Intern List surfaced that isn't in the CSV allowlist. Held
 // here — never auto-ingested as a Job — until the user explicitly approves
 // its official domain once, per the strict discovery boundary.

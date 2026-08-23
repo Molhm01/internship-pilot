@@ -76,9 +76,11 @@ export async function GET(request: Request) {
       20,
       Math.max(1, Number.parseInt(process.env.CRON_COMPANY_SWEEP_CONCURRENCY ?? "10", 10) || 10),
     );
+    // Do not cap fresh ingestion at a token number: the whole point of the fresh
+    // radar is that every legitimate recent posting gets a resolution attempt.
     const freshDiscoveryLimit = Math.min(
-      200,
-      Math.max(1, Number.parseInt(process.env.CRON_FRESH_DISCOVERY_LIMIT ?? "150", 10) || 150),
+      1000,
+      Math.max(1, Number.parseInt(process.env.CRON_FRESH_DISCOVERY_LIMIT ?? "400", 10) || 400),
     );
     const discoveryLimit = Math.min(
       50,
@@ -125,13 +127,13 @@ export async function GET(request: Request) {
     const companyUpdatedJobs = result.results.reduce((sum, company) => sum + company.updatedCount, 0);
     const newJobs =
       companyNewJobs +
-      freshDiscovery.newCount +
+      freshDiscovery.newJobs +
       massTechnical.newCount +
       publicDirect.newCount +
       discovery.newCount;
     const updatedJobs =
       companyUpdatedJobs +
-      freshDiscovery.updatedCount +
+      freshDiscovery.updatedJobs +
       massTechnical.updatedCount +
       publicDirect.updatedCount +
       discovery.updatedCount;

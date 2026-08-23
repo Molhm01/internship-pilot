@@ -58,6 +58,7 @@
     "repair:verification-states": "tsx scripts/repair-verification-states.ts",
     "repair:not-tailored-runs": "tsx scripts/repair-not-tailored-runs.ts",
     "backfill:official-destinations": "tsx scripts/backfill-official-destinations.ts",
+    "diagnose:fresh-radar": "tsx scripts/diagnose-fresh-radar.ts",
     "ats:resolve": "tsx scripts/ats-resolve.ts",
     "ats:sync": "tsx scripts/ats-sync.ts",
     "employers:repair": "tsx scripts/repair-employer-backlog.ts",
