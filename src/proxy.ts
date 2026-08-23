@@ -59,6 +59,12 @@ function isPublic(pathname: string): boolean {
   // authenticate themselves with CRON_SECRET, so the proxy must let the
   // request reach the route instead of replacing it with the normal API 401.
   if (pathname.startsWith("/api/cron/")) return true;
+  // The local launcher asks this before any account exists, and often before
+  // the server it is interrogating is one it can sign in to at all — that is
+  // the whole point: it is deciding whether the process on port 3000 came from
+  // this checkout, or is a stale build it needs to restart. The route itself
+  // refuses to answer in a cloud runtime, so nothing is exposed publicly.
+  if (pathname === "/api/local/instance") return true;
   return false;
 }
 

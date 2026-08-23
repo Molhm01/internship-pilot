@@ -393,6 +393,41 @@ async function waitForDomainSlot(domain: string): Promise<void> {
   if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
 }
 
+/**
+ * One employer check that can never take the whole sweep with it.
+ *
+ * checkCompany catches errors from the employer's own board, but not from its
+ * final bookkeeping write. A measured maintenance run lost an entire
+ * 340-employer sweep to a single `prisma.company.update()` failing with
+ * PostgreSQL 08P01 — a pooled-connection prepared-statement collision that has
+ * nothing to do with the employer being checked. A sweep is a batch of
+ * independent units of work, so one failing unit is recorded as a failure and
+ * the rest continue.
+ */
+export async function checkCompanySafely(
+  company: { id: string; name?: string },
+  check: (companyId: string) => Promise<CompanyCheckResult> = checkCompany,
+): Promise<CompanyCheckResult> {
+  try {
+    return await check(company.id);
+  } catch (error) {
+    return {
+      companyId: company.id,
+      name: company.name ?? company.id,
+      status: "error",
+      newCount: 0,
+      updatedCount: 0,
+      jobsScanned: 0,
+      totalAvailableJobs: 0,
+      engineeringInternshipsFound: 0,
+      missingCount: 0,
+      closedCount: 0,
+      durationMs: 0,
+      error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+    };
+  }
+}
+
 export async function runCompanyDiscoveryBatch(limit = 5): Promise<{ checked: number; results: CompanyCheckResult[] }> {
   const candidates = await prisma.company.findMany({
     where: {
@@ -427,7 +462,7 @@ export async function runCompanyDiscoveryBatch(limit = 5): Promise<{ checked: nu
   const results: CompanyCheckResult[] = [];
   for (const company of due) {
     await waitForDomainSlot(domainForRateLimit(company));
-    results.push(await checkCompany(company.id));
+    results.push(await checkCompanySafely(company));
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
   return { checked: results.length, results };
@@ -470,7 +505,7 @@ export async function runCompanyDiscoverySweep(options: {
     const waveResults = await Promise.all(
       wave.map(async (company) => {
         await waitForDomainSlot(domainForRateLimit(company));
-        return checkCompany(company.id);
+        return checkCompanySafely(company);
       }),
     );
     results.push(...waveResults);
@@ -615,7 +650,7 @@ export async function runTieredDuePoll(options: {
     const waveResults = await Promise.all(
       wave.map(async (company) => {
         await waitForDomainSlot(domainForRateLimit(company));
-        return checkCompany(company.id);
+        return checkCompanySafely(company);
       }),
     );
     results.push(...waveResults);

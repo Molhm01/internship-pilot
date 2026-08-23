@@ -49,6 +49,29 @@ describe("route proxy", () => {
     expect(proxy(request("/api/extension/tokens")).status).toBe(401);
   });
 
+  it("lets the local launcher read this server's instance identity", () => {
+    // `npm run local` asks this before any account exists — and specifically
+    // when the process on the port may be a stale build it needs to restart.
+    // Behind a session it could never answer, and the launcher would be back
+    // to trusting an HTTP 200. The route itself refuses in a cloud runtime.
+    getSessionCookie.mockReturnValue(null);
+
+    expect(proxy(request("/api/local/instance")).status).not.toBe(401);
+  });
+
+  it("lets every hosted ingestion lane reach its own CRON_SECRET check", () => {
+    getSessionCookie.mockReturnValue(null);
+
+    for (const path of [
+      "/api/cron/job-ingestion",
+      "/api/cron/job-ingestion/fresh",
+      "/api/cron/job-ingestion/standard",
+      "/api/cron/job-ingestion/maintenance",
+    ]) {
+      expect(proxy(request(path)).status, `${path} must reach its own auth check`).not.toBe(401);
+    }
+  });
+
   it("still refuses every other private API route without a session", () => {
     getSessionCookie.mockReturnValue(null);
 

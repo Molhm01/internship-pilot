@@ -260,6 +260,8 @@ export type FreshRadarDiagnostics = {
   providerCounts: Record<string, number>;
   /** Resolved postings that already carry the employer's real job description. */
   resolvedWithJd: number;
+  /** True when a caller-supplied runtime ceiling stopped the tick early. */
+  stoppedForTimeBudget: boolean;
 };
 
 /** One-line render used by the scheduler log and the diagnostic script. */
@@ -864,8 +866,20 @@ async function recordSignalOutcome(args: {
 
 export async function runJobrightFreshDiscovery(
   limit = DEFAULT_LIMIT,
+  /**
+   * Optional wall-clock ceiling.
+   *
+   * A hosted lane that runs every five minutes cannot let one step spend the
+   * whole invocation: the first measured run gave the radar 89 of 110 seconds
+   * and left the Tier-A employer poll with six of forty due boards and no
+   * budget at all for freshness verification. Stopping between signals is
+   * safe because nothing is lost — every unexamined signal is already
+   * persisted in the resolution queue and is picked up by the next tick.
+   */
+  maxRuntimeMs?: number,
 ): Promise<FreshRadarDiagnostics> {
   const boundedLimit = Math.max(1, Math.min(limit, MAX_LIMIT));
+  const runDeadline = maxRuntimeMs && maxRuntimeMs > 0 ? Date.now() + maxRuntimeMs : null;
   const now = new Date();
   const source = await fetchJobrightFreshSignals(now);
   const selected = source.jobs.slice(0, boundedLimit);
@@ -902,11 +916,16 @@ export async function runJobrightFreshDiscovery(
     reasonCounts,
     providerCounts: {},
     resolvedWithJd: 0,
+    stoppedForTimeBudget: false,
   };
 
   let cursor = 0;
   const workers = Array.from({ length: Math.min(SIGNAL_CONCURRENCY, selected.length) }, async () => {
     while (cursor < selected.length) {
+      if (runDeadline !== null && Date.now() >= runDeadline) {
+        diagnostics.stoppedForTimeBudget = true;
+        return;
+      }
       const signal = selected[cursor++]!;
       const queued = queueRows.get(signal.sourceJobId);
 

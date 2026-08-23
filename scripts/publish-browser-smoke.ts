@@ -134,6 +134,67 @@ function isRequiredAsset(response: Response): boolean {
   return new URL(response.url()).pathname.startsWith("/_next/static/");
 }
 
+function measurementScript(expectSidebar: boolean): string {
+  return `(() => {
+    var px = function (value) { return parseFloat(value) || 0; };
+    var box = function (element) {
+      if (!element) return null;
+      var rect = element.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    };
+    var bodyStyle = getComputedStyle(document.body);
+    var sidebarEl = ${expectSidebar ? 'document.querySelector("aside")' : "null"};
+    var navListEl = document.querySelector('nav[aria-label="Main"] ul');
+    var navLinkEl = document.querySelector('nav[aria-label="Main"] a');
+    // The shell renders a hidden mobile header as well as the desktop sidebar,
+    // so the FIRST matching mark can measure 0x0 and make the size assertion
+    // vacuously true. Take the first candidate the browser actually painted.
+    var logoCandidates = [].slice.call(
+      document.querySelectorAll('aside a[aria-label="Internship Pilot"] svg, header svg, aside svg')
+    );
+    var logoEl = null;
+    for (var i = 0; i < logoCandidates.length; i++) {
+      var candidateBox = box(logoCandidates[i]);
+      if (candidateBox && candidateBox.width > 0 && candidateBox.height > 0) {
+        logoEl = logoCandidates[i];
+        break;
+      }
+    }
+    var mainEl = document.getElementById("main");
+    var navLinkStyle = navLinkEl ? getComputedStyle(navLinkEl) : null;
+
+    return {
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      body: {
+        fontFamily: bodyStyle.fontFamily,
+        backgroundColor: bodyStyle.backgroundColor,
+        color: bodyStyle.color,
+        marginTop: px(bodyStyle.marginTop),
+        marginLeft: px(bodyStyle.marginLeft)
+      },
+      sidebar: sidebarEl
+        ? { display: getComputedStyle(sidebarEl).display, box: box(sidebarEl) }
+        : null,
+      navList: navListEl ? { listStyleType: getComputedStyle(navListEl).listStyleType } : null,
+      navLink: navLinkStyle
+        ? {
+            color: navLinkStyle.color,
+            textDecorationLine: navLinkStyle.textDecorationLine,
+            display: navLinkStyle.display
+          }
+        : null,
+      logo: box(logoEl),
+      main: mainEl
+        ? {
+            present: true,
+            visible: mainEl.getBoundingClientRect().height > 0 && getComputedStyle(mainEl).display !== "none",
+            box: box(mainEl)
+          }
+        : { present: false, visible: false, box: { width: 0, height: 0 } }
+    };
+  })()`;
+}
+
 async function captureSnapshot(
   page: Page,
   route: string,
@@ -149,56 +210,16 @@ async function captureSnapshot(
     landmarkResults.push({ name: landmark.name, visible });
   }
 
-  const measured = await page.evaluate((needSidebar: boolean) => {
-    const px = (value: string) => Number.parseFloat(value) || 0;
-    const bodyStyle = getComputedStyle(document.body);
-    const box = (element: Element | null) => {
-      if (!element) return null;
-      const rect = element.getBoundingClientRect();
-      return { width: rect.width, height: rect.height };
-    };
-
-    const sidebarEl = needSidebar ? document.querySelector("aside") : null;
-    const navListEl = document.querySelector('nav[aria-label="Main"] ul');
-    const navLinkEl = document.querySelector('nav[aria-label="Main"] a');
-    const logoEl =
-      document.querySelector("header svg") ??
-      document.querySelector('aside a[aria-label="Internship Pilot"] svg') ??
-      document.querySelector("aside svg");
-    const mainEl = document.getElementById("main");
-
-    const navLinkStyle = navLinkEl ? getComputedStyle(navLinkEl) : null;
-
-    return {
-      viewport: { width: window.innerWidth, height: window.innerHeight },
-      body: {
-        fontFamily: bodyStyle.fontFamily,
-        backgroundColor: bodyStyle.backgroundColor,
-        color: bodyStyle.color,
-        marginTop: px(bodyStyle.marginTop),
-        marginLeft: px(bodyStyle.marginLeft),
-      },
-      sidebar: sidebarEl
-        ? { display: getComputedStyle(sidebarEl).display, box: box(sidebarEl)! }
-        : null,
-      navList: navListEl ? { listStyleType: getComputedStyle(navListEl).listStyleType } : null,
-      navLink: navLinkStyle
-        ? {
-            color: navLinkStyle.color,
-            textDecorationLine: navLinkStyle.textDecorationLine,
-            display: navLinkStyle.display,
-          }
-        : null,
-      logo: box(logoEl),
-      main: mainEl
-        ? {
-            present: true,
-            visible: mainEl.getBoundingClientRect().height > 0 && getComputedStyle(mainEl).display !== "none",
-            box: box(mainEl)!,
-          }
-        : { present: false, visible: false, box: { width: 0, height: 0 } },
-    };
-  }, expectSidebar);
+  // Passed as source text rather than as a function on purpose. This script is
+  // executed through tsx, whose esbuild transform rewrites named functions to
+  // call an injected `__name` helper — which does not exist in the page, so a
+  // function-valued page.evaluate fails with "ReferenceError: __name is not
+  // defined" before it measures anything. A string is handed to the browser
+  // verbatim.
+  const measured = (await page.evaluate(measurementScript(expectSidebar))) as Omit<
+    VisualSnapshot,
+    "route" | "landmarks"
+  >;
 
   return { route, ...measured, landmarks: landmarkResults };
 }

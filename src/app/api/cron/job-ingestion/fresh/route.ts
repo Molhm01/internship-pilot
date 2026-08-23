@@ -5,6 +5,7 @@ import {
   acquireLane,
   boundedEnv,
   isAuthorizedCronRequest,
+  laneOutcome,
   releaseLane,
   runLaneStep,
   unauthorizedCronResponse,
@@ -79,8 +80,14 @@ async function run() {
     //    that both attaches new signals to jobs already in the catalogue and
     //    priority-crawls a known employer's official board to find the real
     //    posting behind an aggregator signal.
+    //    It gets a sub-budget rather than the whole invocation: measured cold,
+    //    it took 89 of 110 seconds and left the employer poll with six of forty
+    //    due boards and no time for verification. Signals it does not reach are
+    //    already queued and are picked up by the next tick, so stopping early
+    //    costs nothing but a few minutes of latency on the tail.
+    const radarShare = Math.round(BUDGET_MS * 0.55);
     const radar = await runLaneStep(budget, 15_000, () =>
-      runJobrightFreshDiscovery(boundedEnv("CRON_FRESH_SIGNAL_LIMIT", 120, 10, 400)),
+      runJobrightFreshDiscovery(boundedEnv("CRON_FRESH_SIGNAL_LIMIT", 120, 10, 400), radarShare),
     );
 
     // 2. Tier-A structured ATS employers whose backoff has elapsed. Bounded by
@@ -90,7 +97,11 @@ async function run() {
         tiers: ["A"],
         limit: boundedEnv("CRON_FRESH_TIER_A_LIMIT", 40, 1, 200),
         concurrency: boundedEnv("CRON_FRESH_CONCURRENCY", 6, 1, 12),
-        maxRuntimeMs: Math.max(5_000, budget.remainingMs() - 15_000),
+        // The poll can only check its budget between concurrent waves, so it
+        // overshoots by up to one wave. Both a hard ceiling and a reserve for
+        // the verification step below account for that: a first measured run
+        // that reserved only 15s still starved verification completely.
+        maxRuntimeMs: Math.min(40_000, Math.max(5_000, budget.remainingMs() - 25_000)),
       }),
     );
 
@@ -102,20 +113,23 @@ async function run() {
 
     const newJobs = (radar.value?.newJobs ?? 0) + sumNew(tierA.value?.results);
     const updatedJobs = (radar.value?.updatedJobs ?? 0) + sumUpdated(tierA.value?.results);
+    const steps = {
+      freshRadar: summarize(radar),
+      tierAPoll: summarize(tierA),
+      freshnessVerification: summarize(freshness),
+    };
+    const outcome = laneOutcome(steps);
 
     return NextResponse.json(
       {
-        ok: true,
+        ok: outcome.ok,
+        failedSteps: outcome.failedSteps,
         lane: LANE,
         durationMs: Date.now() - startedAt,
         budgetMs: BUDGET_MS,
         newJobs,
         updatedJobs,
-        steps: {
-          freshRadar: summarize(radar),
-          tierAPoll: summarize(tierA),
-          freshnessVerification: summarize(freshness),
-        },
+        steps,
         radar: radar.value
           ? {
               signalsFetched: radar.value.signalsFetched,
@@ -126,6 +140,7 @@ async function run() {
               boardResolved: radar.value.boardResolved,
               unresolved: radar.value.unresolved,
               newJobs: radar.value.newJobs,
+              stoppedForTimeBudget: radar.value.stoppedForTimeBudget,
             }
           : null,
         tierA: tierA.value

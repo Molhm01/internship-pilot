@@ -348,6 +348,7 @@ describe("Gate 10 (observability) — unresolved is never one generic bucket", (
       reasonCounts: { NO_ATS_CONFIG: 20, NETWORK_FAILURE: 6 },
       providerCounts: { workday: 60, greenhouse: 45, eightfold: 25, phenom: 15 },
       resolvedWithJd: 120,
+      stoppedForTimeBudget: false,
     };
     const line = formatFreshRadarDiagnostics(diagnostics);
     expect(line).toContain("signals=312");
@@ -385,6 +386,7 @@ describe("Gate 10 (observability) — unresolved is never one generic bucket", (
       reasonCounts: {},
       providerCounts: { greenhouse: 5, phenom: 3 },
       resolvedWithJd: 6,
+      stoppedForTimeBudget: false,
     });
     expect(line).toContain("resolved=8 (80%)");
   });

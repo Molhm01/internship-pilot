@@ -5,6 +5,7 @@ import {
   acquireLane,
   boundedEnv,
   isAuthorizedCronRequest,
+  laneOutcome,
   releaseLane,
   runLaneStep,
   unauthorizedCronResponse,
@@ -98,20 +99,24 @@ async function run() {
       (publicDirect.value?.updatedCount ?? 0) +
       (internList.value?.updatedCount ?? 0);
 
+    const steps = {
+      tierBPoll: summarize(tierB),
+      publicDirectFeeds: summarize(publicDirect),
+      internListResolution: summarize(internList),
+      freshnessVerification: summarize(freshness),
+    };
+    const outcome = laneOutcome(steps);
+
     return NextResponse.json(
       {
-        ok: true,
+        ok: outcome.ok,
+        failedSteps: outcome.failedSteps,
         lane: LANE,
         durationMs: Date.now() - startedAt,
         budgetMs: BUDGET_MS,
         newJobs,
         updatedJobs,
-        steps: {
-          tierBPoll: summarize(tierB),
-          publicDirectFeeds: summarize(publicDirect),
-          internListResolution: summarize(internList),
-          freshnessVerification: summarize(freshness),
-        },
+        steps,
         tierB: tierB.value
           ? {
               checked: tierB.value.checked,

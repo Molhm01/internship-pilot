@@ -7,12 +7,17 @@ import {
   LaneBudget,
   boundedEnv,
   isAuthorizedCronRequest,
+  laneOutcome,
   leaseIsAvailable,
   leaseKey,
   parseLease,
   runLaneStep,
 } from "@/lib/cron/lane";
-import { selectDueByTier, type TieredPollCandidate } from "@/lib/sync/companyDiscovery";
+import {
+  checkCompanySafely,
+  selectDueByTier,
+  type TieredPollCandidate,
+} from "@/lib/sync/companyDiscovery";
 
 function requestWith(headers: Record<string, string>): Request {
   return new Request("https://example.test/api/cron/job-ingestion/fresh", { headers });
@@ -82,6 +87,22 @@ describe("lane time budgeting", () => {
     expect(step.error).toMatch(/employer board timed out/);
   });
 
+  it("does not report a lane as ok when a contained step failed", () => {
+    // Containing a step failure keeps one bad employer board from losing the
+    // whole invocation. Reporting ok anyway would make a broken registry sweep
+    // indistinguishable from a clean one in the cron log — which is exactly
+    // what a first measured maintenance run did.
+    expect(
+      laneOutcome({
+        feedReconciliation: { error: null },
+        registrySweep: { error: "Database error. Code: 08P01" },
+        cleanup: {},
+      }),
+    ).toEqual({ ok: false, failedSteps: ["registrySweep"] });
+
+    expect(laneOutcome({ a: { error: null }, b: {} })).toEqual({ ok: true, failedSteps: [] });
+  });
+
   it("clamps env-configured limits into their safe range", () => {
     process.env.LANE_TEST_LIMIT = "99999";
     expect(boundedEnv("LANE_TEST_LIMIT", 10, 1, 50)).toBe(50);
@@ -139,6 +160,41 @@ describe("tiered due selection", () => {
     ];
     const selected = selectDueByTier(candidates, { tiers: ["A", "B"], limit: 2, now });
     expect(selected.map((entry) => entry.id)).toEqual(["a-old", "a-recent"]);
+  });
+});
+
+describe("one bad employer never loses the whole sweep", () => {
+  it("records a thrown employer check as an error result and keeps going", async () => {
+    // A measured maintenance run lost an entire 340-employer sweep when a
+    // single bookkeeping write failed with PostgreSQL 08P01 — a pooled
+    // prepared-statement collision that had nothing to do with the employer
+    // being checked. checkCompany catches board errors but not that one.
+    const result = await checkCompanySafely({ id: "company-1", name: "Acme" }, async () => {
+      throw new Error("Database error. Code: `08P01`.");
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.companyId).toBe("company-1");
+    expect(result.name).toBe("Acme");
+    expect(result.newCount).toBe(0);
+    expect(result.error).toMatch(/08P01/);
+  });
+
+  it("passes a successful check straight through", async () => {
+    const success = {
+      companyId: "company-2",
+      name: "Beta",
+      status: "success" as const,
+      newCount: 3,
+      updatedCount: 1,
+      jobsScanned: 10,
+      totalAvailableJobs: 40,
+      engineeringInternshipsFound: 3,
+      missingCount: 0,
+      closedCount: 0,
+      durationMs: 120,
+    };
+    expect(await checkCompanySafely({ id: "company-2" }, async () => success)).toBe(success);
   });
 });
 

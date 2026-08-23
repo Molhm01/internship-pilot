@@ -6,6 +6,7 @@ import {
   acquireLane,
   boundedEnv,
   isAuthorizedCronRequest,
+  laneOutcome,
   releaseLane,
   runLaneStep,
   unauthorizedCronResponse,
@@ -99,10 +100,22 @@ async function run() {
     const errors = results.filter((result) => result.status === "error").length;
     const activeAfterRun = await prisma.job.count({ where: { activeFeed: true } });
 
+    const steps = {
+      feedReconciliation: summarize(cutover),
+      registrySweep: summarize(sweep),
+      massTechnicalFeeds: summarize(massTechnical),
+      deepFreshnessVerification: summarize(freshness),
+      cleanup: summarize(pruned),
+    };
+    const outcome = laneOutcome(steps);
+
     await prisma.syncLog.update({
       where: { id: log.id },
       data: {
-        status: errors > 0 && errors === results.length && results.length > 0 ? "error" : "success",
+        status: !outcome.ok || (errors > 0 && errors === results.length) ? "error" : "success",
+        ...(outcome.ok
+          ? {}
+          : { errorMessage: `Lane steps failed: ${outcome.failedSteps.join(", ")}`.slice(0, 500) }),
         finishedAt: new Date(),
         newJobsCount: newJobs,
         updatedJobsCount: updatedJobs,
@@ -111,7 +124,8 @@ async function run() {
 
     return NextResponse.json(
       {
-        ok: true,
+        ok: outcome.ok,
+        failedSteps: outcome.failedSteps,
         lane: LANE,
         durationMs: Date.now() - startedAt,
         budgetMs: BUDGET_MS,
@@ -134,13 +148,7 @@ async function run() {
         massTechnical: massTechnical.value ?? null,
         freshness: freshness.value ?? null,
         prunedLiveDiscoveryEvents: pruned.value ?? 0,
-        steps: {
-          feedReconciliation: summarize(cutover),
-          registrySweep: summarize(sweep),
-          massTechnicalFeeds: summarize(massTechnical),
-          deepFreshnessVerification: summarize(freshness),
-          cleanup: summarize(pruned),
-        },
+        steps,
       },
       { headers: { "cache-control": "no-store" } },
     );

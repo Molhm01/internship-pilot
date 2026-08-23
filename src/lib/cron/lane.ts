@@ -195,3 +195,21 @@ export function boundedEnv(name: string, fallback: number, min: number, max: num
   const value = Number.isFinite(parsed) ? parsed : fallback;
   return Math.min(max, Math.max(min, value));
 }
+
+/**
+ * Whether a lane run should call itself ok.
+ *
+ * A step failure is contained so one bad employer board cannot lose the whole
+ * invocation — but a lane whose main step threw and still answered `ok: true`
+ * would make a broken sweep indistinguishable from a clean one in the cron
+ * log. The step errors are named in the response, and `ok` follows them.
+ */
+export function laneOutcome(steps: Record<string, { error?: string | null }>): {
+  ok: boolean;
+  failedSteps: string[];
+} {
+  const failedSteps = Object.entries(steps)
+    .filter(([, step]) => Boolean(step.error))
+    .map(([name]) => name);
+  return { ok: failedSteps.length === 0, failedSteps };
+}
