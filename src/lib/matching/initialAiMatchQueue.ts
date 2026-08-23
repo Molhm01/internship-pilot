@@ -1,5 +1,6 @@
 import { freemem } from "node:os";
 import { prisma } from "@/lib/db";
+import { isCloudRuntime } from "@/lib/runtime/deployment";
 import { MatchError, runMatchForJob, type MatchOrigin } from "@/lib/matching";
 import { hasUsableJobDescription } from "@/lib/matchWorkflow";
 import {
@@ -516,6 +517,16 @@ export async function runBoundedInitialMatchWorkers(
 }
 
 export function triggerInitialAiMatchWorker() {
+  // ATS scoring runs on Ollama, which lives on the user's own computer. In a
+  // cloud runtime `localhost:11434` is the serverless function itself, so a
+  // worker started there does not fail fast — it spends the invocation timing
+  // out against a port nobody is listening on. Discovery already schedules
+  // scoring with `startWorker: false`; this is the guarantee rather than the
+  // convention, so a future hosted caller cannot reintroduce the problem.
+  if (isCloudRuntime()) {
+    progress("worker_skipped_cloud_runtime", {});
+    return;
+  }
   if (workerRun) return;
   const concurrency = initialAiMatchWorkerConcurrency();
   progress("worker_started", { concurrency });
