@@ -38,6 +38,26 @@ export function stripPortalHtml(value: string): string {
     .trim();
 }
 
+/**
+ * Remove the field LABEL some portals render into the title itself.
+ *
+ * SAP SuccessFactors tenants commonly emit "Title: AI Intern- Recycling" as
+ * the posting heading, label included. Stored that way it corrupts every
+ * downstream comparison: the radar signal says "AI Intern - Recycling", the
+ * board says "Title: AI Intern- Recycling", and the extra token drags the
+ * similarity under the accept bar so the employer's own posting is rejected.
+ * Measured on CMC, where all three postings read "Title: …".
+ *
+ * Only a leading label is removed, and only one — a job genuinely called
+ * "Title Insurance Intern" keeps its name.
+ */
+export function normalizePostingTitle(value: string): string {
+  return value
+    .replace(/^\s*(?:job\s+|requisition\s+|position\s+)?title\s*[:\-–]\s*/i, "")
+    .replace(/^\s*position\s*[:\-–]\s*/i, "")
+    .trim();
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -237,7 +257,7 @@ export function parseStructuredJobPage(
   return {
     sourceJobId: identifier ?? sourceJobIdFromUrl(pageUrl),
     requisitionId: identifier,
-    title: stripPortalHtml(title),
+    title: normalizePostingTitle(stripPortalHtml(title)),
     company: companyName,
     location,
     workplaceType: /telecommute|remote/i.test(jobLocationType ?? "") ? "Remote" : null,

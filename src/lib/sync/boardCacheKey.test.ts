@@ -72,3 +72,41 @@ describe("board cache identity", () => {
     expect(key).toBe("unknown:unidentified");
   });
 });
+
+describe("vendors whose identifier is not an employer", () => {
+  it("REGRESSION: three SuccessFactors employers on one portal host stay separate", () => {
+    // CMC, Newport News Shipbuilding and Armstrong World Industries all carry
+    // the identifier "performancemanager4" — SAP's shared portal host. Keying
+    // on it served CMC's three postings to all three employers.
+    const keys = [
+      { careersUrl: "https://jobs.cmc.com/", name: "CMC" },
+      { careersUrl: "https://careers.huntingtoningalls.com/", name: "Newport News Shipbuilding" },
+      { careersUrl: "https://careers.armstrongceilings.com/", name: "Armstrong World Industries" },
+    ].map((employer) =>
+      boardCacheKey({ atsType: "successfactors", atsIdentifier: "performancemanager4", ...employer }),
+    );
+
+    expect(new Set(keys).size).toBe(3);
+    for (const key of keys) expect(key).not.toContain("performancemanager4");
+  });
+
+  it("still collapses the same SuccessFactors employer read twice", () => {
+    const config = {
+      atsType: "successfactors",
+      atsIdentifier: "performancemanager4",
+      careersUrl: "https://jobs.cmc.com/",
+      name: "CMC",
+    };
+    expect(boardCacheKey(config)).toBe(boardCacheKey({ ...config, name: "CMC Inc" }));
+  });
+
+  it("keeps using the tenant for vendors whose identifier IS the employer", () => {
+    expect(
+      boardCacheKey({
+        atsType: "workday",
+        atsIdentifier: "flir.wd1/flircareers",
+        careersUrl: "https://careers.teledyne.com",
+      }),
+    ).toContain("flir.wd1/flircareers");
+  });
+});

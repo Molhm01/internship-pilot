@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { parseStructuredJobPage, stripPortalHtml } from "@/lib/ats/structuredCareer";
+import { parseStructuredJobPage, stripPortalHtml,
+  normalizePostingTitle,
+} from "@/lib/ats/structuredCareer";
 
 describe("structured public ATS job parsing", () => {
   it("normalizes JobPosting JSON-LD into an AtsJob", () => {
@@ -89,5 +91,24 @@ describe("structured public ATS job parsing", () => {
 
   it("strips scripts, styles, tags, and common HTML entities", () => {
     expect(stripPortalHtml("<style>x</style><script>y</script><p>PCB &amp; FPGA work</p>")).toBe("PCB & FPGA work");
+  });
+});
+
+describe("portal field labels rendered into the title", () => {
+  it("REGRESSION: strips the 'Title:' label SuccessFactors tenants emit", () => {
+    // Measured on CMC, where all three postings came back as "Title: …". The
+    // extra token dragged an exact counterpart under the accept bar.
+    expect(normalizePostingTitle("Title: AI Intern- Recycling")).toBe("AI Intern- Recycling");
+    expect(normalizePostingTitle("Job Title: Data Engineering Intern")).toBe("Data Engineering Intern");
+    expect(normalizePostingTitle("Position: Electrical Engineering Co-Op")).toBe("Electrical Engineering Co-Op");
+  });
+
+  it("leaves a job genuinely named after a title alone", () => {
+    expect(normalizePostingTitle("Title Insurance Intern")).toBe("Title Insurance Intern");
+    expect(normalizePostingTitle("Software Engineer Intern")).toBe("Software Engineer Intern");
+  });
+
+  it("removes only ONE leading label", () => {
+    expect(normalizePostingTitle("Title: Title Examiner Intern")).toBe("Title Examiner Intern");
   });
 });

@@ -507,14 +507,30 @@ const BOT_WALLED_VENDORS = new Set(["icims", "taleo", "custom", "spa", "employer
  * real job (one crawl per employer per tick) without ever merging two
  * employers into one entry.
  */
+/**
+ * Vendors whose identifier does NOT identify an employer.
+ *
+ * SuccessFactors tenants all sit on a handful of shared portal hosts, so the
+ * identifier for CMC, Newport News Shipbuilding and Armstrong World Industries
+ * is the same string: "performancemanager4". Keying on it merged three
+ * employers into one board read — CMC's three postings were served to all
+ * three — which is the same contamination as the null-identifier case, just
+ * harder to see. For these vendors the careers URL IS the board, and it is
+ * also what listJobsForCompany actually fetches.
+ */
+const IDENTIFIER_IS_NOT_EMPLOYER = new Set(["successfactors", "taleo", "custom", "unknown"]);
+
 export function boardCacheKey(config: {
   atsType: string | null;
   atsIdentifier: string | null;
   careersUrl?: string | null;
   name?: string | null;
 }): string {
-  const scope = config.atsIdentifier ?? config.careersUrl ?? config.name ?? "unidentified";
-  return `${config.atsType ?? "unknown"}:${scope}`;
+  const vendor = config.atsType ?? "unknown";
+  const scope = IDENTIFIER_IS_NOT_EMPLOYER.has(vendor)
+    ? config.careersUrl ?? config.name ?? config.atsIdentifier ?? "unidentified"
+    : config.atsIdentifier ?? config.careersUrl ?? config.name ?? "unidentified";
+  return `${vendor}:${scope}`;
 }
 
 /**
