@@ -73,7 +73,9 @@
     "db:deploy": "prisma migrate deploy",
     "db:import-sqlite": "tsx scripts/migrate-sqlite-to-postgres.ts",
     "claim:legacy-data": "tsx scripts/claim-legacy-user-data.ts",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "test:dev-assets": "tsx scripts/dev-asset-smoke.ts",
+    "test:browser-smoke": "node --import tsx scripts/publish-browser-smoke.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.9.1",

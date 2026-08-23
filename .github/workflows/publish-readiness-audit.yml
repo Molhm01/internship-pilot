@@ -370,11 +370,56 @@ jobs:
         run: |
           curl -fsS http://127.0.0.1:3000/api/health/catalog | tee /tmp/catalog-health.json
           jq -e '.ok == true and (.active | type == "number") and (.freshness.postedWithin24h | type == "number")' /tmp/catalog-health.json
-      - name: Browser signup/login and every workspace route
+      - name: Browser signup/login, every workspace route, and visual/asset integrity
+        # Beyond 404/5xx/page-exception checks, this now fails when a
+        # same-origin stylesheet, script or `_next/static` chunk returns
+        # 404/5xx, and when the browser's own computed styles show the page
+        # rendered as raw HTML: serif body font, unpainted background, a
+        # sidebar outside its width range, bulleted default-blue nav links, or
+        # a product mark swallowing the viewport. That combination is what a
+        # real Windows run produced while every previous assertion passed.
+        env:
+          BROWSER_SMOKE_ARTIFACTS: ${{ runner.temp }}/browser-smoke-artifacts
         run: node --import tsx scripts/publish-browser-smoke.ts
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-smoke-screenshots
+          path: ${{ runner.temp }}/browser-smoke-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Server log
         if: always()
         run: cat /tmp/internship-pilot-server.log || true
+
+  windows-dev-assets:
+    name: Windows dev-server asset smoke
+    runs-on: windows-latest
+    timeout-minutes: 30
+    # `next build --webpack` proves the app compiles; it does not prove the dev
+    # server can serve what it compiled. The local failure this gate exists for
+    # was a running dev server whose document rendered while every
+    # `_next/static` chunk and stylesheet behind it failed — invisible to a
+    # compile gate, and invisible to a smoke that only checks HTTP status.
+    #
+    # Deliberately bounded: two database-free routes, a temporary port, no
+    # Ollama, no scheduler, no application worker, no local launcher.
+    env:
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:59999/internship_pilot_dev_assets
+      DEV_SMOKE_PORT: "3517"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install exact dependencies
+        run: npm ci
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Serve `next dev --webpack` and verify JS/CSS assets load
+        run: npm run test:dev-assets
 
   live-discovery:
     name: Live discovery and verification gates

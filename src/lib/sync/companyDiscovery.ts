@@ -513,3 +513,118 @@ export async function runUsaJobsDiscovery(): Promise<{
   }
   return { configured: true, newCount, updatedCount };
 }
+
+// ---------------------------------------------------------------------------
+// Tiered, due-based polling — the lane the hosted fresh cron uses
+// ---------------------------------------------------------------------------
+
+export type PollingTier = "A" | "B" | "C";
+
+export type TieredPollCandidate = {
+  id: string;
+  atsType: string | null;
+  careersUrl: string | null;
+  priority: string;
+  csvEeCpeFit: string | null;
+  engineeringActivityTier: string | null;
+  nextCheckAt: Date | null;
+  lastCheckedAt: Date | null;
+};
+
+/**
+ * Which employers a tiered lane should poll right now.
+ *
+ * Pure so the lane's selection is testable without a database. Two rules:
+ * only employers whose backoff has actually elapsed are eligible (otherwise a
+ * five-minute cron would hammer the same boards forever), and the requested
+ * tiers bound the work so the fresh lane never inherits the slow custom-scan
+ * tail that belongs to maintenance.
+ */
+export function selectDueByTier(
+  candidates: TieredPollCandidate[],
+  options: { tiers: PollingTier[]; limit: number; now?: Date },
+): TieredPollCandidate[] {
+  const now = (options.now ?? new Date()).getTime();
+  const wanted = new Set(options.tiers);
+  const tierRank: Record<PollingTier, number> = { A: 0, B: 1, C: 2 };
+  const time = (value: Date | null) => value?.getTime() ?? 0;
+
+  const tierOf = (candidate: TieredPollCandidate): PollingTier =>
+    pollingTierFor({
+      priority: candidate.priority,
+      provider: candidate.atsType,
+      eeCpeFit: candidate.csvEeCpeFit,
+      activityTier: candidate.engineeringActivityTier,
+    });
+
+  return candidates
+    .filter((candidate) => wanted.has(tierOf(candidate)))
+    .filter((candidate) => candidate.nextCheckAt === null || candidate.nextCheckAt.getTime() <= now)
+    .sort(
+      (left, right) =>
+        tierRank[tierOf(left)] - tierRank[tierOf(right)] ||
+        time(left.nextCheckAt) - time(right.nextCheckAt) ||
+        time(left.lastCheckedAt) - time(right.lastCheckedAt),
+    )
+    .slice(0, Math.max(0, options.limit));
+}
+
+/**
+ * Polls only the employers of the requested tiers whose next check is due,
+ * inside a hard runtime budget. This is what makes a five-minute hosted lane
+ * possible: it does bounded, incremental work rather than a whole-registry
+ * sweep, and it stops itself well before the platform's function timeout.
+ */
+export async function runTieredDuePoll(options: {
+  tiers: PollingTier[];
+  limit?: number;
+  concurrency?: number;
+  maxRuntimeMs?: number;
+  now?: Date;
+}): Promise<CompanySweepResult> {
+  const limit = Math.max(1, Math.min(options.limit ?? 40, 400));
+  const concurrency = Math.max(1, Math.min(options.concurrency ?? 6, 20));
+  const maxRuntimeMs = Math.max(5_000, Math.min(options.maxRuntimeMs ?? 45_000, 240_000));
+  const startedAt = Date.now();
+
+  const candidates = await prisma.company.findMany({
+    where: {
+      monitoringStatus: "active",
+      allowlisted: true,
+      OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: options.now ?? new Date() } }],
+    },
+    take: 2000,
+    select: {
+      id: true,
+      atsType: true,
+      careersUrl: true,
+      priority: true,
+      csvEeCpeFit: true,
+      engineeringActivityTier: true,
+      nextCheckAt: true,
+      lastCheckedAt: true,
+    },
+  });
+
+  const due = selectDueByTier(candidates, { tiers: options.tiers, limit, now: options.now });
+
+  const results: CompanyCheckResult[] = [];
+  for (let start = 0; start < due.length; start += concurrency) {
+    if (Date.now() - startedAt >= maxRuntimeMs) break;
+    const wave = due.slice(start, start + concurrency);
+    const waveResults = await Promise.all(
+      wave.map(async (company) => {
+        await waitForDomainSlot(domainForRateLimit(company));
+        return checkCompany(company.id);
+      }),
+    );
+    results.push(...waveResults);
+  }
+
+  return {
+    checked: results.length,
+    totalEligible: due.length,
+    stoppedForTimeBudget: results.length < due.length,
+    results,
+  };
+}

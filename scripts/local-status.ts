@@ -1,7 +1,9 @@
 import {
   WEB_PORT, BASE_URL, REPO_ROOT,
   readLock, pidAlive, serverHealth, describePortOwner, databasePath,
+  fetchRunningInstance, expectedInstance, checkAssetHealth, portInUse,
 } from "./local-shared";
+import { compareLocalInstance } from "@/lib/runtime/localInstance";
 
 // Reports the status of every local Internship Pilot service (npm run
 // local:status). Read-only — never starts or stops anything.
@@ -27,6 +29,22 @@ async function main() {
     line("  build", String(health.body.build ?? "unknown"));
     line("  protocolVersion", String(health.body.protocolVersion ?? "unknown"));
     line("  submitEnabled", String(health.body.submitEnabled ?? "unknown"));
+  }
+
+  // Identity and asset integrity, which is what actually separates a usable
+  // instance from one still serving a build that no longer exists on disk.
+  if (await portInUse(WEB_PORT)) {
+    const running = await fetchRunningInstance();
+    const comparison = compareLocalInstance(running, expectedInstance());
+    if (running) {
+      line("  instance", `${running.sessionId.slice(0, 8)} started ${running.startedAt}`);
+      line("  commit", running.commit ? running.commit.slice(0, 12) : "unknown (no .git)");
+      line("  buildId", running.buildId ?? "dev (no BUILD_ID)");
+    }
+    line("  matches checkout", comparison.compatible ? "yes" : `NO — ${comparison.detail}`);
+
+    const assets = await checkAssetHealth("/");
+    line("  page assets", assets.ok ? `OK (${assets.checked} verified)` : `BROKEN — ${assets.detail}`);
   }
 
   if (lock) {

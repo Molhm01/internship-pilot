@@ -1,8 +1,17 @@
-import { chromium, type Page } from "playwright";
+import { mkdirSync } from "node:fs";
+import path from "node:path";
+import { chromium, type Page, type Response } from "playwright";
+
+import {
+  assertVisualIntegrity,
+  type VisualSnapshot,
+  type VisualViolation,
+} from "@/lib/runtime/visualIntegrity";
 
 const BASE_URL = (process.env.BASE_URL ?? "http://127.0.0.1:3000").replace(/\/$/, "");
 const EMAIL = `publish-audit-${Date.now()}@example.com`;
 const PASSWORD = "AuditPassword!2026";
+const SCREENSHOT_DIR = process.env.BROWSER_SMOKE_ARTIFACTS ?? path.join(process.cwd(), "browser-smoke-artifacts");
 
 const authenticatedRoutes = [
   "/dashboard",
@@ -44,7 +53,7 @@ async function routeSmoke(page: Page, route: string) {
   const pageErrors: string[] = [];
   const serverErrors: string[] = [];
   const onPageError = (error: Error) => pageErrors.push(error.message);
-  const onResponse = (response: import("playwright").Response) => {
+  const onResponse = (response: Response) => {
     if (response.status() >= 500 && response.url().startsWith(BASE_URL)) {
       serverErrors.push(`${response.status()} ${response.request().method()} ${response.url()}`);
     }
@@ -80,15 +89,221 @@ async function routeSmoke(page: Page, route: string) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Visual / asset integrity
+// ---------------------------------------------------------------------------
+
+/**
+ * The gate that the previous smoke did not have.
+ *
+ * A real Windows run served HTML whose stylesheet and JS chunks all failed:
+ * the routes were not 404, not 500, and threw no page exception, so every
+ * existing assertion passed while the page itself was unusable — bulleted
+ * default-blue links where the sidebar should be, and a product mark filling
+ * the screen. What separates that page from a working one is (a) whether its
+ * own assets loaded and (b) what the browser actually computed for the
+ * elements that carry the layout. Both are checked here.
+ */
+
+type RouteLandmark = { name: string; selector: string; text?: string };
+
+const VISUAL_ROUTES: { route: string; expectSidebar: boolean; landmarks: RouteLandmark[] }[] = [
+  { route: "/", expectSidebar: false, landmarks: [{ name: "public header", selector: "header" }] },
+  { route: "/login", expectSidebar: false, landmarks: [{ name: "sign-in form", selector: "#auth-email" }] },
+  { route: "/signup", expectSidebar: false, landmarks: [{ name: "sign-up form", selector: "#auth-password" }] },
+  { route: "/dashboard", expectSidebar: true, landmarks: [] },
+  {
+    route: "/jobs",
+    expectSidebar: true,
+    landmarks: [
+      { name: "Discover heading", selector: "h1", text: "Discover" },
+      { name: "job feed toolbar", selector: '[data-testid="jobs-sort"]' },
+    ],
+  },
+];
+
+type AssetFailure = { status: number; url: string; type: string };
+
+/** Same-origin resources whose failure genuinely breaks rendering. */
+function isRequiredAsset(response: Response): boolean {
+  if (!response.url().startsWith(BASE_URL)) return false;
+  const type = response.request().resourceType();
+  if (type === "stylesheet" || type === "script" || type === "font") return true;
+  // Next emits its CSS as `document`-typed navigations in some preload paths,
+  // so fall back to the path shape for anything under the build output.
+  return new URL(response.url()).pathname.startsWith("/_next/static/");
+}
+
+async function captureSnapshot(
+  page: Page,
+  route: string,
+  expectSidebar: boolean,
+  landmarks: RouteLandmark[],
+): Promise<VisualSnapshot> {
+  const landmarkResults: VisualSnapshot["landmarks"] = [];
+  for (const landmark of landmarks) {
+    const locator = landmark.text
+      ? page.locator(landmark.selector).filter({ hasText: landmark.text }).first()
+      : page.locator(landmark.selector).first();
+    const visible = await locator.isVisible().catch(() => false);
+    landmarkResults.push({ name: landmark.name, visible });
+  }
+
+  const measured = await page.evaluate((needSidebar: boolean) => {
+    const px = (value: string) => Number.parseFloat(value) || 0;
+    const bodyStyle = getComputedStyle(document.body);
+    const box = (element: Element | null) => {
+      if (!element) return null;
+      const rect = element.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    };
+
+    const sidebarEl = needSidebar ? document.querySelector("aside") : null;
+    const navListEl = document.querySelector('nav[aria-label="Main"] ul');
+    const navLinkEl = document.querySelector('nav[aria-label="Main"] a');
+    const logoEl =
+      document.querySelector("header svg") ??
+      document.querySelector('aside a[aria-label="Internship Pilot"] svg') ??
+      document.querySelector("aside svg");
+    const mainEl = document.getElementById("main");
+
+    const navLinkStyle = navLinkEl ? getComputedStyle(navLinkEl) : null;
+
+    return {
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      body: {
+        fontFamily: bodyStyle.fontFamily,
+        backgroundColor: bodyStyle.backgroundColor,
+        color: bodyStyle.color,
+        marginTop: px(bodyStyle.marginTop),
+        marginLeft: px(bodyStyle.marginLeft),
+      },
+      sidebar: sidebarEl
+        ? { display: getComputedStyle(sidebarEl).display, box: box(sidebarEl)! }
+        : null,
+      navList: navListEl ? { listStyleType: getComputedStyle(navListEl).listStyleType } : null,
+      navLink: navLinkStyle
+        ? {
+            color: navLinkStyle.color,
+            textDecorationLine: navLinkStyle.textDecorationLine,
+            display: navLinkStyle.display,
+          }
+        : null,
+      logo: box(logoEl),
+      main: mainEl
+        ? {
+            present: true,
+            visible: mainEl.getBoundingClientRect().height > 0 && getComputedStyle(mainEl).display !== "none",
+            box: box(mainEl)!,
+          }
+        : { present: false, visible: false, box: { width: 0, height: 0 } },
+    };
+  }, expectSidebar);
+
+  return { route, ...measured, landmarks: landmarkResults };
+}
+
+async function saveScreenshot(page: Page, route: string): Promise<string | null> {
+  try {
+    mkdirSync(SCREENSHOT_DIR, { recursive: true });
+    const name = `${route === "/" ? "root" : route.replace(/^\//, "").replace(/\//g, "-")}.png`;
+    const file = path.join(SCREENSHOT_DIR, name);
+    await page.screenshot({ path: file, fullPage: false });
+    return file;
+  } catch (error) {
+    warnings.push(`Could not save a screenshot for ${route}: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+async function visualSmoke(
+  page: Page,
+  entry: { route: string; expectSidebar: boolean; landmarks: RouteLandmark[] },
+) {
+  const { route, expectSidebar, landmarks } = entry;
+  const assetFailures: AssetFailure[] = [];
+  const pageErrors: string[] = [];
+
+  const onResponse = (response: Response) => {
+    const status = response.status();
+    if ((status === 404 || status >= 500) && isRequiredAsset(response)) {
+      assetFailures.push({ status, url: response.url(), type: response.request().resourceType() });
+    }
+  };
+  const onRequestFailed = (request: import("playwright").Request) => {
+    const type = request.resourceType();
+    if (!request.url().startsWith(BASE_URL)) return;
+    if (type !== "stylesheet" && type !== "script" && type !== "font") return;
+    assetFailures.push({ status: 0, url: request.url(), type });
+  };
+  const onPageError = (error: Error) => pageErrors.push(error.message);
+
+  page.on("response", onResponse);
+  page.on("requestfailed", onRequestFailed);
+  page.on("pageerror", onPageError);
+
+  try {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(`${BASE_URL}${route}`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => undefined);
+
+    if (assetFailures.length > 0) {
+      const sample = assetFailures
+        .slice(0, 5)
+        .map((failure) => `${failure.status || "request failed"} ${failure.type} ${failure.url}`)
+        .join(" | ");
+      fail(`assets ${route}`, `${assetFailures.length} same-origin asset(s) did not load: ${sample}`);
+      await saveScreenshot(page, route);
+    } else {
+      pass(`assets ${route}`, "every same-origin stylesheet, script and Next chunk loaded");
+    }
+
+    if (pageErrors.length > 0) {
+      fail(`assets ${route}`, `unhandled browser error(s): ${pageErrors.join(" | ")}`);
+    }
+
+    const snapshot = await captureSnapshot(page, route, expectSidebar, landmarks);
+    const violations: VisualViolation[] = assertVisualIntegrity(snapshot);
+    if (violations.length > 0) {
+      const file = await saveScreenshot(page, route);
+      for (const violation of violations) {
+        fail(`visual ${route}`, `${violation.check}: ${violation.detail}`);
+      }
+      if (file) console.error(`  screenshot: ${file}`);
+      console.error(`  measured: ${JSON.stringify(snapshot)}`);
+    } else {
+      pass(
+        `visual ${route}`,
+        `styled correctly (font=${snapshot.body.fontFamily.split(",")[0]}, background=${snapshot.body.backgroundColor}` +
+          `${snapshot.sidebar ? `, sidebar=${Math.round(snapshot.sidebar.box.width)}px` : ""}` +
+          `${snapshot.logo ? `, logo=${Math.round(snapshot.logo.width)}×${Math.round(snapshot.logo.height)}px` : ""})`,
+      );
+    }
+  } catch (error) {
+    await saveScreenshot(page, route);
+    fail(`visual ${route}`, error instanceof Error ? error.message : String(error));
+  } finally {
+    page.off("response", onResponse);
+    page.off("requestfailed", onRequestFailed);
+    page.off("pageerror", onPageError);
+  }
+}
+
 async function main() {
   const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
 
   try {
     // Public root is a release-critical route: a visitor opening the domain
     // should never land on Next.js's bare 404 page.
     await routeSmoke(page, "/");
+
+    // Unauthenticated visual gates first: /login and /signup redirect to the
+    // dashboard once a session exists.
+    for (const entry of VISUAL_ROUTES.filter((candidate) => !candidate.expectSidebar)) {
+      await visualSmoke(page, entry);
+    }
 
     const signup = await page.goto(`${BASE_URL}/signup`, { waitUntil: "domcontentloaded", timeout: 30_000 });
     if (!signup || signup.status() >= 400) {
@@ -111,6 +326,11 @@ async function main() {
     if (/\/dashboard(?:\?|$)/.test(page.url())) {
       for (const route of authenticatedRoutes) {
         await routeSmoke(page, route);
+      }
+
+      // Authenticated visual gates, now that the app shell actually renders.
+      for (const entry of VISUAL_ROUTES.filter((candidate) => candidate.expectSidebar)) {
+        await visualSmoke(page, entry);
       }
 
       // Sign out through the product route, then prove the same credentials can
@@ -144,6 +364,7 @@ async function main() {
   console.log(`failures=${failures.length}`);
   for (const warning of warnings) console.warn(`WARN ${warning}`);
   for (const item of failures) console.error(`- ${item.area}: ${item.detail}`);
+  if (failures.length > 0) console.error(`Screenshots (when captured) are in ${SCREENSHOT_DIR}`);
 
   if (failures.length > 0) process.exitCode = 1;
 }

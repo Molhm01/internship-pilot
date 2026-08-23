@@ -3,9 +3,11 @@ import path from "node:path";
 import {
   WEB_PORT, BASE_URL, REPO_ROOT,
   LOCAL_PRISMA_NAME,
-  portInUse, describePortOwner, serverHealth,
-  readLock, writeLock, clearLock, lockIsStale, pidAlive, waitForHealthy, databasePath,
+  portInUse, describePortOwner,
+  readLock, writeLock, clearLock, pidAlive, waitForHealthy, databasePath,
+  expectedInstance, probeRunningServer, stopProcessTree, waitForPortFree, checkAssetHealth,
 } from "./local-shared";
+import { decideLocalStartup } from "@/lib/runtime/localStartup";
 
 // Canonical one-command local startup for Internship Pilot (npm run local).
 // Starts/reuses local Prisma Postgres, applies migrations, verifies the DB, then
@@ -169,32 +171,110 @@ function openBrowser(url: string) {
   } catch { /* best-effort */ }
 }
 
+/**
+ * Decides what to do about whatever is already on the web port, and carries
+ * the decision out.
+ *
+ * The failure this replaces: a Next process left over from a previous run kept
+ * listening on 3000 after `.next` was deleted and rebuilt. It still answered
+ * `/api/extension/health` with HTTP 200, so the old launcher called it healthy
+ * and reused it — while every stylesheet and JS chunk the page referenced
+ * belonged to a build that no longer existed. The user got raw unstyled HTML.
+ *
+ * Reuse now requires three separate proofs: the process says it came from THIS
+ * checkout and commit, its health endpoint answers, and the document it serves
+ * can actually load its own assets. Anything less is restarted — but only ever
+ * when the process proved it belongs to this repository.
+ *
+ * Returns true when startup should continue, false when it must stop.
+ * Exits the process directly when a healthy instance was reused.
+ */
+async function resolvePortBeforeStart(): Promise<boolean> {
+  const inUse = await portInUse(WEB_PORT);
+  const owner = inUse ? describePortOwner(WEB_PORT) : { pid: null, name: "another process" };
+  const runtimeProbe = inUse
+    ? await probeRunningServer()
+    : { healthOk: false, runningInstance: null, assetHealth: null };
+
+  const lock = readLock();
+  const lockPids = lock
+    ? [lock.supervisorPid, lock.webPid, lock.schedulerPid ?? null, lock.workerPid]
+    : [];
+
+  const decision = decideLocalStartup({
+    port: WEB_PORT,
+    portInUse: inUse,
+    portOwnerPid: owner.pid,
+    portOwnerName: owner.name,
+    healthOk: runtimeProbe.healthOk,
+    runningInstance: runtimeProbe.runningInstance,
+    assetHealth: runtimeProbe.assetHealth,
+    expected: expectedInstance(),
+    lock: lock
+      ? {
+          repoRoot: lock.repoRoot,
+          supervisorPid: lock.supervisorPid,
+          webPid: lock.webPid,
+          schedulerPid: lock.schedulerPid ?? null,
+          workerPid: lock.workerPid,
+        }
+      : null,
+    liveLockPids: lockPids.filter((pid): pid is number => pidAlive(pid)),
+  });
+
+  switch (decision.action) {
+    case "reuse":
+      log(decision.reason);
+      log(`Open ${WORKSPACE_URL}`);
+      openBrowser(WORKSPACE_URL);
+      process.exit(0);
+      return false;
+
+    case "abort_foreign_port":
+      console.error(`\n✗ ${decision.reason}`);
+      console.error(`  Internship Pilot never switches ports because the extension targets ${BASE_URL}.\n`);
+      return false;
+
+    case "abort_double_start":
+      console.error(`\n✗ ${decision.reason}\n`);
+      return false;
+
+    case "restart_owned": {
+      log(`Existing instance is not reusable: ${decision.reason}`);
+      log(`Stopping ${decision.pids.length} process(es) owned by this repository (${decision.pids.join(", ")})…`);
+      for (const pid of decision.pids) {
+        log(stopProcessTree(pid) ? `  stopped PID ${pid}` : `  PID ${pid} was already gone`);
+      }
+      clearLock();
+      if (!(await waitForPortFree(WEB_PORT))) {
+        console.error(
+          `\n✗ Port ${WEB_PORT} is still held after stopping this repository's processes. Something else took the port; nothing further was stopped.\n`,
+        );
+        return false;
+      }
+      log("✓ Port released. Starting a clean instance from this checkout.");
+      return true;
+    }
+
+    case "start":
+    default: {
+      const stale = readLock();
+      if (stale) {
+        log("Removing a stale lock from a previous crashed run.");
+        clearLock();
+      }
+      return true;
+    }
+  }
+}
+
 async function main(): Promise<void> {
   log(`Repository: ${REPO_ROOT}`);
   configureLocalEnvironment();
   await ensureLocalDatabase();
   log(`Database:   ${databasePath()}`);
 
-  if (await portInUse(WEB_PORT)) {
-    const health = await serverHealth();
-    if (health.healthy) {
-      log("Internship Pilot is already running.");
-      log(`Open ${WORKSPACE_URL}`);
-      openBrowser(WORKSPACE_URL);
-      process.exit(0);
-    }
-    const owner = describePortOwner(WEB_PORT);
-    console.error(`\n✗ Port ${WEB_PORT} is in use by ${owner.name}${owner.pid ? ` (PID ${owner.pid})` : ""}, which is NOT a healthy Internship Pilot server.`);
-    console.error(`  Stop that process, then run \`npm run local\` again. Internship Pilot never switches ports because the extension targets ${BASE_URL}.\n`);
-    process.exit(1);
-  }
-
-  const existing = readLock();
-  if (existing && !lockIsStale(existing)) {
-    log("An Internship Pilot supervisor lock is present with live PIDs but port is free — another instance may be starting. Refusing to double-start.");
-    process.exit(1);
-  }
-  if (existing) { log("Removing a stale lock from a previous crashed run."); clearLock(); }
+  if (!(await resolvePortBeforeStart())) process.exit(1);
 
   log("Applying migrations (prisma migrate deploy)…");
   if (run("npx", ["prisma", "migrate", "deploy"]) !== 0) {
@@ -310,15 +390,34 @@ async function main(): Promise<void> {
 
   log("Waiting for the server to become healthy…");
   const healthy = await waitForHealthy(90_000);
-  if (healthy) {
-    log(`✓ Internship Pilot is healthy at ${BASE_URL}`);
-    log(`✓ Scheduler/scoring worker PID ${scheduler?.pid ?? "unknown"}.`);
-    log(`Opening Discover at ${WORKSPACE_URL}…`);
-    openBrowser(WORKSPACE_URL);
-    log("Press Ctrl+C to stop the website + scheduler + worker. The local database remains available for your next run.");
-  } else {
+  if (!healthy) {
     console.error("[local] Server did not report healthy within 90s. Check the logs above.");
+    return;
   }
+
+  log(`✓ Internship Pilot is healthy at ${BASE_URL}`);
+
+  // Health only proves a Node process answered. Before telling the user the
+  // site is ready — and before opening a browser at it — confirm the page it
+  // serves can load its own stylesheets and JS chunks. A dev server compiles
+  // the first route on demand, so allow it a few attempts rather than judging
+  // it on a cold first hit.
+  let assets = await checkAssetHealth("/");
+  for (let attempt = 0; attempt < 4 && !assets.ok; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    assets = await checkAssetHealth("/");
+  }
+  if (assets.ok) {
+    log(`✓ Page assets verified (${assets.checked} same-origin scripts/stylesheets).`);
+  } else {
+    console.error(`[local] ⚠ The site is answering but its assets are not loading correctly: ${assets.detail}`);
+    console.error("[local]   The page will render unstyled. Stop with `npm run local:stop`, delete .next, and run `npm run local` again.");
+  }
+
+  log(`✓ Scheduler/scoring worker PID ${scheduler?.pid ?? "unknown"}.`);
+  log(`Opening Discover at ${WORKSPACE_URL}…`);
+  openBrowser(WORKSPACE_URL);
+  log("Press Ctrl+C to stop the website + scheduler + worker. The local database remains available for your next run.");
 }
 
 void main();

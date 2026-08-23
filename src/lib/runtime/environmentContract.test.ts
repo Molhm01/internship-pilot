@@ -19,6 +19,10 @@ async function repoFile(relative: string): Promise<string> {
 /** Variables the application actually depends on, by classification. */
 const VERCEL_PRODUCTION = [
   "DATABASE_URL",
+  // Authorizes every hosted ingestion lane. A deployment that forgets it does
+  // not fail loudly — the lanes refuse every caller and job discovery quietly
+  // stops — so it belongs in the contract rather than in a runbook.
+  "CRON_SECRET",
   "NEXT_PUBLIC_APP_URL",
   "BLOB_READ_WRITE_TOKEN",
   "BETTER_AUTH_SECRET",
@@ -55,6 +59,7 @@ const ALL = [...VERCEL_PRODUCTION, ...LOCAL_AGENT_ONLY, ...LOCAL_DEVELOPMENT_ONL
  */
 const SECRETS = [
   "DATABASE_URL",
+  "CRON_SECRET",
   "BLOB_READ_WRITE_TOKEN",
   "INTERNSHIP_AGENT_TOKEN",
   // Signs session cookies; in the browser bundle it would be a forgery kit.
