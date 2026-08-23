@@ -314,6 +314,24 @@ describe("7. npm run local:stop only touches processes this repository owns", ()
   });
 });
 
+describe("instance identity is captured at boot, not at request time", () => {
+  it("answers with the same commit and session no matter when it is asked", async () => {
+    const { localInstanceIdentity } = await import("@/lib/runtime/localInstance");
+    const first = localInstanceIdentity();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = localInstanceIdentity();
+
+    // The first version read .git/HEAD on every request. Tested against a real
+    // running server, it agreed with a checkout it had never been built from
+    // the moment someone committed — which is the one thing it exists to
+    // detect. "What was this process built from" has exactly one answer.
+    expect(second.commit).toBe(first.commit);
+    expect(second.buildId).toBe(first.buildId);
+    expect(second.sessionId).toBe(first.sessionId);
+    expect(second.startedAt).toBe(first.startedAt);
+  });
+});
+
 describe("instance comparison", () => {
   it("treats a missing identity endpoint as unproven, never as a match", () => {
     const comparison = compareLocalInstance(null, {

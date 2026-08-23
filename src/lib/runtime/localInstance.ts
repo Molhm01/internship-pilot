@@ -140,8 +140,27 @@ function readBuildId(repoRoot: string): string | null {
 const SESSION_ID = randomUUID();
 const STARTED_AT = new Date().toISOString();
 
-export function localInstanceIdentity(repoRoot = process.cwd()): LocalInstanceIdentity {
+/**
+ * Captured once, at process start — NOT per request.
+ *
+ * This was per-request first, and the mistake showed up the moment it was
+ * tested against a real running server: asked which commit it came from, the
+ * server answered with whatever `.git/HEAD` said at that instant, so it agreed
+ * with a checkout it had never been built from. The question is "what was this
+ * process built from", and only a value frozen at boot can answer it.
+ */
+const BOOT_IDENTITY = (() => {
+  const repoRoot = process.cwd();
   const { commit, source } = readGitCommit(repoRoot);
+  return { repoRoot, commit, commitSource: source, buildId: readBuildId(repoRoot) };
+})();
+
+export function localInstanceIdentity(repoRoot = BOOT_IDENTITY.repoRoot): LocalInstanceIdentity {
+  const sameRoot = repoRoot === BOOT_IDENTITY.repoRoot;
+  const { commit, source } = sameRoot
+    ? { commit: BOOT_IDENTITY.commit, source: BOOT_IDENTITY.commitSource }
+    : readGitCommit(repoRoot);
+
   return {
     instanceProtocol: LOCAL_INSTANCE_PROTOCOL,
     service: "Internship Pilot",
@@ -149,7 +168,7 @@ export function localInstanceIdentity(repoRoot = process.cwd()): LocalInstanceId
     repoRootHash: hashRepoRoot(repoRoot),
     commit,
     commitSource: source,
-    buildId: readBuildId(repoRoot),
+    buildId: sameRoot ? BOOT_IDENTITY.buildId : readBuildId(repoRoot),
     sessionId: SESSION_ID,
     startedAt: STARTED_AT,
     nodeVersion: process.version,
