@@ -1,4 +1,4 @@
-import { fetchJsonSafe, type AtsJob } from "@/lib/ats/types";
+import { fetchJsonRequired, type AtsJob } from "@/lib/ats/types";
 
 type GreenhouseJob = {
   id: number;
@@ -13,9 +13,9 @@ type GreenhouseJob = {
 // Greenhouse's public Job Board API — official, documented, unauthenticated:
 // https://developers.greenhouse.io/job-board.html
 export async function listGreenhouseJobs(boardToken: string, companyName: string): Promise<AtsJob[]> {
-  const data = (await fetchJsonSafe(
+  const data = (await fetchJsonRequired(
     `https://boards-api.greenhouse.io/v1/boards/${boardToken}/jobs?content=true`,
-  )) as { jobs?: GreenhouseJob[] } | null;
+  )) as { jobs?: GreenhouseJob[] };
   if (!data?.jobs?.length) return [];
 
   return data.jobs.map((j) => ({
@@ -27,6 +27,10 @@ export async function listGreenhouseJobs(boardToken: string, companyName: string
     workplaceType: /remote/i.test(j.location?.name ?? "") ? "Remote" : null,
     applyUrl: j.absolute_url,
     description: j.content ?? "",
-    postedAt: j.updated_at ? new Date(j.updated_at) : null,
+    // Greenhouse exposes updated_at, not the original posting timestamp.
+    // Treating an edit as a posting date makes old requisitions look newly
+    // posted, so freshness stays unknown unless a higher-authority source
+    // supplies the actual published date.
+    postedAt: null,
   }));
 }

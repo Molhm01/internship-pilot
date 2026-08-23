@@ -45,6 +45,7 @@ import {
   formatReasonCounts,
   nextAttemptDelayMs,
   normalizeCompanyKey,
+  isTransientReason,
   type FreshSignalReason,
   type FreshSignalReasonCounts,
 } from "@/lib/sync/freshSignalReasons";
@@ -59,6 +60,12 @@ import {
   fetchJobrightSignalDetail,
   type JobrightSignalDetail,
 } from "@/lib/sync/jobrightSignalDetail";
+import {
+  employerAtsProvenance,
+  parseFirstSourceDate,
+  trustedRadarProvenance,
+  type SourceDateProvenance,
+} from "@/lib/sync/sourceDate";
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -180,17 +187,17 @@ export function asOfficialAtsJob(
     workplaceType: boardJob?.workplaceType ?? signal.workModel,
     applyUrl,
     description: boardJob?.description ?? "",
-    // Freshness comes from the DISCOVERY signal's exact source timestamp when it
-    // has one, because that is the moment the posting actually appeared. A
-    // board's own postedAt is used only when the signal has none.
-    postedAt: signal.sourcePostedAt ?? boardJob?.postedAt ?? null,
-    postedAtText: signal.sourcePostedText ?? boardJob?.postedAtText ?? null,
+    // Employer/ATS freshness outranks radar freshness. The radar timestamp is
+    // only the fallback when the official posting supplies no date.
+    postedAt: boardJob?.postedAt ?? signal.sourcePostedAt ?? null,
+    postedAtText: boardJob?.postedAtText ?? signal.sourcePostedText ?? null,
   };
 }
 
 async function persistOfficialSignal(
   job: AtsJob,
   providerHint?: string | null,
+  sourceDateProvenance?: SourceDateProvenance,
 ): Promise<{
   outcome: "new" | "updated" | "unchanged";
   jobId: string | null;
@@ -206,6 +213,7 @@ async function persistOfficialSignal(
     classificationReason:
       "Fresh public internship signal independently resolved to an original employer/ATS posting.",
     now: new Date(),
+    sourceDateProvenance,
   });
   await promoteCanonicalDirectJob(job, resolved.source, resolved.atsTenant);
 
@@ -231,6 +239,8 @@ export type FreshRadarDiagnostics = {
   examined: number;
   /** Skipped because a previous tick already resolved them. */
   alreadyResolved: number;
+  /** Signal matched a canonical official job before any employer crawl. */
+  alreadyFoundOfficial: number;
   /** Skipped because their retry backoff has not elapsed. */
   deferred: number;
   officialUrlDirect: number;
@@ -254,11 +264,11 @@ export type FreshRadarDiagnostics = {
 
 /** One-line render used by the scheduler log and the diagnostic script. */
 export function formatFreshRadarDiagnostics(d: FreshRadarDiagnostics): string {
-  const resolved = d.officialUrlDirect + d.sourceOriginalPost + d.boardResolved;
+  const resolved = d.alreadyFoundOfficial + d.officialUrlDirect + d.sourceOriginalPost + d.boardResolved;
   const rate = d.examined > 0 ? Math.round((resolved / d.examined) * 100) : 0;
   return (
     `signals=${d.signalsFetched} <24h=${d.under24h} <72h=${d.under72h} ` +
-    `examined=${d.examined} direct=${d.officialUrlDirect} original=${d.sourceOriginalPost} ` +
+    `examined=${d.examined} alreadyOfficial=${d.alreadyFoundOfficial} direct=${d.officialUrlDirect} original=${d.sourceOriginalPost} ` +
     `boardResolved=${d.boardResolved} companyResolved=${d.companyResolved} ` +
     `resolved=${resolved} (${rate}%) unresolved=${d.unresolved} closed=${d.closed} ` +
     `duplicates=${d.duplicates} new=${d.newJobs} updated=${d.updatedJobs} ` +
@@ -295,7 +305,7 @@ function median(values: number[]): number | null {
 type SignalOutcome =
   | {
       state: "RESOLVED";
-      path: "direct_official_url" | "source_original_post" | "employer_board";
+      path: "already_official" | "direct_official_url" | "source_original_post" | "employer_board";
       url: string;
       jobId: string | null;
       persistOutcome: "new" | "updated" | "unchanged";
@@ -354,7 +364,13 @@ async function verifyAndPersist(
 
   try {
     const job = asOfficialAtsJob(signal, url, boardJob);
-    const { outcome, jobId, provider } = await persistOfficialSignal(job, providerHint);
+    const capturedAt = new Date();
+    const parsedDate = parseFirstSourceDate([job.postedAt, job.postedAtText], capturedAt);
+    const officialSuppliedDate = Boolean(boardJob?.postedAt || boardJob?.postedAtText);
+    const dateProvenance = officialSuppliedDate
+      ? employerAtsProvenance(parsedDate)
+      : trustedRadarProvenance(parsedDate);
+    const { outcome, jobId, provider } = await persistOfficialSignal(job, providerHint, dateProvenance);
     return {
       state: "RESOLVED",
       path,
@@ -387,6 +403,84 @@ type BoardCache = Map<string, { jobs: AtsJob[]; fetchFailed: boolean; botWalled:
  * per posting.
  */
 type EmployerResolutionCache = Map<string, Promise<EmployerBoardOutcome>>;
+
+export type OfficialCatalogEntry = AtsJob & {
+  jobId: string;
+  provider: string;
+  hasEmployerJd: boolean;
+};
+export type OfficialCatalogIndex = Map<string, OfficialCatalogEntry[]>;
+
+/** Match against canonical official jobs before spending a network request. */
+export function findExistingOfficialMatch(
+  signal: Pick<RawInternListJob, "company" | "title" | "location">,
+  index: OfficialCatalogIndex,
+): OfficialCatalogEntry | null {
+  const candidates = index.get(normalizeCompanyKey(signal.company)) ?? [];
+  if (candidates.length === 0) return null;
+  const verdict = classifyOfficialBoardMatch(
+    { title: signal.title, location: signal.location },
+    candidates,
+  );
+  if (!verdict.accepted) return null;
+  return candidates.find((candidate) => candidate.applyUrl === verdict.job.applyUrl) ?? null;
+}
+
+export function officialSearchDecision(
+  signal: Pick<RawInternListJob, "company" | "title" | "location">,
+  index: OfficialCatalogIndex,
+): { action: "attach_existing"; job: OfficialCatalogEntry } | { action: "priority_crawl" } {
+  const job = findExistingOfficialMatch(signal, index);
+  return job ? { action: "attach_existing", job } : { action: "priority_crawl" };
+}
+
+async function loadOfficialCatalogIndex(): Promise<OfficialCatalogIndex> {
+  const jobs = await prisma.job.findMany({
+    where: {
+      activeFeed: true,
+      verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
+      officialApplicationUrl: { not: null },
+    },
+    select: {
+      id: true,
+      source: true,
+      sourceJobId: true,
+      requisitionId: true,
+      title: true,
+      company: true,
+      location: true,
+      workplaceType: true,
+      officialApplicationUrl: true,
+      description: true,
+      sourcePostedAt: true,
+      sourcePostedText: true,
+    },
+  });
+  const index: OfficialCatalogIndex = new Map();
+  for (const job of jobs) {
+    if (!job.officialApplicationUrl) continue;
+    const entry: OfficialCatalogEntry = {
+      jobId: job.id,
+      provider: job.source ?? "other",
+      hasEmployerJd: job.description.trim().length > 200,
+      sourceJobId: job.sourceJobId ?? job.id,
+      requisitionId: job.requisitionId,
+      title: job.title,
+      company: job.company,
+      location: job.location,
+      workplaceType: job.workplaceType,
+      applyUrl: job.officialApplicationUrl,
+      description: job.description,
+      postedAt: job.sourcePostedAt,
+      postedAtText: job.sourcePostedText,
+    };
+    const key = normalizeCompanyKey(job.company);
+    const bucket = index.get(key) ?? [];
+    bucket.push(entry);
+    index.set(key, bucket);
+  }
+  return index;
+}
 
 /**
  * Vendors that answer automated HTTP reads with a bot wall rather than their
@@ -493,6 +587,7 @@ function headlessListingUrlFor(config: EmployerBoardConfig): string | null {
 
 async function resolveOneSignal(
   signal: RawInternListJob,
+  officialCatalog: OfficialCatalogIndex,
   approvedIndex: Awaited<ReturnType<typeof loadApprovedCompanyIndex>>,
   boardCache: BoardCache,
   employerCache: EmployerResolutionCache,
@@ -500,6 +595,21 @@ async function resolveOneSignal(
 ): Promise<SignalOutcome> {
   if (!signal.company.trim() || !signal.title.trim()) {
     return { state: "PENDING", reason: "PARSER_FAILURE", detail: "Signal had no usable company/title." };
+  }
+
+  const decision = officialSearchDecision(signal, officialCatalog);
+  if (decision.action === "attach_existing") {
+    const existingOfficial = decision.job;
+    return {
+      state: "RESOLVED",
+      path: "already_official",
+      url: existingOfficial.applyUrl,
+      jobId: existingOfficial.jobId,
+      persistOutcome: "unchanged",
+      autoResolvedEmployer: false,
+      provider: existingOfficial.provider,
+      hasEmployerJd: existingOfficial.hasEmployerJd,
+    };
   }
 
   // 1. An official destination the feed row states outright.
@@ -615,6 +725,24 @@ type QueueRow = {
   nextAttemptAt: Date | null;
 };
 
+export type FreshSignalWorkflowState =
+  | "SIGNAL_SEEN"
+  | "OFFICIAL_SEARCH_QUEUED"
+  | "OFFICIAL_SEARCHING"
+  | "OFFICIAL_RESOLVED"
+  | "NO_MATCH_YET"
+  | "TRANSIENT_FAILURE"
+  | "PERMANENT_FAILURE";
+
+export function finalWorkflowState(
+  state: "RESOLVED" | "CLOSED" | "PENDING",
+  reason?: FreshSignalReason,
+): FreshSignalWorkflowState {
+  if (state === "RESOLVED") return "OFFICIAL_RESOLVED";
+  if (state === "CLOSED") return "PERMANENT_FAILURE";
+  return reason && isTransientReason(reason) ? "TRANSIENT_FAILURE" : "NO_MATCH_YET";
+}
+
 async function loadQueueRows(signalJobIds: string[]): Promise<Map<string, QueueRow>> {
   if (signalJobIds.length === 0) return new Map();
   const rows = await prisma.freshSignalResolution.findMany({
@@ -622,6 +750,39 @@ async function loadQueueRows(signalJobIds: string[]): Promise<Map<string, QueueR
     select: { id: true, signalJobId: true, state: true, attempts: true, nextAttemptAt: true },
   });
   return new Map(rows.map((row) => [row.signalJobId, row]));
+}
+
+async function persistQueuedSignals(
+  signals: RawInternListJob[],
+  existing: Map<string, QueueRow>,
+  now: Date,
+): Promise<void> {
+  const unseen = signals.filter((signal) => !existing.has(signal.sourceJobId));
+  if (unseen.length > 0) {
+    await prisma.freshSignalResolution.createMany({
+      data: unseen.map((signal) => ({
+        signalSource: FRESH_SIGNAL_SOURCE,
+        signalJobId: signal.sourceJobId,
+        company: signal.company,
+        normalizedCompany: normalizeCompanyKey(signal.company),
+        title: signal.title,
+        location: signal.location,
+        sourcePostedAt: signal.sourcePostedAt,
+        sourceCapturedAt: now,
+        state: "PENDING",
+        workflowState: "SIGNAL_SEEN",
+      })),
+      skipDuplicates: true,
+    });
+  }
+  await prisma.freshSignalResolution.updateMany({
+    where: {
+      signalSource: FRESH_SIGNAL_SOURCE,
+      signalJobId: { in: signals.map((signal) => signal.sourceJobId) },
+      state: { not: "RESOLVED" },
+    },
+    data: { workflowState: "OFFICIAL_SEARCH_QUEUED" },
+  });
 }
 
 async function recordSignalOutcome(args: {
@@ -647,6 +808,7 @@ async function recordSignalOutcome(args: {
     outcome.state === "RESOLVED"
       ? {
           state: "RESOLVED",
+          workflowState: finalWorkflowState("RESOLVED"),
           reasonCode: null,
           reasonDetail: null,
           resolutionPath: outcome.path,
@@ -658,6 +820,7 @@ async function recordSignalOutcome(args: {
       : outcome.state === "CLOSED"
         ? {
             state: "CLOSED",
+            workflowState: finalWorkflowState("CLOSED"),
             reasonCode: "POSTING_CLOSED" satisfies FreshSignalReason,
             reasonDetail: outcome.reason,
             resolutionPath: null,
@@ -668,6 +831,7 @@ async function recordSignalOutcome(args: {
           }
         : {
             state: "PENDING",
+            workflowState: finalWorkflowState("PENDING", outcome.reason),
             reasonCode: outcome.reason,
             reasonDetail: outcome.detail,
             resolutionPath: null,
@@ -707,7 +871,9 @@ export async function runJobrightFreshDiscovery(
   const selected = source.jobs.slice(0, boundedLimit);
 
   const approvedIndex = await loadApprovedCompanyIndex();
+  const officialCatalog = await loadOfficialCatalogIndex();
   const queueRows = await loadQueueRows(selected.map((signal) => signal.sourceJobId));
+  await persistQueuedSignals(selected, queueRows, now);
   const boardCache: BoardCache = new Map();
   const employerCache: EmployerResolutionCache = new Map();
   const reasonCounts = emptyReasonCounts();
@@ -721,6 +887,7 @@ export async function runJobrightFreshDiscovery(
     under72h: source.freshUnder72h,
     examined: 0,
     alreadyResolved: 0,
+    alreadyFoundOfficial: 0,
     deferred: 0,
     officialUrlDirect: 0,
     sourceOriginalPost: 0,
@@ -754,10 +921,14 @@ export async function runJobrightFreshDiscovery(
       }
 
       const attempts = (queued?.attempts ?? 0) + 1;
+      await prisma.freshSignalResolution.updateMany({
+        where: { signalSource: FRESH_SIGNAL_SOURCE, signalJobId: signal.sourceJobId },
+        data: { workflowState: "OFFICIAL_SEARCHING" },
+      });
       const startedAt = Date.now();
       let outcome: SignalOutcome;
       try {
-        outcome = await resolveOneSignal(signal, approvedIndex, boardCache, employerCache, now);
+        outcome = await resolveOneSignal(signal, officialCatalog, approvedIndex, boardCache, employerCache, now);
       } catch (error) {
         outcome = {
           state: "PENDING",
@@ -770,7 +941,8 @@ export async function runJobrightFreshDiscovery(
       diagnostics.examined += 1;
       if (outcome.state === "RESOLVED") {
         resolutionTimes.push(elapsedMs);
-        if (outcome.path === "direct_official_url") diagnostics.officialUrlDirect += 1;
+        if (outcome.path === "already_official") diagnostics.alreadyFoundOfficial += 1;
+        else if (outcome.path === "direct_official_url") diagnostics.officialUrlDirect += 1;
         else if (outcome.path === "source_original_post") diagnostics.sourceOriginalPost += 1;
         else diagnostics.boardResolved += 1;
         if (outcome.autoResolvedEmployer) diagnostics.companyResolved += 1;

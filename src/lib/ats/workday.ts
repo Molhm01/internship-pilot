@@ -48,10 +48,11 @@ async function postJson(url: string, body: unknown, timeoutMs = 10_000): Promise
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!res.ok) return null;
+    if (!res.ok) throw Object.assign(new Error(`Workday returned HTTP ${res.status}.`), { code: `ATS_HTTP_${res.status}` });
     return await res.json();
-  } catch {
-    return null;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error) throw error;
+    throw Object.assign(new Error("Workday search request failed."), { code: "ATS_NETWORK", cause: error });
   }
 }
 

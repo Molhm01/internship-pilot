@@ -14,6 +14,8 @@ const VENDORS = [
   "workday",
   "icims",
   "successfactors",
+  "eightfold",
+  "phenom",
 ] as const;
 
 describe("direct official jobs are visible in the active feed", () => {

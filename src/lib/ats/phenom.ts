@@ -65,6 +65,7 @@ type PhenomJob = {
 async function postWidget(
   tenant: PhenomTenant,
   body: Record<string, unknown>,
+  throwOnFetchError = false,
 ): Promise<unknown | null> {
   try {
     const response = await fetch(`https://${tenant.careersHost}/widgets`, {
@@ -85,10 +86,15 @@ async function postWidget(
       }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      if (!throwOnFetchError) return null;
+      throw Object.assign(new Error(`Phenom returned HTTP ${response.status}.`), { code: `ATS_HTTP_${response.status}` });
+    }
     return (await response.json()) as unknown;
-  } catch {
-    return null;
+  } catch (error) {
+    if (!throwOnFetchError) return null;
+    if (error && typeof error === "object" && "code" in error) throw error;
+    throw Object.assign(new Error("Phenom request failed."), { code: "ATS_NETWORK", cause: error });
   }
 }
 
@@ -154,6 +160,7 @@ function toAtsJob(tenant: PhenomTenant, job: PhenomJob, companyName: string): At
 export async function listPhenomJobs(
   atsIdentifier: string,
   companyName: string,
+  options: { throwOnFetchError?: boolean } = {},
 ): Promise<AtsJob[]> {
   const tenant = parsePhenomIdentifier(atsIdentifier);
   if (!tenant) return [];
@@ -176,7 +183,7 @@ export async function listPhenomJobs(
         global: true,
         selected_fields: {},
         locationData: {},
-      });
+      }, options.throwOnFetchError);
 
       const jobs = jobsOf(payload);
       for (const job of jobs) {

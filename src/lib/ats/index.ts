@@ -67,15 +67,15 @@ export async function listJobsForCompany(company: CompanyForListing): Promise<Li
     case "icims":
       if (!id || !company.careersUrl) return { jobs: [], supported: false };
       return {
-        jobs: await listIcimsJobs(id, company.careersUrl, company.name),
+        jobs: await listIcimsJobs(id, company.careersUrl, company.name, { throwOnFetchError: true }),
         supported: true,
       };
     case "eightfold":
       if (!id) return { jobs: [], supported: false };
-      return { jobs: await listEightfoldJobs(id, company.name), supported: true };
+      return { jobs: await listEightfoldJobs(id, company.name, { throwOnFetchError: true }), supported: true };
     case "phenom":
       if (!id) return { jobs: [], supported: false };
-      return { jobs: await listPhenomJobs(id, company.name), supported: true };
+      return { jobs: await listPhenomJobs(id, company.name, { throwOnFetchError: true }), supported: true };
     case "employer-page": {
       // The employer publishes its openings as ordinary links to real job
       // pages. The "identifier" is the page holding those links.
@@ -94,7 +94,7 @@ export async function listJobsForCompany(company: CompanyForListing): Promise<Li
     case "successfactors":
       if (!company.careersUrl) return { jobs: [], supported: false };
       return {
-        jobs: await listSuccessFactorsJobs(company.careersUrl, company.name),
+        jobs: await listSuccessFactorsJobs(company.careersUrl, company.name, { throwOnFetchError: true }),
         supported: true,
       };
     case "taleo":

@@ -7,7 +7,10 @@ import { describe, expect, it } from "vitest";
 import {
   asOfficialAtsJob,
   directOfficialUrlFrom,
+  finalWorkflowState,
+  findExistingOfficialMatch,
   formatFreshRadarDiagnostics,
+  officialSearchDecision,
   shouldPromoteAfterProbe,
   type FreshRadarDiagnostics,
 } from "@/lib/sync/jobrightFreshDiscovery";
@@ -219,9 +222,42 @@ describe("Gate 14 — the job description always comes from the employer", () =>
     expect(job.description).not.toContain("digital design");
   });
 
-  it("keeps the signal's exact source timestamp rather than the board's coarser one", () => {
+  it("uses the employer board date instead of a lower-authority radar timestamp", () => {
     const job = asOfficialAtsJob(signal(), "https://boards.greenhouse.io/x/jobs/1", boardJob());
-    expect(job.postedAt?.toISOString()).toBe("2026-08-22T15:05:04.000Z");
+    expect(job.postedAt?.toISOString()).toBe("2026-08-20T00:00:00.000Z");
+  });
+});
+
+describe("official catalog priority trigger", () => {
+  const canonical = {
+    ...boardJob(),
+    jobId: "canonical-job-1",
+    provider: "greenhouse",
+    hasEmployerJd: true,
+  };
+  const index = new Map([["tenstorrent", [canonical]]]);
+
+  it("matches a fresh signal to an already-existing canonical official job", () => {
+    expect(findExistingOfficialMatch(signal(), index)?.jobId).toBe("canonical-job-1");
+    expect(officialSearchDecision(signal(), index).action).toBe("attach_existing");
+  });
+
+  it("queues an immediate priority crawl when the canonical job is missing", () => {
+    expect(officialSearchDecision(signal({ company: "Unindexed Robotics" }), index)).toEqual({
+      action: "priority_crawl",
+    });
+  });
+
+  it("allows multiple radar signals to attach to one canonical job identity", () => {
+    const first = findExistingOfficialMatch(signal({ sourceJobId: "signal-a" }), index);
+    const second = findExistingOfficialMatch(signal({ sourceJobId: "signal-b" }), index);
+    expect(first?.jobId).toBe(second?.jobId);
+  });
+
+  it("maps retryable failures to a durable transient state", () => {
+    expect(finalWorkflowState("PENDING", "NETWORK_FAILURE")).toBe("TRANSIENT_FAILURE");
+    expect(finalWorkflowState("PENDING", "NO_BOARD_MATCH")).toBe("NO_MATCH_YET");
+    expect(finalWorkflowState("RESOLVED")).toBe("OFFICIAL_RESOLVED");
   });
 });
 
@@ -297,6 +333,7 @@ describe("Gate 10 (observability) — unresolved is never one generic bucket", (
       under72h: 171,
       examined: 312,
       alreadyResolved: 0,
+      alreadyFoundOfficial: 0,
       deferred: 0,
       officialUrlDirect: 54,
       sourceOriginalPost: 0,
@@ -333,6 +370,7 @@ describe("Gate 10 (observability) — unresolved is never one generic bucket", (
       under72h: 10,
       examined: 10,
       alreadyResolved: 0,
+      alreadyFoundOfficial: 0,
       deferred: 0,
       officialUrlDirect: 2,
       sourceOriginalPost: 1,

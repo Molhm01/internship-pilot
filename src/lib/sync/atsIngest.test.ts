@@ -111,6 +111,19 @@ describe("runAtsIngestion — classification routing", () => {
     expect(calls.every((c) => c.classification === "QUALIFYING_INTERNSHIP")).toBe(true);
   });
 
+  it("rejects an unrelated internship even though its title says intern", async () => {
+    const employers: AtsEmployer[] = [{ name: "Acme", atsType: "greenhouse", atsIdentifier: "acme" }];
+    const listJobs = async () => [
+      makeJob({ sourceJobId: "marketing", title: "Marketing Intern", company: "Acme" }),
+      makeJob({ sourceJobId: "firmware", title: "Firmware Engineering Intern", company: "Acme" }),
+    ];
+    const { calls, persist } = recordingPersist();
+    const metrics = await runAtsIngestion(employers, { listJobs, persist, throttleMs: 0 });
+    expect(metrics.qualifying).toBe(1);
+    expect(metrics.failuresByReason.EXCLUDED_NOT_TARGET_ENGINEERING).toBe(1);
+    expect(calls.map((call) => call.key)).toEqual(["greenhouse::firmware"]);
+  });
+
   it("counts uncertain records as reviewable rather than dropping them", async () => {
     const { employers, listJobs } = fixtureRunner();
     const { persist } = recordingPersist();

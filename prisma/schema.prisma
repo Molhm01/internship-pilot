@@ -269,6 +269,9 @@ model Company {
   lastETag              String? // conditional-request support for the generic careers-page scan
   lastModified          String?
   contentHash           String? // hash of the last-seen careers-page content — skip reprocessing when unchanged even without ETag/Last-Modified support
+  boardSnapshot         String? // JSON source-job-id array from the last successful complete-enough board poll
+  lastSuccessfulBoardAt DateTime?
+  lastBoardQueryMs      Int?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
@@ -292,6 +295,7 @@ model Company {
   csvCanonicalApplyRule     String?
 
   approvedAtsTenants ApprovedAtsTenant[]
+  officialBoardPolls OfficialBoardPoll[]
 
   @@index([atsType])
   @@index([nextCheckAt])
@@ -388,6 +392,9 @@ model FreshSignalResolution {
 
   /// PENDING | RESOLVED | CLOSED | DUPLICATE | ABANDONED
   state        String  @default("PENDING")
+  /// SIGNAL_SEEN | OFFICIAL_SEARCH_QUEUED | OFFICIAL_SEARCHING |
+  /// OFFICIAL_RESOLVED | NO_MATCH_YET | TRANSIENT_FAILURE | PERMANENT_FAILURE
+  workflowState String @default("SIGNAL_SEEN")
   /// A FreshSignalReason value. Null once state is RESOLVED.
   reasonCode   String?
   reasonDetail String?
@@ -407,7 +414,9 @@ model FreshSignalResolution {
 
   @@unique([signalSource, signalJobId])
   @@index([state, nextAttemptAt])
+  @@index([workflowState, nextAttemptAt])
   @@index([reasonCode])
+  @@index([resolvedJobId])
   @@index([sourcePostedAt])
 }
 
@@ -510,6 +519,9 @@ model Job {
   sourcePostedText       String?
   // EXACT | RELATIVE_PARSED | DATE_ONLY | UNKNOWN — see src/lib/sync/sourceDate.ts.
   sourceDateConfidence   String?
+  // EMPLOYER_ATS_EXACT | EMPLOYER_ATS_DATE | EMPLOYER_JSON_LD |
+  // TRUSTED_RADAR_EXACT | TRUSTED_RADAR_RELATIVE | INFERRED | UNKNOWN.
+  sourceDateProvenance   String?
   // When the sync actually read the source. Relative dates are resolved against
   // THIS instant, once, at ingest — never recomputed at page load.
   sourceCapturedAt       DateTime?
@@ -606,6 +618,12 @@ model Job {
   classification       String?
   classificationReason String?
 
+  // A posting is closed from board absence only after two consecutive
+  // successful snapshots. Transient failures never increment this counter.
+  consecutiveBoardMisses Int       @default(0)
+  boardMissingSince      DateTime?
+  closedAt               DateTime?
+
   @@index([source, sourceJobId])
   @@index([sourcePostedAt])
   @@index([sourceSyncRunId, sourceRowIndex])
@@ -651,6 +669,33 @@ model AtsSyncRun {
   failureSummary String?
 
   @@index([startedAt])
+}
+
+// One auditable result per official employer-board query. Provider-oriented
+// rows power the coverage report and make adapter return-on-effort measurable.
+model OfficialBoardPoll {
+  id        String   @id @default(cuid())
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  companyName String
+  provider    String
+  startedAt   DateTime
+  finishedAt  DateTime @default(now())
+  status      String // success | not_modified | unsupported | error
+
+  jobsScanned                 Int @default(0)
+  engineeringInternshipsFound Int @default(0)
+  newJobs                     Int @default(0)
+  updatedJobs                 Int @default(0)
+  missingJobs                 Int @default(0)
+  closedJobs                  Int @default(0)
+  durationMs                  Int @default(0)
+  errorCode                   String?
+
+  @@index([provider, startedAt])
+  @@index([companyId, startedAt])
+  @@index([status, startedAt])
 }
 
 // Append-only history of every verification/re-verification attempt on a job.

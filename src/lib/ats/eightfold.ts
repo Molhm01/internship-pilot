@@ -60,7 +60,7 @@ type EightfoldPosition = {
   workLocationOption?: string;
 };
 
-async function getJson(url: string, careersHost: string): Promise<unknown | null> {
+async function getJson(url: string, careersHost: string, throwOnFetchError = false): Promise<unknown | null> {
   try {
     const response = await fetch(url, {
       headers: {
@@ -72,10 +72,15 @@ async function getJson(url: string, careersHost: string): Promise<unknown | null
       },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      if (!throwOnFetchError) return null;
+      throw Object.assign(new Error(`Eightfold returned HTTP ${response.status}.`), { code: `ATS_HTTP_${response.status}` });
+    }
     return (await response.json()) as unknown;
-  } catch {
-    return null;
+  } catch (error) {
+    if (!throwOnFetchError) return null;
+    if (error && typeof error === "object" && "code" in error) throw error;
+    throw Object.assign(new Error("Eightfold request failed."), { code: "ATS_NETWORK", cause: error });
   }
 }
 
@@ -144,6 +149,7 @@ function toAtsJob(
 export async function listEightfoldJobs(
   atsIdentifier: string,
   companyName: string,
+  options: { throwOnFetchError?: boolean } = {},
 ): Promise<AtsJob[]> {
   const tenant = parseEightfoldIdentifier(atsIdentifier);
   if (!tenant) return [];
@@ -157,7 +163,7 @@ export async function listEightfoldJobs(
         `&query=${encodeURIComponent(term)}` +
         `&location=&start=${page * PAGE_SIZE}&num=${PAGE_SIZE}&sort_by=relevance`;
 
-      const positions = positionsOf(await getJson(url, tenant.careersHost));
+      const positions = positionsOf(await getJson(url, tenant.careersHost, options.throwOnFetchError));
       for (const position of positions) {
         const job = toAtsJob(tenant, position, companyName);
         if (job) byId.set(job.sourceJobId, job);

@@ -7,16 +7,15 @@
 //   npm run ats:sync -- --apply --vendors=greenhouse,lever,workday
 
 import { prisma } from "@/lib/db";
-import type { ResolvableAts } from "@/lib/ats/resolve";
-import { loadResolvedEmployers, recordSyncRun, runAtsIngestion } from "@/lib/sync/atsIngest";
+import {
+  loadResolvedEmployers,
+  recordSyncRun,
+  runAtsIngestion,
+  SUPPORTED_OFFICIAL_PROVIDERS,
+  type SupportedOfficialProvider,
+} from "@/lib/sync/atsIngest";
 
-const ALL_VENDORS: ResolvableAts[] = [
-  "greenhouse",
-  "lever",
-  "ashby",
-  "smartrecruiters",
-  "workday",
-];
+const ALL_VENDORS: SupportedOfficialProvider[] = [...SUPPORTED_OFFICIAL_PROVIDERS];
 
 function parseArgs(argv: string[]) {
   const vendorArg = argv.find((a) => a.startsWith("--vendors="));
@@ -26,7 +25,7 @@ function parseArgs(argv: string[]) {
         .split("=")[1]
         .split(",")
         .map((v) => v.trim())
-        .filter((v): v is ResolvableAts => (ALL_VENDORS as string[]).includes(v)))
+        .filter((v): v is SupportedOfficialProvider => (ALL_VENDORS as string[]).includes(v)))
     : ALL_VENDORS;
   return {
     apply: argv.includes("--apply"),

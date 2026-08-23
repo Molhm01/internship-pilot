@@ -8,6 +8,8 @@ import { logAudit } from "@/lib/applications/audit";
 import { canonicalizeSource, isDirectOfficialSource } from "@/lib/jobs/sourcePolicy";
 import { promoteCanonicalDirectJob } from "@/lib/jobs/activeFeed";
 import type { AtsJob } from "@/lib/ats/types";
+import { reconcileOfficialBoardDelta } from "@/lib/sync/officialBoardDelta";
+import { sanitizeErrorCode } from "@/lib/sync/atsIngest";
 
 export type CompanyCheckResult = {
   companyId: string;
@@ -15,6 +17,11 @@ export type CompanyCheckResult = {
   status: "success" | "error" | "unsupported";
   newCount: number;
   updatedCount: number;
+  jobsScanned: number;
+  engineeringInternshipsFound: number;
+  missingCount: number;
+  closedCount: number;
+  durationMs: number;
   error?: string;
 };
 
@@ -27,16 +34,37 @@ export type CompanySweepResult = {
 
 const MAX_BACKOFF_MINUTES = 24 * 60;
 
-function baseIntervalMinutes(priority: string): number {
-  if (priority === "priority") return 5;
+const CHEAP_PROVIDER = new Set([
+  "greenhouse", "lever", "ashby", "smartrecruiters", "workday",
+  "successfactors", "eightfold", "phenom",
+]);
+
+function baseIntervalMinutes(priority: string, provider?: string | null): number {
+  const cheap = provider ? CHEAP_PROVIDER.has(provider) : false;
+  if (priority === "priority") return cheap ? 5 + Math.floor(Math.random() * 6) : 60;
   if (priority === "low") return 24 * 60;
-  return 15 + Math.floor(Math.random() * 15);
+  return cheap ? 20 + Math.floor(Math.random() * 41) : 6 * 60;
 }
 
-export function nextCheckTimeFor(priority: string, consecutiveFailures: number): Date {
-  const base = baseIntervalMinutes(priority);
+export function nextCheckTimeFor(priority: string, consecutiveFailures: number, provider?: string | null): Date {
+  const base = baseIntervalMinutes(priority, provider);
   const minutes = consecutiveFailures > 0 ? Math.min(MAX_BACKOFF_MINUTES, base * 2 ** consecutiveFailures) : base;
   return new Date(Date.now() + minutes * 60 * 1000);
+}
+
+export function pollingTierFor(input: {
+  priority: string;
+  provider: string | null;
+  eeCpeFit?: string | null;
+}): "A" | "B" | "C" {
+  if (!input.provider || !CHEAP_PROVIDER.has(input.provider)) return "C";
+  if (input.priority === "priority" || input.eeCpeFit === "High") return "A";
+  return "B";
+}
+
+function effectivePriority(company: { priority: string; csvEeCpeFit?: string | null }, provider: string | null): string {
+  const tier = pollingTierFor({ priority: company.priority, provider, eeCpeFit: company.csvEeCpeFit });
+  return tier === "A" ? "priority" : tier === "C" ? "low" : "standard";
 }
 
 /**
@@ -81,6 +109,7 @@ async function ingestDiscoveredJobs(
 }
 
 export async function checkCompany(companyId: string): Promise<CompanyCheckResult> {
+  const startedAt = new Date();
   const company = await prisma.company.findUnique({ where: { id: companyId } });
   if (!company) throw new Error("Company not found");
 
@@ -120,9 +149,11 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
         });
         await prisma.company.update({
           where: { id: companyId },
-          data: { lastCheckedAt: new Date(), nextCheckAt: nextCheckTimeFor(company.priority, 0), lastCheckStatus: "unsupported" },
+          data: { lastCheckedAt: new Date(), nextCheckAt: nextCheckTimeFor(effectivePriority(company, atsType), 0, atsType), lastCheckStatus: "unsupported" },
         });
-        return { companyId, name: company.name, status: "unsupported", newCount: 0, updatedCount: 0 };
+        const durationMs = Date.now() - startedAt.getTime();
+        await recordOfficialPoll({ companyId, companyName: company.name, provider: atsType ?? "unknown", startedAt, status: "unsupported", durationMs });
+        return { companyId, name: company.name, status: "unsupported", newCount: 0, updatedCount: 0, jobsScanned: 0, engineeringInternshipsFound: 0, missingCount: 0, closedCount: 0, durationMs };
       }
     }
   }
@@ -142,6 +173,17 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
     const summary = notModified
       ? { newCount: 0, updatedCount: 0 }
       : await ingestDiscoveredJobs(relevant, atsType, atsIdentifier);
+    const delta = supported && !notModified
+      ? await reconcileOfficialBoardDelta({
+          companyId,
+          companyName: company.name,
+          provider: atsType ?? "unknown",
+          atsTenant: atsIdentifier,
+          previousSnapshot: company.boardSnapshot,
+          currentSourceJobIds: jobs.map((job) => job.sourceJobId),
+        })
+      : { newRequisitions: 0, missing: 0, closed: 0, reconciled: false };
+    const durationMs = Date.now() - startedAt.getTime();
 
     await prisma.company.update({
       where: { id: companyId },
@@ -149,15 +191,30 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
         atsType,
         atsIdentifier,
         lastCheckedAt: new Date(),
-        nextCheckAt: nextCheckTimeFor(company.priority, 0),
+        nextCheckAt: nextCheckTimeFor(effectivePriority(company, atsType), 0, atsType),
         ...(notModified ? {} : { activeInternshipCount: relevant.length }),
         lastCheckStatus: supported ? "success" : "unsupported",
         lastCheckError: null,
         consecutiveFailures: 0,
+        lastBoardQueryMs: durationMs,
         ...(etag !== undefined ? { lastETag: etag } : {}),
         ...(lastModified !== undefined ? { lastModified } : {}),
         ...(contentHash !== undefined ? { contentHash } : {}),
       },
+    });
+    await recordOfficialPoll({
+      companyId,
+      companyName: company.name,
+      provider: atsType ?? "unknown",
+      startedAt,
+      status: notModified ? "not_modified" : supported ? "success" : "unsupported",
+      jobsScanned: jobs.length,
+      engineeringInternshipsFound: relevant.length,
+      newJobs: summary.newCount,
+      updatedJobs: summary.updatedCount,
+      missingJobs: delta.missing,
+      closedJobs: delta.closed,
+      durationMs,
     });
 
     return {
@@ -166,6 +223,11 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
       status: supported ? "success" : "unsupported",
       newCount: summary.newCount,
       updatedCount: summary.updatedCount,
+      jobsScanned: jobs.length,
+      engineeringInternshipsFound: relevant.length,
+      missingCount: delta.missing,
+      closedCount: delta.closed,
+      durationMs,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -174,14 +236,46 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
       where: { id: companyId },
       data: {
         lastCheckedAt: new Date(),
-        nextCheckAt: nextCheckTimeFor(company.priority, consecutiveFailures),
+        nextCheckAt: nextCheckTimeFor(effectivePriority(company, atsType), consecutiveFailures, atsType),
         lastCheckStatus: "error",
         lastCheckError: message,
         consecutiveFailures,
       },
     });
-    return { companyId, name: company.name, status: "error", newCount: 0, updatedCount: 0, error: message };
+    const durationMs = Date.now() - startedAt.getTime();
+    await recordOfficialPoll({ companyId, companyName: company.name, provider: atsType ?? "unknown", startedAt, status: "error", durationMs, errorCode: sanitizeErrorCode(err) });
+    return { companyId, name: company.name, status: "error", newCount: 0, updatedCount: 0, jobsScanned: 0, engineeringInternshipsFound: 0, missingCount: 0, closedCount: 0, durationMs, error: message };
   }
+}
+
+async function recordOfficialPoll(args: {
+  companyId: string;
+  companyName: string;
+  provider: string;
+  startedAt: Date;
+  status: "success" | "not_modified" | "unsupported" | "error";
+  jobsScanned?: number;
+  engineeringInternshipsFound?: number;
+  newJobs?: number;
+  updatedJobs?: number;
+  missingJobs?: number;
+  closedJobs?: number;
+  durationMs: number;
+  errorCode?: string;
+}): Promise<void> {
+  await prisma.officialBoardPoll.create({
+    data: {
+      ...args,
+      finishedAt: new Date(),
+      jobsScanned: args.jobsScanned ?? 0,
+      engineeringInternshipsFound: args.engineeringInternshipsFound ?? 0,
+      newJobs: args.newJobs ?? 0,
+      updatedJobs: args.updatedJobs ?? 0,
+      missingJobs: args.missingJobs ?? 0,
+      closedJobs: args.closedJobs ?? 0,
+      errorCode: args.errorCode ?? null,
+    },
+  }).catch(() => undefined);
 }
 
 const ATS_API_DOMAINS: Record<string, string> = {
@@ -217,25 +311,34 @@ async function waitForDomainSlot(domain: string): Promise<void> {
 }
 
 export async function runCompanyDiscoveryBatch(limit = 5): Promise<{ checked: number; results: CompanyCheckResult[] }> {
-  const due: { id: string; atsType: string | null; careersUrl: string | null }[] = [];
-  for (const priority of ["priority", "standard", "low"]) {
-    if (due.length >= limit) break;
-    const companies = await prisma.company.findMany({
-      where: {
-        priority,
-        monitoringStatus: "active",
-        allowlisted: true,
-        OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: new Date() } }],
-      },
-      orderBy: [
-        { nextCheckAt: { sort: "asc", nulls: "first" } },
-        { lastCheckedAt: { sort: "asc", nulls: "first" } },
-      ],
-      take: limit - due.length,
-      select: { id: true, atsType: true, careersUrl: true },
-    });
-    due.push(...companies);
-  }
+  const candidates = await prisma.company.findMany({
+    where: {
+      monitoringStatus: "active",
+      allowlisted: true,
+      OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: new Date() } }],
+    },
+    take: 1000,
+    select: {
+      id: true,
+      atsType: true,
+      careersUrl: true,
+      priority: true,
+      csvEeCpeFit: true,
+      nextCheckAt: true,
+      lastCheckedAt: true,
+    },
+  });
+  const tierRank = { A: 0, B: 1, C: 2 } as const;
+  const time = (value: Date | null) => value?.getTime() ?? 0;
+  const due = candidates
+    .sort((left, right) => {
+      const leftTier = pollingTierFor({ priority: left.priority, provider: left.atsType, eeCpeFit: left.csvEeCpeFit });
+      const rightTier = pollingTierFor({ priority: right.priority, provider: right.atsType, eeCpeFit: right.csvEeCpeFit });
+      return tierRank[leftTier] - tierRank[rightTier]
+        || time(left.nextCheckAt) - time(right.nextCheckAt)
+        || time(left.lastCheckedAt) - time(right.lastCheckedAt);
+    })
+    .slice(0, limit);
 
   const results: CompanyCheckResult[] = [];
   for (const company of due) {

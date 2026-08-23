@@ -319,6 +319,7 @@ export async function crawlStructuredPortalJobs(options: {
   additionalStartUrls?: string[];
   maxListPages?: number;
   maxJobDetails?: number;
+  throwOnFetchError?: boolean;
 }): Promise<AtsJob[]> {
   const maxListPages = Math.max(1, Math.min(options.maxListPages ?? 6, 10));
   const maxJobDetails = Math.max(1, Math.min(options.maxJobDetails ?? 35, 60));
@@ -327,6 +328,7 @@ export async function crawlStructuredPortalJobs(options: {
   const visited = new Set<string>();
   const allowedHosts = new Set<string>();
   const details = new Map<string, string>();
+  let readableListPages = 0;
 
   while (queue.length > 0 && visited.size < maxListPages) {
     const current = queue.shift()!;
@@ -335,6 +337,7 @@ export async function crawlStructuredPortalJobs(options: {
 
     const page = await fetchHtml(current);
     if (!page) continue;
+    readableListPages += 1;
 
     let base: URL;
     try {
@@ -358,6 +361,12 @@ export async function crawlStructuredPortalJobs(options: {
         queue.push(link.url);
       }
     }
+  }
+
+  if (readableListPages === 0 && options.throwOnFetchError) {
+    throw Object.assign(new Error("The configured official careers portal returned no readable page."), {
+      code: "ATS_BOARD_UNREACHABLE",
+    });
   }
 
   const detailEntries = [...details.entries()].slice(0, maxJobDetails);
