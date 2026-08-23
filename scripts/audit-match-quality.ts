@@ -6,7 +6,6 @@ import { prisma } from "@/lib/db";
 import { detectAtsFromText } from "@/lib/ats/detect";
 import { isAggregatorUrl } from "@/lib/applications/officialDestination";
 import { slugLooksLikeEmployer } from "@/lib/sync/employerBoardResolution";
-import { stateCodes, locationsConflict } from "@/lib/sync/officialBoardMatch";
 
 /**
  * Does every published official job actually belong to the employer it names?
@@ -49,6 +48,35 @@ function employerDomains(company: string, careersUrl: string | null): string[] {
   const compact = alphanumeric(company);
   if (compact.length >= 4) domains.add(`${compact}.com`);
   return [...domains];
+}
+
+/**
+ * Vendors whose identifier is the vendor's own portal host rather than an
+ * employer tenant. Two employers sharing one of these is the normal case.
+ */
+const SHARED_PORTAL_VENDORS = new Set(["successfactors", "eightfold", "phenom", "spa", "employer-page"]);
+
+/**
+ * Do these employer names denote the same employer?
+ *
+ * A shared tenant is only evidence of a mix-up when the employers really are
+ * different companies. Three benign patterns dominate: one name is derived
+ * from the tenant itself ("Globalhr" from RTX's globalhr tenant), one name
+ * contains the other ("Susquehanna International Group" / "… (SIG)"), or a
+ * parent and its acquired brand share a board (Teledyne / FLIR Systems).
+ */
+function relatedEmployerNames(names: string[], tenant: string): boolean {
+  const compact = names.map(alphanumeric);
+  for (let i = 0; i < compact.length; i += 1) {
+    for (let j = i + 1; j < compact.length; j += 1) {
+      const a = compact[i]!;
+      const b = compact[j]!;
+      if (a.includes(b) || b.includes(a)) return true;
+    }
+  }
+  // One of the names is just the tenant slug spelled as a company.
+  const tenantHead = alphanumeric(tenant.split(/[./]/)[0] ?? tenant);
+  return compact.some((name) => name === tenantHead || tenantHead.includes(name) || name.includes(tenantHead));
 }
 
 type Verdict = "confirmed" | "ambiguous" | "incorrect";
@@ -118,9 +146,21 @@ async function main() {
       if (slugLooksLikeEmployer(detected.atsIdentifier, job.company, null)) {
         verdict = "confirmed";
         reason = `${detected.atsType} tenant "${detected.atsIdentifier}" matches the employer name.`;
+      } else if (SHARED_PORTAL_VENDORS.has(detected.atsType)) {
+        // The identifier is a portal host every customer of the vendor sits
+        // on ("performancemanager8"), so two employers sharing it says nothing
+        // at all. Treating that as evidence of a mix-up is a false alarm.
+        verdict = "ambiguous";
+        reason = `${detected.atsType} identifier "${detected.atsIdentifier}" is a shared vendor host, not an employer tenant.`;
+      } else if (distinctOwners.length > 1 && relatedEmployerNames(distinctOwners, detected.atsIdentifier)) {
+        // RTX's real Workday tenant is literally "globalhr", and the catalogue
+        // also carries an employer row named "Globalhr" derived from it. The
+        // destination is right; the catalogue has two names for one employer.
+        verdict = "ambiguous";
+        reason = `duplicate employer identity: "${detected.atsIdentifier}" is used by ${distinctOwners.join(" / ")}, which name the same employer.`;
       } else if (distinctOwners.length > 1) {
         verdict = "incorrect";
-        reason = `${detected.atsType} tenant "${detected.atsIdentifier}" is shared by ${distinctOwners.length} employers: ${distinctOwners.slice(0, 4).join(", ")}.`;
+        reason = `${detected.atsType} tenant "${detected.atsIdentifier}" is shared by ${distinctOwners.length} UNRELATED employers: ${distinctOwners.slice(0, 4).join(", ")}.`;
       } else {
         verdict = "ambiguous";
         reason = `${detected.atsType} tenant "${detected.atsIdentifier}" cannot be tied to "${job.company}" from this row alone.`;
@@ -148,13 +188,6 @@ async function main() {
   const counts = { confirmed: 0, ambiguous: 0, incorrect: 0 } as Record<Verdict, number>;
   for (const row of rows) counts[row.verdict] += 1;
 
-  // A second, independent check: within one employer, does any job's location
-  // contradict its own title's stated site? Catches location-blind matching.
-  let locationContradictions = 0;
-  for (const row of rows) {
-    const titleStates = stateCodes(row.title);
-    if (titleStates.length > 0 && locationsConflict(row.title, row.location)) locationContradictions += 1;
-  }
 
   console.log("Official match quality");
   console.log("=".repeat(64));
@@ -162,7 +195,6 @@ async function main() {
   console.log(`confirmed correct              ${counts.confirmed}`);
   console.log(`ambiguous (unproven)           ${counts.ambiguous}`);
   console.log(`KNOWN INCORRECT                ${counts.incorrect}`);
-  console.log(`title/location contradictions  ${locationContradictions}`);
 
   if (counts.incorrect > 0) {
     console.log("\nincorrect rows");

@@ -207,3 +207,26 @@ describe("multi-site locations", () => {
     expect(locationsConflict("Austin, TX or Newark, NJ", "Newark, NJ")).toBe(false);
   });
 });
+
+describe("two-letter tokens that are not states", () => {
+  it("REGRESSION: does not read the word 'OR' as Oregon", () => {
+    // "Data Engineering Intern OR Student Co-Op" was being credited with a
+    // location of Oregon, which then let an unrelated posting share a state.
+    expect(stateCodes("Data Engineering Intern OR Student Co-Op")).toEqual([]);
+    expect(stateCodes("Remote OR Hybrid")).toEqual([]);
+  });
+
+  it("REGRESSION: does not read 'ME' or 'IN' mid-phrase as a state", () => {
+    expect(stateCodes("ME Intern, Training, Part time")).toEqual([]);
+    expect(stateCodes("Intern IN Manufacturing")).toEqual([]);
+  });
+
+  it("still reads the forms locations actually take", () => {
+    expect(stateCodes("Austin, TX")).toEqual(["TX"]);
+    expect(stateCodes("TX")).toEqual(["TX"]);
+    expect(stateCodes("USA, SD, Watertown")).toEqual(["SD"]);
+    expect(stateCodes("US-VA-STERLING-291")).toEqual(["VA"]);
+    expect(stateCodes("Cincinnati, OH | Mason, OH")).toEqual(["OH"]);
+    expect(stateCodes("Mason, Ohio, United States of America")).toEqual(["OH"]);
+  });
+});

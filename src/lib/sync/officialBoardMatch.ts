@@ -227,7 +227,21 @@ export function stateCodes(location: string | null): string[] {
   if (!location) return [];
   const found: string[] = [];
 
-  for (const match of location.matchAll(/(?:^|[,\s(/])([A-Z]{2})(?![A-Za-z])/g)) {
+  // A bare two-letter token is only a state when it sits where a state sits:
+  // after the comma or separator that follows a city, or as the whole string.
+  // Without that context "Data Engineering Intern OR Student Co-Op" yields
+  // Oregon and "ME Intern" yields Maine — the same class of mistake as reading
+  // "United States of America" as the state "OF", which this file already
+  // learned once.
+  const wholeString = location.trim();
+  if (US_STATE_CODES.has(wholeString)) found.push(wholeString);
+
+  for (const match of location.matchAll(/[,/|]\s*([A-Z]{2})(?![A-Za-z])/g)) {
+    const code = match[1]!;
+    if (US_STATE_CODES.has(code) && !found.includes(code)) found.push(code);
+  }
+  // "US-VA-STERLING" and "USA-TX" style codes boards emit in their own paths.
+  for (const match of location.matchAll(/\bUS[A]?[-_]([A-Z]{2})(?![A-Za-z])/g)) {
     const code = match[1]!;
     if (US_STATE_CODES.has(code) && !found.includes(code)) found.push(code);
   }
