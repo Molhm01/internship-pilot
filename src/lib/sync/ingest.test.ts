@@ -21,6 +21,10 @@ vi.mock("@/lib/db", () => ({
 
 vi.mock("@/lib/applications/officialDestination", () => ({
   isAggregatorUrl: () => false,
+  // The canonical Apply URL is written through this; the real implementation
+  // strips aggregator attribution, and the identity stub keeps these fixtures
+  // measuring ingestion rather than URL cleaning.
+  stripTrackingParameters: (value: string) => value,
   resolveOfficialJobDestination: vi.fn().mockResolvedValue({
     sourceListingUrl: null,
     officialApplicationUrl: "https://employer.example/jobs/1",

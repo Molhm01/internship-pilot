@@ -33,7 +33,7 @@ import {
   detectClientRenderedAts,
 } from "@/lib/ats/detect";
 import { renderCareersPage } from "@/lib/ats/headlessResolver";
-import { resolveAtsForCompany } from "@/lib/ats/resolve";
+import { boardNameMatchesCompany, resolveAtsForCompany } from "@/lib/ats/resolve";
 import {
   discoverFromRenderedShell,
   type SpaDiscovery,
@@ -96,6 +96,92 @@ export function hostCandidates(domain: string): string[] {
   return host === apex ? [host] : [host, apex];
 }
 
+/**
+ * The employer's own careers HOST, when it publishes one.
+ *
+ * Large employers overwhelmingly serve their careers site from a dedicated
+ * subdomain rather than a path — careers.newyorklife.com, jobs.grainger.com,
+ * careers.mayoclinic.org — and those hosts sit directly on the vendor. The
+ * path cascade never reaches them, and the homepage-link pass only does when
+ * the corporate homepage is both fetchable and server-renders its navigation,
+ * which for exactly these employers it often is not.
+ *
+ * A live diagnostic over 60 fresh signals found three employers (New York Life,
+ * Grainger, Mayo Clinic) whose readable SuccessFactors/Eightfold board was
+ * sitting on such a host while the pipeline recorded NO_ATS_CONFIG.
+ *
+ * This is not a guess at a domain: it is the standard careers subdomain of the
+ * registrable domain the SOURCE already published for this employer, and it is
+ * only ever accepted when the page it serves carries a real vendor signature.
+ * Deliberately root-only — two extra requests per employer, not fourteen.
+ */
+export function careersHostUrls(domain: string): string[] {
+  const urls: string[] = [];
+  for (const base of hostCandidates(domain)) {
+    if (/^(careers|jobs)\./i.test(base)) continue;
+    for (const prefix of ["careers", "jobs"]) urls.push(`https://${prefix}.${base}/`);
+  }
+  return [...new Set(urls)];
+}
+
+/**
+ * Vendors whose identifier IS the employer's own tenant slug.
+ *
+ * Only these can be checked for employer agreement. A SuccessFactors
+ * identifier is a shared portal host ("performancemanager8"), an Eightfold one
+ * is "<host>|<groupId>", and an spa/employer-page one is a URL — none of them
+ * says anything about which company owns the board, so demanding agreement
+ * there would reject correct configurations.
+ */
+const BOARD_PROBE_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+const TENANT_SLUG_VENDORS = new Set(["greenhouse", "lever", "ashby", "smartrecruiters"]);
+
+function alphanumeric(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+/**
+ * Does this board plausibly belong to this employer?
+ *
+ * A careers page links to plenty of boards that are not the employer's own:
+ * portfolio companies, partners, embedded third-party job widgets. The live
+ * diagnostic caught exactly that — "Cubit Capital" was configured against
+ * `greenhouse/trueanomalyinc` because True Anomaly's board was linked from
+ * cubit.capital. Nothing false reached the catalogue only because the title
+ * matcher happened to reject every posting, which is luck rather than a
+ * guarantee: a Greenhouse board carrying an "Electrical Engineer Intern" would
+ * have been published under the wrong employer with a wrong Apply URL.
+ *
+ * Accepts on name/domain agreement so no legitimate configuration is lost.
+ */
+export function slugLooksLikeEmployer(
+  slug: string,
+  companyName: string,
+  domain: string | null,
+): boolean {
+  const normalizedSlug = alphanumeric(slug);
+  if (!normalizedSlug) return false;
+
+  const candidates = new Set<string>();
+  const company = alphanumeric(companyName);
+  if (company) candidates.add(company);
+  for (const token of companyName.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (token.length >= 4) candidates.add(token);
+  }
+  if (domain) {
+    for (const label of domain.toLowerCase().split(".")) {
+      if (label.length >= 3 && label !== "www" && label !== "com") candidates.add(label);
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (normalizedSlug.includes(candidate) || candidate.includes(normalizedSlug)) return true;
+  }
+  return false;
+}
+
 function negativeBackoffMs(attempts: number): number {
   return Math.min(MAX_NEGATIVE_BACKOFF_MS, 6 * ONE_HOUR_MS * 2 ** Math.max(0, attempts - 1));
 }
@@ -118,6 +204,7 @@ function isReadableBoard(atsType: string, atsIdentifier: string | null): boolean
     "lever",
     "ashby",
     "smartrecruiters",
+    "workable",
     "workday",
     "icims",
     "taleo",
@@ -356,7 +443,52 @@ export async function careersLinksFromHomepage(domain: string): Promise<string[]
  * Returns the ATS resolution plus the exact page that produced it, so the
  * evidence trail records what was actually crawled.
  */
-async function discoverBoardFromDomain(
+/**
+ * Confirms a tenant-slug board really is this employer's, before it is cached.
+ *
+ * Cheap by construction: the name/domain agreement above answers almost every
+ * case with no network at all, and only a slug that agrees with nothing costs
+ * one request to the vendor's own board-metadata endpoint.
+ */
+async function boardBelongsToEmployer(
+  atsType: string,
+  atsIdentifier: string | null,
+  companyName: string,
+  domain: string | null,
+): Promise<boolean> {
+  if (!atsIdentifier) return true;
+  if (!TENANT_SLUG_VENDORS.has(atsType)) return true;
+  if (slugLooksLikeEmployer(atsIdentifier, companyName, domain)) return true;
+
+  if (atsType === "greenhouse") {
+    try {
+      const res = await fetch(
+        `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(atsIdentifier)}`,
+        { headers: { "User-Agent": BOARD_PROBE_UA }, signal: AbortSignal.timeout(8_000) },
+      );
+      if (!res.ok) return false;
+      const meta = (await res.json()) as { name?: string };
+      return Boolean(meta?.name && boardNameMatchesCompany(meta.name, companyName));
+    } catch {
+      return false;
+    }
+  }
+
+  // Lever/Ashby/SmartRecruiters expose no comparable public identity endpoint,
+  // so an unrelated slug stays unproven — and unproven means unresolved, never
+  // published under the wrong employer.
+  return false;
+}
+
+/**
+ * The whole discovery cascade for one employer, with NO cache and NO writes.
+ *
+ * Exported so a diagnostic can measure what the pipeline is actually capable
+ * of right now. resolveEmployerBoard answers from a negative-backoff cache by
+ * design — correct in production, useless for the question "did the fix work",
+ * because an employer given up on yesterday is not retried for hours.
+ */
+export async function discoverEmployerBoardConfig(
   companyName: string,
   domain: string,
 ): Promise<{ careersUrl: string; atsType: string; atsIdentifier: string; evidence: string } | null> {
@@ -385,6 +517,7 @@ async function discoverBoardFromDomain(
     // sample as "no ATS config".
     const detected = await detectAtsForCareersPage(careersUrl);
     if (!isReadableBoard(detected.atsType, detected.atsIdentifier)) continue;
+    if (!(await boardBelongsToEmployer(detected.atsType, detected.atsIdentifier, companyName, domain))) continue;
     return {
       careersUrl,
       atsType: detected.atsType,
@@ -397,7 +530,25 @@ async function discoverBoardFromDomain(
     };
   }
 
-  // Second pass: many large employers do not serve their careers site from a
+  // Second pass: the employer's dedicated careers HOST. Cheap (root only) and
+  // it is where large employers actually put the vendor.
+  for (const careersUrl of careersHostUrls(domain)) {
+    const detected = await detectAtsForCareersPage(careersUrl);
+    if (!isReadableBoard(detected.atsType, detected.atsIdentifier)) continue;
+    if (!(await boardBelongsToEmployer(detected.atsType, detected.atsIdentifier, companyName, domain))) continue;
+    return {
+      careersUrl,
+      atsType: detected.atsType,
+      atsIdentifier: detected.atsIdentifier ?? detected.atsType,
+      evidence: JSON.stringify({
+        method: "careers-host",
+        crawledPage: careersUrl,
+        confirmedAt: new Date().toISOString(),
+      }),
+    };
+  }
+
+  // Third pass: many large employers do not serve their careers site from a
   // conventional path at all — GlobalFoundries uses careers.gf.com, Procter &
   // Gamble uses a separate careers domain, Infineon redirects everything to a
   // marketing homepage. Following the "Careers" link the employer's OWN
@@ -406,6 +557,7 @@ async function discoverBoardFromDomain(
   for (const careersUrl of await linksFromSite()) {
     const detected = await detectAtsForCareersPage(careersUrl);
     if (!isReadableBoard(detected.atsType, detected.atsIdentifier)) continue;
+    if (!(await boardBelongsToEmployer(detected.atsType, detected.atsIdentifier, companyName, domain))) continue;
     return {
       careersUrl,
       atsType: detected.atsType,
@@ -430,7 +582,11 @@ async function discoverBoardFromDomain(
     const shell = await fetchRenderedShell(careersUrl, companyName);
     if (!shell) continue;
 
-    if (shell.embeddedAts?.atsIdentifier && isReadableBoard(shell.embeddedAts.atsType, shell.embeddedAts.atsIdentifier)) {
+    if (
+      shell.embeddedAts?.atsIdentifier
+      && isReadableBoard(shell.embeddedAts.atsType, shell.embeddedAts.atsIdentifier)
+      && (await boardBelongsToEmployer(shell.embeddedAts.atsType, shell.embeddedAts.atsIdentifier, companyName, domain))
+    ) {
       return {
         careersUrl,
         atsType: shell.embeddedAts.atsType,
@@ -491,7 +647,10 @@ async function discoverBoardFromDomain(
       ? linked
       : clientRendered;
 
-    if (isReadableBoard(detected.atsType, detected.atsIdentifier)) {
+    if (
+      isReadableBoard(detected.atsType, detected.atsIdentifier)
+      && (await boardBelongsToEmployer(detected.atsType, detected.atsIdentifier, companyName, domain))
+    ) {
       return {
         careersUrl: rendered.finalUrl,
         atsType: detected.atsType,
@@ -614,7 +773,7 @@ export async function resolveEmployerBoard(
     return { ok: false, reason: "UNKNOWN_COMPANY" };
   }
 
-  const discovered = await discoverBoardFromDomain(companyName, domain);
+  const discovered = await discoverEmployerBoardConfig(companyName, domain);
   if (!discovered) {
     await recordResolutionAttempt({
       key,

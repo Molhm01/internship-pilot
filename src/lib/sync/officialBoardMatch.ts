@@ -26,7 +26,49 @@ function normalizedText(value: string): string {
     .replace(/\b(202[0-9]|summer|spring|fall|winter)\b/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .map(stemToken)
+    .join(" ")
     .trim();
+}
+
+/**
+ * Collapse the word forms boards and feeds use for the same thing.
+ *
+ * A live miss made the case: Infineon's own Eightfold board carried
+ * "Intern - Product Engineering" while the radar signal said
+ * "Intern- Product Engineer". Three tokens each, two shared, similarity 0.67 —
+ * under the 0.72 accept bar, so the employer's own posting for the employer's
+ * own job was rejected. "Engineer" and "engineering" are the same discipline.
+ *
+ * Deliberately a short explicit table plus a conservative plural rule, not a
+ * real stemmer: an aggressive stemmer collapses genuinely different
+ * disciplines, and a wrong match is worse here than a missed one.
+ */
+const EQUIVALENT_FORMS: Record<string, string> = {
+  engineering: "engineer",
+  engineers: "engineer",
+  sciences: "science",
+  scientists: "scientist",
+  analytics: "analytic",
+  operations: "operation",
+  systems: "system",
+  technologies: "technology",
+  solutions: "solution",
+  developers: "developer",
+  development: "developer",
+  applications: "application",
+  communications: "communication",
+};
+
+function stemToken(token: string): string {
+  const mapped = EQUIVALENT_FORMS[token];
+  if (mapped) return mapped;
+  // Plain plurals only, and only on words long enough that the final "s" is
+  // not carrying the meaning ("ops", "sys", "eos").
+  if (token.length >= 6 && token.endsWith("s") && !token.endsWith("ss")) return token.slice(0, -1);
+  return token;
 }
 
 function tokenSet(value: string): Set<string> {
@@ -50,6 +92,39 @@ function isInternshipTitle(tokens: Set<string>): boolean {
   return false;
 }
 
+/**
+ * Words that say WHICH engineering discipline a role is.
+ *
+ * These are the discriminating token in almost every internship title, and
+ * they are exactly the token a bag-of-words similarity discounts: "Electrical
+ * Engineering Intern" and "Mechanical Engineering Intern" share two of three
+ * tokens, score 0.67, and then the same-state and location-containment bonuses
+ * carry the pair to 0.80 — over the 0.72 bar. That is a wrong employer posting
+ * published under a real signal, which is the one outcome this pipeline treats
+ * as worse than a miss.
+ *
+ * So disciplines are a hard gate, like internship-vs-full-time: if both titles
+ * name a discipline and they name different ones, they are different jobs and
+ * no amount of location agreement may say otherwise.
+ */
+const DISCIPLINE_TOKENS = new Set([
+  "electrical", "mechanical", "civil", "chemical", "structural", "industrial",
+  "aerospace", "biomedical", "environmental", "nuclear", "optical", "materials",
+  "material", "petroleum", "geotechnical", "metallurgical", "acoustic",
+  "software", "hardware", "firmware", "embedded", "mechatronic", "mechatronics",
+  "robotic", "robotics", "photonic", "photonics", "rf", "analog", "digital",
+  "asic", "fpga", "rtl", "silicon", "semiconductor",
+  "manufacturing", "quality", "process", "controls", "control", "power",
+  "thermal", "structural", "systems", "system", "network", "security",
+  "data", "ml", "ai", "geological", "mining", "marine", "naval", "agricultural",
+]);
+
+function disciplineTokens(tokens: Set<string>): Set<string> {
+  const found = new Set<string>();
+  for (const token of tokens) if (DISCIPLINE_TOKENS.has(token)) found.add(token);
+  return found;
+}
+
 function titleSimilarity(left: string, right: string): number {
   const a = normalizedText(left);
   const b = normalizedText(right);
@@ -63,6 +138,16 @@ function titleSimilarity(left: string, right: string): number {
   // An internship and a full-time role of the same name are different jobs.
   // This is a hard gate, never a score adjustment.
   if (isInternshipTitle(at) !== isInternshipTitle(bt)) return 0;
+
+  // Neither are two different disciplines. Also a hard gate: a location bonus
+  // must never be able to carry "Electrical …" onto "Mechanical …".
+  const ad = disciplineTokens(at);
+  const bd = disciplineTokens(bt);
+  if (ad.size > 0 && bd.size > 0) {
+    let sharesDiscipline = false;
+    for (const token of ad) if (bd.has(token)) sharesDiscipline = true;
+    if (!sharesDiscipline) return 0;
+  }
 
   let overlap = 0;
   for (const token of at) if (bt.has(token)) overlap += 1;
@@ -125,18 +210,49 @@ const US_STATE_NAMES: Record<string, string> = {
  *    resolved to the same code so the two can be compared at all.
  */
 export function stateCode(location: string | null): string | null {
-  if (!location) return null;
+  return stateCodes(location)[0] ?? null;
+}
 
-  for (const match of location.matchAll(/(?:^|[,\s])([A-Z]{2})(?![A-Za-z])/g)) {
+/**
+ * EVERY US state a location string refers to.
+ *
+ * Multi-site postings are ordinary — "Austin, TX; San Jose, CA", "Phoenix,
+ * Arizona or Hillsboro, Oregon" — and reading only the first state turned a
+ * correct counterpart into a LOCATION_MISMATCH whenever the two sides happened
+ * to list the same sites in a different order. Comparing sets fixes that
+ * without weakening the gate: a genuine conflict is still a conflict, because
+ * conflict means the two sets share nothing.
+ */
+export function stateCodes(location: string | null): string[] {
+  if (!location) return [];
+  const found: string[] = [];
+
+  for (const match of location.matchAll(/(?:^|[,\s(/])([A-Z]{2})(?![A-Za-z])/g)) {
     const code = match[1]!;
-    if (US_STATE_CODES.has(code)) return code;
+    if (US_STATE_CODES.has(code) && !found.includes(code)) found.push(code);
   }
 
   const lower = location.toLowerCase();
   for (const [name, code] of Object.entries(US_STATE_NAMES)) {
-    if (new RegExp(`(?:^|[,(\\s])${name}(?:[,)\\s]|$)`).test(lower)) return code;
+    if (new RegExp(`(?:^|[,(/\\s])${name}(?:[,)/\\s]|$)`).test(lower) && !found.includes(code)) {
+      found.push(code);
+    }
   }
-  return null;
+  return found;
+}
+
+/**
+ * Do two location strings contradict each other?
+ *
+ * Only when both name US states and none of them coincide. "Remote", "United
+ * States" and an unparseable string all mean "no evidence", which is never a
+ * contradiction — the title and company evidence decides those.
+ */
+export function locationsConflict(left: string | null, right: string | null): boolean {
+  const a = stateCodes(left);
+  const b = stateCodes(right);
+  if (a.length === 0 || b.length === 0) return false;
+  return !a.some((code) => b.includes(code));
 }
 
 export function scoreOfficialBoardMatch(
@@ -148,12 +264,15 @@ export function scoreOfficialBoardMatch(
   const title = titleSimilarity(discovery.title, official.title);
   if (title < 0.55) return 0;
 
-  const discoveryState = stateCode(discovery.location);
-  const officialState = stateCode(official.location);
-  if (discoveryState && officialState && discoveryState !== officialState) return 0;
+  if (locationsConflict(discovery.location, official.location)) return 0;
+
+  const discoveryStates = stateCodes(discovery.location);
+  const officialStates = stateCodes(official.location);
+  const sharesState =
+    discoveryStates.length > 0 && officialStates.some((code) => discoveryStates.includes(code));
 
   let score = title;
-  if (discoveryState && officialState && discoveryState === officialState) score += 0.08;
+  if (sharesState) score += 0.08;
 
   const discoveryLocation = normalizedText(discovery.location ?? "");
   const officialLocation = normalizedText(official.location ?? "");

@@ -1,6 +1,7 @@
 import type { AtsJob } from "@/lib/ats/types";
 import { listGreenhouseJobs } from "@/lib/ats/greenhouse";
 import { listLeverJobs } from "@/lib/ats/lever";
+import { listWorkableJobs } from "@/lib/ats/workable";
 import { listAshbyJobs } from "@/lib/ats/ashby";
 import { listSmartRecruitersJobs } from "@/lib/ats/smartrecruiters";
 import { probeWorkdayJobs } from "@/lib/ats/workday";
@@ -53,6 +54,9 @@ export async function listJobsForCompany(company: CompanyForListing): Promise<Li
     case "lever":
       if (!id) return { jobs: [], supported: false };
       return { jobs: await listLeverJobs(id, company.name), supported: true };
+    case "workable":
+      if (!id) return { jobs: [], supported: false };
+      return { jobs: await listWorkableJobs(id, company.name), supported: true };
     case "ashby":
       if (!id) return { jobs: [], supported: false };
       return { jobs: await listAshbyJobs(id, company.name), supported: true };

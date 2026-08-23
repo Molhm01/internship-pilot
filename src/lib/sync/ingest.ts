@@ -16,6 +16,7 @@ import {
   destinationPersistenceData,
   isAggregatorUrl,
   resolveOfficialJobDestination,
+  stripTrackingParameters,
 } from "@/lib/applications/officialDestination";
 import { scheduleInitialAiMatchForAllUsers } from "@/lib/matching/initialAiMatchQueue";
 import type { InternshipClassification } from "@/lib/sync/internshipClassifier";
@@ -548,7 +549,7 @@ export async function ingestJobs(
         description: raw.qualifications || "",
         sourceUrl: raw.applyUrl,
         sourceListingUrl: raw.sourceListingUrl ?? raw.applyUrl,
-        officialApplicationUrl: raw.officialApplicationUrl,
+        officialApplicationUrl: raw.officialApplicationUrl ? stripTrackingParameters(raw.officialApplicationUrl) : raw.officialApplicationUrl,
         originalJobPostUrl: raw.originalJobPostUrl,
         workplaceType: raw.workModel,
         compensation: raw.salary,
@@ -599,7 +600,7 @@ export async function ingestAtsJobs(
         description: job.description,
         sourceUrl: job.applyUrl,
         sourceListingUrl: null,
-        officialApplicationUrl: job.applyUrl,
+        officialApplicationUrl: stripTrackingParameters(job.applyUrl),
         workplaceType: job.workplaceType,
         compensation: null,
         sponsorshipRaw: null,
@@ -656,7 +657,7 @@ export async function upsertClassifiedAtsJob(args: {
       // employer's own application page — not an aggregator listing.
       sourceUrl: args.job.applyUrl,
       sourceListingUrl: null,
-      officialApplicationUrl: args.job.applyUrl,
+      officialApplicationUrl: stripTrackingParameters(args.job.applyUrl),
       workplaceType: args.job.workplaceType,
       compensation: null,
       sponsorshipRaw: null,

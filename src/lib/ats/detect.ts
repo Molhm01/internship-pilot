@@ -7,6 +7,10 @@ const PATTERNS: Pattern[] = [
   // path alone used to persist the meaningless slug "embed" for every board.
   { atsType: "greenhouse", regex: /boards\.greenhouse\.io\/embed\/job_board\/js\?[^"'\s>]*\bfor=([a-z0-9_-]+)/i, extractId: (m) => m[1] },
   { atsType: "greenhouse", regex: /(?:boards|job-boards)\.greenhouse\.io\/(?!embed(?:[/?#]|$))([a-z0-9_-]+)/i, extractId: (m) => m[1] },
+  // Workable job links are apply.workable.com/j/<shortcode>; the ACCOUNT form
+  // is apply.workable.com/<account>. Excluding the literal "j" segment keeps a
+  // posting link from being read as the tenant.
+  { atsType: "workable", regex: /apply\.workable\.com\/(?!j\/)([a-z0-9][a-z0-9-]{1,60})/i, extractId: (m) => m[1] },
   { atsType: "lever", regex: /jobs\.lever\.co\/([a-z0-9-]+)/i, extractId: (m) => m[1] },
   { atsType: "ashby", regex: /jobs\.ashbyhq\.com\/([a-z0-9-]+)/i, extractId: (m) => m[1] },
   { atsType: "smartrecruiters", regex: /jobs\.smartrecruiters\.com\/([a-zA-Z0-9-]+)/i, extractId: (m) => m[1] },

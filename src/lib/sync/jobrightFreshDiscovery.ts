@@ -393,7 +393,7 @@ async function verifyAndPersist(
 }
 
 /** Board contents, fetched at most once per employer per tick. */
-type BoardCache = Map<string, { jobs: AtsJob[]; fetchFailed: boolean; botWalled: boolean }>;
+export type BoardCache = Map<string, { jobs: AtsJob[]; fetchFailed: boolean; botWalled: boolean }>;
 
 /**
  * In-flight employer resolutions, keyed by normalized company.
@@ -491,12 +491,44 @@ async function loadOfficialCatalogIndex(): Promise<OfficialCatalogIndex> {
  */
 const BOT_WALLED_VENDORS = new Set(["icims", "taleo", "custom", "spa", "employer-page"]);
 
-async function boardJobsFor(
+/**
+ * The identity of ONE employer's board read, for the per-tick cache.
+ *
+ * This used to be `${atsType}:${atsIdentifier}`, which collides catastrophically
+ * whenever the identifier is null — and it is null for every employer whose
+ * type is `custom` or `unknown`. A live 60-signal run showed three unrelated
+ * employers (Armstrong World Industries, Newport News Shipbuilding, CMC) all
+ * being handed the SAME three postings, because all three hashed to
+ * "custom:null" and the first one's result was reused for the rest.
+ *
+ * That is not merely a bad cache: it is a cross-employer contamination that
+ * can publish one company's posting under another company's name. Falling back
+ * to the careers URL, and then to the employer name, keeps the cache doing its
+ * real job (one crawl per employer per tick) without ever merging two
+ * employers into one entry.
+ */
+export function boardCacheKey(config: {
+  atsType: string | null;
+  atsIdentifier: string | null;
+  careersUrl?: string | null;
+  name?: string | null;
+}): string {
+  const scope = config.atsIdentifier ?? config.careersUrl ?? config.name ?? "unidentified";
+  return `${config.atsType ?? "unknown"}:${scope}`;
+}
+
+/**
+ * Read one employer board the way the live radar reads it — including the
+ * employer-page mirror and the bounded headless fallback for vendors that
+ * answer automated reads with a bot wall. Exported so a diagnostic measures
+ * the real path instead of a simplified copy that understates iCIMS.
+ */
+export async function boardJobsFor(
   config: EmployerBoardConfig,
   companyName: string,
   cache: BoardCache,
 ): Promise<{ jobs: AtsJob[]; fetchFailed: boolean; botWalled: boolean }> {
-  const key = `${config.atsType}:${config.atsIdentifier}`;
+  const key = boardCacheKey(config);
   const cached = cache.get(key);
   if (cached) return cached;
 

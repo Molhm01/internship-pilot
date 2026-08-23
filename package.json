@@ -76,7 +76,9 @@
     "postinstall": "prisma generate",
     "test:dev-assets": "tsx scripts/dev-asset-smoke.ts",
     "test:browser-smoke": "node --import tsx scripts/publish-browser-smoke.ts",
-    "benchmark:freshness-slo": "tsx scripts/measure-freshness-slo.ts"
+    "benchmark:freshness-slo": "tsx scripts/measure-freshness-slo.ts",
+    "diagnose:fresh-misses": "tsx scripts/diagnose-fresh-misses.ts",
+    "audit:match-quality": "tsx scripts/audit-match-quality.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.9.1",
