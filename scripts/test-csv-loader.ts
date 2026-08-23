@@ -55,9 +55,17 @@ async function main() {
   check(threw, "malformed CSV throws a descriptive error");
 
   console.log("\n3) Importer accepts exactly 497 unique validated employers idempotently");
-  const safeDatabase = process.env.CI === "true" || /(?:audit|test)/i.test(process.env.DATABASE_URL ?? "");
+  // Same declaration the destructive fixtures use (scripts/lib/disposableDatabase.ts):
+  // a disposable name, or an explicit ISOLATED_TEST_MODE=1 from the operator.
+  // The name alone is not always available — a local Prisma Dev instance serves
+  // one database called "template1" whatever name the URL asks for, so
+  // isolation there means a separate `prisma dev --name` instance, and the
+  // operator has to be the one to say so.
+  const safeDatabase = process.env.CI === "true"
+    || process.env.ISOLATED_TEST_MODE === "1"
+    || /(?:audit|test)/i.test(process.env.DATABASE_URL ?? "");
   if (!safeDatabase) {
-    console.log("  SKIP: database integration portion requires CI or a DATABASE_URL containing 'audit'/'test' to protect real local data.");
+    console.log("  SKIP: database integration portion requires CI, ISOLATED_TEST_MODE=1, or a DATABASE_URL containing 'audit'/'test' to protect real local data.");
   } else {
     const fixtureAbsPath = path.join(process.cwd(), fixtureRelPath);
     await mkdir(path.dirname(fixtureAbsPath), { recursive: true });

@@ -11,6 +11,14 @@
  * only against a database the operator has declared disposable — one whose name
  * says so, or one they pointed at explicitly with ISOLATED_TEST_MODE=1. Against
  * anything else the process exits before opening a connection.
+ *
+ * One trap worth naming, because it looks like isolation and is not: a local
+ * `prisma dev` instance serves a single database regardless of the database
+ * name in the connection URL. Renaming the database in the URL — or creating
+ * another one on that server — still lands on the same rows. Isolating fixtures
+ * from a real local install therefore means starting a SEPARATE instance
+ * (`npx prisma dev --detach --name <something>-audit`, which gets its own port
+ * and its own storage), not a different database name on the existing one.
  */
 
 export type DisposableDatabase = {
