@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseStructuredJobPage, stripPortalHtml,
   normalizePostingTitle,
+  probeStructuredPortalJobs,
 } from "@/lib/ats/structuredCareer";
 
 describe("structured public ATS job parsing", () => {
@@ -110,5 +111,84 @@ describe("portal field labels rendered into the title", () => {
 
   it("removes only ONE leading label", () => {
     expect(normalizePostingTitle("Title: Title Examiner Intern")).toBe("Title Examiner Intern");
+  });
+});
+
+describe("iCIMS bot-wall detection via HTTP 405", () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  function mockFetch(status: number) {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response("Human Verification Required", { status, headers: { "content-type": "text/html" } }),
+    ) as unknown as typeof fetch;
+  }
+
+  it("REGRESSION: recognizes iCIMS's documented HTTP 405 bot-wall response", async () => {
+    // Kimley-Horn's iCIMS board answered every automated GET with 405 and was
+    // being silently recorded as a reachable board with zero jobs (a real
+    // production miss, not a bot wall) — undercounting bot-wall exclusions
+    // and inflating the supported/reachable miss count with an unfixable case.
+    mockFetch(405);
+    const probe = await probeStructuredPortalJobs({
+      kind: "icims",
+      companyName: "Kimley-Horn",
+      careersUrl: "https://jobs-kimley-horn.icims.com/jobs/search",
+      maxListPages: 1,
+    });
+    expect(probe.botWallBlocked).toBe(true);
+  });
+
+  it("does not treat a plain 405 from a non-iCIMS provider as a bot wall", async () => {
+    // 405 is iCIMS's specific documented signature — not a generic rule.
+    mockFetch(405);
+    const probe = await probeStructuredPortalJobs({
+      kind: "successfactors",
+      companyName: "Acme",
+      careersUrl: "https://careers.acme.example/",
+      maxListPages: 1,
+    });
+    expect(probe.botWallBlocked).toBe(false);
+  });
+
+  it("REGRESSION: reports ATS_BOT_WALL even when an unrelated marketing page loaded fine", async () => {
+    // Kimley-Horn's public careers page (the crawl's first URL) returns 200;
+    // only the iCIMS "/jobs/search" list endpoints it links to return 405. One
+    // successful, job-less page was previously enough to hide the bot wall
+    // behind a silent "supported, zero postings" result instead of surfacing
+    // ATS_BOT_WALL.
+    let call = 0;
+    global.fetch = vi.fn().mockImplementation(() => {
+      call += 1;
+      return Promise.resolve(
+        call === 1
+          ? new Response("<html><body>Careers at Kimley-Horn</body></html>", { status: 200, headers: { "content-type": "text/html" } })
+          : new Response("Human Verification Required", { status: 405, headers: { "content-type": "text/html" } }),
+      );
+    }) as unknown as typeof fetch;
+
+    await expect(probeStructuredPortalJobs({
+      kind: "icims",
+      companyName: "Kimley-Horn",
+      careersUrl: "https://www.kimley-horn.com/careers/",
+      additionalStartUrls: ["https://jobs-kimley-horn.icims.com/jobs/search?ss=1"],
+      maxListPages: 6,
+      throwOnFetchError: true,
+    })).rejects.toMatchObject({ code: "ATS_BOT_WALL" });
+  });
+
+  it("still recognizes the pre-existing 401/403/429 bot-wall statuses for iCIMS", async () => {
+    for (const status of [401, 403, 429]) {
+      mockFetch(status);
+      const probe = await probeStructuredPortalJobs({
+        kind: "icims",
+        companyName: "Kimley-Horn",
+        careersUrl: "https://jobs-kimley-horn.icims.com/jobs/search",
+        maxListPages: 1,
+      });
+      expect(probe.botWallBlocked).toBe(true);
+    }
   });
 });

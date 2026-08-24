@@ -72,6 +72,33 @@ async function main() {
   const quality = jobs.map((job) => ({ job, date: dateQuality(job), jd: jobDescriptionQuality(job), destination: destinationQuality(job) }));
   const freshKnown = jobs.filter((job) => discoverFreshnessGroup(job, now).startsWith("KNOWN_")).length;
   const freshUnknown = jobs.filter((job) => discoverFreshnessGroup(job, now).startsWith("UNKNOWN_")).length;
+
+  // Fresh JD quality, separate from the full historical backlog: what
+  // matters for returning to Autofill Phase 2B is whether jobs a user
+  // actually SEES right now have a usable JD, not whether a 6-week-old row
+  // does.
+  const freshQuality = (group: "KNOWN_" | "UNKNOWN_") => quality.filter((row) => discoverFreshnessGroup(row.job, now).startsWith(group));
+  const freshJdSummary = (rows: typeof quality) => {
+    const usableOrFull = rows.filter((row) => row.jd === "FULL" || row.jd === "USABLE").length;
+    return {
+      total: rows.length,
+      full: rows.filter((row) => row.jd === "FULL").length,
+      usable: rows.filter((row) => row.jd === "USABLE").length,
+      thin: rows.filter((row) => row.jd === "THIN").length,
+      missing: rows.filter((row) => row.jd === "MISSING").length,
+      usableOrFull,
+      usableOrFullPercent: percent(usableOrFull, rows.length),
+    };
+  };
+  const freshKnownRows = freshQuality("KNOWN_");
+  const freshUnknownRows = freshQuality("UNKNOWN_");
+  const freshCombinedRows = [...freshKnownRows, ...freshUnknownRows];
+  const freshJdQuality = {
+    knownDate: freshJdSummary(freshKnownRows),
+    newlyDiscoveredUnknownDate: freshJdSummary(freshUnknownRows),
+    combined: freshJdSummary(freshCombinedRows),
+  };
+
   const providerQuality = Object.fromEntries(PROVIDERS.map((name) => {
     const rows = quality.filter((row) => provider(row.job.source, row.job.atsType) === name);
     const known = rows.filter((row) => row.date !== "UNKNOWN").length;
@@ -122,6 +149,7 @@ async function main() {
     measuredAt: now.toISOString(), active: jobs.length,
     dateQuality: { ...dateCounts, unknownRate: percent(dateCounts.UNKNOWN ?? 0, jobs.length) },
     fresh: { knownRecent: freshKnown, newlyDiscoveredUnknownDate: freshUnknown, total: freshKnown + freshUnknown },
+    freshJdQuality,
     jdQuality: { ...jdCounts, usableOrFull: (jdCounts.FULL ?? 0) + (jdCounts.USABLE ?? 0), usableOrFullPercent: percent((jdCounts.FULL ?? 0) + (jdCounts.USABLE ?? 0), jobs.length) },
     providerQuality, icims: icimsCounts, topMissingProviders: ranked, recall,
     steadyStateLatency: { cohortStartedAt: cohortStartedAt.toISOString(), ...latency },

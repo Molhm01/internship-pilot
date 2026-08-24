@@ -1,4 +1,8 @@
 import "dotenv/config";
+import { pinCanonicalDatabaseUrl, announceCanonicalDatabase } from "./lib/canonicalDb";
+
+const canonical = pinCanonicalDatabaseUrl();
+
 import { prisma } from "@/lib/db";
 import { nextCheckTimeFor } from "@/lib/sync/companyDiscovery";
 import { scanCareersPageForInternshipLinks } from "@/lib/ats/generic";
@@ -22,6 +26,7 @@ function check(condition: boolean, message: string) {
 }
 
 async function main() {
+  announceCanonicalDatabase(await prisma.job.count(), canonical);
   initialPause = await getSchedulerPauseState();
   console.log("1) Cadence: priority=5min, standard=15-30min staggered, low=daily");
   const priorityNext = (nextCheckTimeFor("priority", 0, "workday").getTime() - Date.now()) / 60000;

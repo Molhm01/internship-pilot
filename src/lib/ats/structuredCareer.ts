@@ -336,7 +336,7 @@ function looksLikePortalNavigation(kind: StructuredPortalKind, link: PortalLink,
   return /\/job\b|\/jobs\b|\/search\b|\/go\b|\b(search|view|open)\s+jobs?\b|career_ns=job_listing_summary|[?&](?:page|startrow)=\d+/i.test(signal);
 }
 
-async function fetchHtml(url: string): Promise<{
+async function fetchHtml(url: string, kind: StructuredPortalKind): Promise<{
   page: { html: string; finalUrl: string } | null;
   status: number | null;
   botWallBlocked: boolean;
@@ -348,7 +348,12 @@ async function fetchHtml(url: string): Promise<{
       signal: AbortSignal.timeout(12_000),
     });
     if (!response.ok) {
-      return { page: null, status: response.status, botWallBlocked: [401, 403, 429].includes(response.status) };
+      // iCIMS answers an automated GET with HTTP 405 "Human Verification"
+      // instead of a 401/403/429 — its own bot-wall signature, documented in
+      // src/lib/sync/freshSignalReasons.ts. Scoped to iCIMS only: a 405 from
+      // another provider is not evidence of the same thing.
+      const botWallStatuses = kind === "icims" ? [401, 403, 405, 429] : [401, 403, 429];
+      return { page: null, status: response.status, botWallBlocked: botWallStatuses.includes(response.status) };
     }
     const contentType = response.headers.get("content-type") ?? "";
     if (contentType && !/html|xhtml|text/i.test(contentType)) {
@@ -415,7 +420,7 @@ export async function probeStructuredPortalJobs(options: {
     if (visited.has(current)) continue;
     visited.add(current);
 
-    const fetched = await fetchHtml(current);
+    const fetched = await fetchHtml(current, options.kind);
     if (fetched.status !== null) httpStatuses.push(fetched.status);
     botWallBlocked ||= fetched.botWallBlocked;
     const page = fetched.page;
@@ -448,7 +453,15 @@ export async function probeStructuredPortalJobs(options: {
     }
   }
 
-  if (readableListPages === 0 && options.throwOnFetchError) {
+  // A confirmed bot wall on the job SEARCH/LIST endpoint is grounds to report
+  // ATS_BOT_WALL even when an unrelated marketing careers page loaded fine —
+  // e.g. Kimley-Horn's public careers page returns 200, but every iCIMS
+  // "/jobs/search" list page it links to answers 405 (iCIMS's documented
+  // bot-wall response). Reading `readableListPages === 0` alone missed this:
+  // one successful, job-less page was enough to hide a real bot wall behind a
+  // silent zero-postings result.
+  const noUsableListings = readableListPages === 0 || (botWallBlocked && detailLinksFound === 0);
+  if (noUsableListings && options.throwOnFetchError) {
     throw Object.assign(new Error("The configured official careers portal returned no readable page."), {
       code: botWallBlocked ? "ATS_BOT_WALL" : "ATS_BOARD_UNREACHABLE",
     });
@@ -456,7 +469,7 @@ export async function probeStructuredPortalJobs(options: {
 
   const detailEntries = [...details.entries()].slice(0, maxJobDetails);
   const parsed = await mapWithConcurrency(detailEntries, 5, async ([url, fallbackTitle]) => {
-    const fetched = await fetchHtml(url);
+    const fetched = await fetchHtml(url, options.kind);
     if (fetched.status !== null) httpStatuses.push(fetched.status);
     botWallBlocked ||= fetched.botWallBlocked;
     const page = fetched.page;

@@ -163,6 +163,28 @@ function normalizedWorkdayDetail(detail: WorkdayDetail | null): WorkdayJobDetail
   };
 }
 
+/**
+ * Workday's own `externalPath` (`/job/{location}/{slug}_{requisitionId}`) out
+ * of a public job/apply URL, given the site segment from the tenant config.
+ *
+ * A job discovered directly through `probeWorkdayJobs` stores this path as
+ * `sourceJobId` (see below). A job discovered via a third-party aggregator
+ * (Simplify/Zapply/ApplyGuy/Dreamwork, ...) has THAT service's id in
+ * `sourceJobId` instead — a different identifier scheme, not a broken Workday
+ * path — so it is derived from the URL, which always carries Workday's own
+ * path regardless of how the job was discovered.
+ */
+export function workdayExternalPathFromUrl(url: string, site: string): string | null {
+  try {
+    const pathname = new URL(url).pathname;
+    const prefix = `/${site}`;
+    if (!pathname.startsWith(`${prefix}/`)) return null;
+    return pathname.slice(prefix.length) || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Fetch one public CXS detail record without interpreting job start dates. */
 export async function fetchWorkdayJobDetail(
   atsIdentifier: string,
@@ -170,8 +192,12 @@ export async function fetchWorkdayJobDetail(
   externalPath: string,
 ): Promise<WorkdayJobDetail | null> {
   const configuration = parseWorkdayConfiguration(atsIdentifier, careersUrl);
-  if (!configuration || !externalPath.startsWith("/")) return null;
-  const detail = await getDetail(`${configuration.baseUrl}${externalPath}`);
+  if (!configuration) return null;
+  const path = externalPath.startsWith("/")
+    ? externalPath
+    : (careersUrl && workdayExternalPathFromUrl(careersUrl, configuration.site)) || null;
+  if (!path) return null;
+  const detail = await getDetail(`${configuration.baseUrl}${path}`);
   return detail ? normalizedWorkdayDetail(detail) : null;
 }
 
