@@ -29,6 +29,10 @@ export const DISCIPLINE_TAGS = [
   "engineeringTechnician",
   "fieldApplications",
   "firmware",
+  "dataAi",
+  "rf",
+  "autonomous",
+  "digitalVerification",
 ] as const;
 export type DisciplineTag = (typeof DISCIPLINE_TAGS)[number];
 
@@ -146,6 +150,16 @@ const DISCIPLINE_KEYWORDS: Record<DisciplineTag, string[]> = {
   engineeringTechnician: ["engineering technician", "engineering tech intern", "lab technician"],
   fieldApplications: ["field applications engineer", "field application engineer", "fae intern"],
   firmware: ["firmware engineer", "firmware intern", "firmware development"],
+  dataAi: [
+    "data engineer", "data engineering", "data science", "machine learning engineer",
+    "machine learning intern", "ml engineer", "artificial intelligence engineer", "ai engineer",
+  ],
+  rf: ["rf engineer", "rf engineering", "radio frequency", "wireless systems", "antenna engineer"],
+  autonomous: ["autonomous vehicle", "autonomous driving", "autonomy engineer", "self-driving"],
+  digitalVerification: [
+    "design verification", "verification engineer", "rtl verification", "functional verification",
+    "uvm", "systemverilog", "rtl design",
+  ],
 };
 
 export const STUDENT_ROLE_PATTERN = /\b(intern(ship)?s?|co-?ops?|undergrad(uate)?)\b/i;

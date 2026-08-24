@@ -78,6 +78,10 @@ const DISCIPLINE_LABELS: Record<DisciplineTag, string> = {
   engineeringTechnician: "Engineering Technician",
   fieldApplications: "Field Applications",
   firmware: "Firmware",
+  dataAi: "ML / AI / Data",
+  rf: "RF / Wireless",
+  autonomous: "Autonomous Vehicles",
+  digitalVerification: "RTL / Verification",
 };
 
 const AVAILABILITY_QUERY: Record<string, (p: URLSearchParams) => void> = {

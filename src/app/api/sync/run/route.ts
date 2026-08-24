@@ -57,7 +57,7 @@ export async function POST() {
 
     // First priority is speed-to-post: exact source timestamps from public
     // Jobright internship categories, resolved back to employer ATS pages.
-    const freshDiscovery = await runJobrightFreshDiscovery(150);
+    const freshDiscovery = await runJobrightFreshDiscovery(400);
 
     // Then maintain broad 500+ catalogue depth.
     const massTechnical = await runMassTechnicalFeedDiscovery(1500);
@@ -76,14 +76,14 @@ export async function POST() {
 
     const newJobsCount =
       companies.results.reduce((sum, company) => sum + company.newCount, 0) +
-      freshDiscovery.newCount +
+      freshDiscovery.newJobs +
       massTechnical.newCount +
       publicDirect.newCount +
       discovery.newCount +
       usajobs.newCount;
     const updatedJobsCount =
       companies.results.reduce((sum, company) => sum + company.updatedCount, 0) +
-      freshDiscovery.updatedCount +
+      freshDiscovery.updatedJobs +
       massTechnical.updatedCount +
       publicDirect.updatedCount +
       discovery.updatedCount +

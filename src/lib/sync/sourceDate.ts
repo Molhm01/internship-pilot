@@ -18,6 +18,36 @@ export const SOURCE_DATE_CONFIDENCE = ["UNKNOWN", "DATE_ONLY", "RELATIVE_PARSED"
 
 export type SourceDateConfidence = (typeof SOURCE_DATE_CONFIDENCE)[number];
 
+// Authority of the source that supplied the timestamp. This is intentionally
+// separate from precision: an exact radar timestamp is precise, but an exact
+// employer ATS timestamp is both precise and authoritative.
+export const SOURCE_DATE_PROVENANCE = [
+  "UNKNOWN",
+  "INFERRED",
+  "TRUSTED_RADAR_RELATIVE",
+  "TRUSTED_RADAR_EXACT",
+  "EMPLOYER_JSON_LD",
+  "EMPLOYER_ATS_DATE",
+  "EMPLOYER_ATS_EXACT",
+] as const;
+
+export type SourceDateProvenance = (typeof SOURCE_DATE_PROVENANCE)[number];
+
+export function provenanceRank(provenance: string | null | undefined): number {
+  const index = SOURCE_DATE_PROVENANCE.indexOf((provenance ?? "UNKNOWN") as SourceDateProvenance);
+  return index === -1 ? 0 : index;
+}
+
+export function employerAtsProvenance(date: ParsedSourceDate): SourceDateProvenance {
+  if (!date.sourcePostedAt) return "UNKNOWN";
+  return date.sourceDateConfidence === "EXACT" ? "EMPLOYER_ATS_EXACT" : "EMPLOYER_ATS_DATE";
+}
+
+export function trustedRadarProvenance(date: ParsedSourceDate): SourceDateProvenance {
+  if (!date.sourcePostedAt) return "UNKNOWN";
+  return date.sourceDateConfidence === "EXACT" ? "TRUSTED_RADAR_EXACT" : "TRUSTED_RADAR_RELATIVE";
+}
+
 export type ParsedSourceDate = {
   /** Absolute UTC instant, or null when the source gave us nothing usable. */
   sourcePostedAt: Date | null;
@@ -213,6 +243,30 @@ export function shouldReplaceSourcePostedAt(
 ): boolean {
   if (!incoming.sourcePostedAt) return false;
   if (!existing?.sourcePostedAt) return true;
+  return (
+    confidenceRank(incoming.sourceDateConfidence)
+    > confidenceRank(existing.sourceDateConfidence as SourceDateConfidence | null)
+  );
+}
+
+/**
+ * Provenance-aware replacement used by canonical jobs. Source authority wins;
+ * precision breaks ties. This encodes the product rule that an employer date
+ * outranks a radar timestamp, while unknown dates never replace known ones.
+ */
+export function shouldReplaceCanonicalSourceDate(
+  existing: {
+    sourcePostedAt: Date | null;
+    sourceDateConfidence: string | null;
+    sourceDateProvenance: string | null;
+  } | null | undefined,
+  incoming: ParsedSourceDate,
+  incomingProvenance: SourceDateProvenance,
+): boolean {
+  if (!incoming.sourcePostedAt) return false;
+  if (!existing?.sourcePostedAt) return true;
+  const authorityDelta = provenanceRank(incomingProvenance) - provenanceRank(existing.sourceDateProvenance);
+  if (authorityDelta !== 0) return authorityDelta > 0;
   return (
     confidenceRank(incoming.sourceDateConfidence)
     > confidenceRank(existing.sourceDateConfidence as SourceDateConfidence | null)

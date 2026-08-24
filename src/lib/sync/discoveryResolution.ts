@@ -32,7 +32,18 @@ function firstPathSegment(url: URL): string | null {
   return url.pathname.split("/").filter(Boolean)[0] ?? null;
 }
 
-export function inferResolvedSource(value: string): ResolvedSource {
+/**
+ * Which official system does this destination belong to?
+ *
+ * `providerHint` names the adapter that produced the URL, for vendors whose
+ * postings are served from the EMPLOYER'S own hostname rather than a
+ * recognisable vendor domain. Eightfold job pages live at
+ * `careers.<employer>.com/careers/job/<id>`, so without the hint they would be
+ * filed as a generic custom site and lost from the provider breakdown. The hint
+ * is only consulted after every host-based rule has failed, so it can never
+ * override what the URL itself proves.
+ */
+export function inferResolvedSource(value: string, providerHint?: string | null): ResolvedSource {
   const url = new URL(value);
   const host = url.hostname.toLowerCase();
   const first = firstPathSegment(url);
@@ -67,6 +78,10 @@ export function inferResolvedSource(value: string): ResolvedSource {
   }
   if (hostEndsWith(host, "successfactors.com") || hostEndsWith(host, "successfactors.eu")) {
     return { source: "successfactors", atsType: "successfactors", atsTenant: host };
+  }
+
+  if (providerHint === "eightfold" || providerHint === "phenom") {
+    return { source: providerHint, atsType: providerHint, atsTenant: host };
   }
 
   return { source: "other", atsType: "custom", atsTenant: host };

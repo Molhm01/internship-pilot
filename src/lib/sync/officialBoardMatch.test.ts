@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { scoreOfficialBoardMatch } from "@/lib/sync/officialBoardMatch";
+import {
+  OFFICIAL_BOARD_MATCH_THRESHOLD,
+  locationsConflict,
+  scoreOfficialBoardMatch,
+  stateCode,
+  stateCodes,
+} from "@/lib/sync/officialBoardMatch";
 
 describe("official employer board matching", () => {
   it("strongly matches the same internship with cosmetic title differences", () => {
@@ -36,5 +42,191 @@ describe("official employer board matching", () => {
       },
     );
     expect(score).toBe(0);
+  });
+});
+
+describe("title matching against real board title padding", () => {
+  it("accepts a board title that only ADDS team/location qualifiers", () => {
+    // Boards append qualifiers a feed omits. "Structural Engineering
+    // Internship" and "Structural Engineering Intern - Bridge Group - Chicago"
+    // are one posting, and dividing overlap by the longer title alone scored
+    // that pairing below the accept bar.
+    const score = scoreOfficialBoardMatch(
+      { title: "Bridge Structural Engineering Internship", location: "Chicago, IL" },
+      {
+        title: "Bridge Structural Engineering Intern - Transportation Group",
+        location: "Chicago, IL",
+        applyUrl: "https://boards.greenhouse.io/benesch/jobs/9001",
+      },
+    );
+    expect(score).toBeGreaterThanOrEqual(OFFICIAL_BOARD_MATCH_THRESHOLD);
+  });
+
+  it("does not let a short generic title absorb a longer unrelated one", () => {
+    // Only two distinctive tokens, so containment earns no lift — otherwise an
+    // internship could match a manager role that merely mentions interns.
+    const score = scoreOfficialBoardMatch(
+      { title: "Software Intern", location: "Austin, TX" },
+      {
+        title: "Software Intern Program Manager Talent Operations",
+        location: "Austin, TX",
+        applyUrl: "https://boards.greenhouse.io/acme/jobs/1",
+      },
+    );
+    expect(score).toBeLessThan(OFFICIAL_BOARD_MATCH_THRESHOLD);
+  });
+
+  it("REGRESSION: never matches an internship to the full-time role of the same name", () => {
+    const score = scoreOfficialBoardMatch(
+      { title: "Formal Verification Engineering Intern", location: "Austin, TX" },
+      {
+        title: "Formal Verification Engineering Engineer",
+        location: "Austin, TX",
+        applyUrl: "https://boards.greenhouse.io/tenstorrent/jobs/1",
+      },
+    );
+    expect(score).toBe(0);
+  });
+});
+
+describe("US state resolution", () => {
+  it("REGRESSION: does not read 'United States of America' as the state 'OF'", () => {
+    // A case-insensitive [A-Z]{2} matched the word "of", which then conflicted
+    // with the signal's real state and rejected an exact-title match on the
+    // employer's own board.
+    expect(stateCode("Mason, Ohio, United States of America")).toBe("OH");
+  });
+
+  it("resolves spelled-out state names so differing formats can be compared", () => {
+    expect(stateCode("Cincinnati, OH")).toBe("OH");
+    expect(stateCode("Boise, Idaho - Main Site")).toBe("ID");
+    expect(stateCode("New York, New York, United States")).toBe("NY");
+  });
+
+  it("returns null rather than guessing when there is no US state", () => {
+    expect(stateCode("Singapore, Singapore")).toBeNull();
+    expect(stateCode("Remote")).toBeNull();
+    expect(stateCode(null)).toBeNull();
+  });
+
+  it("matches an exact title across differing location formats", () => {
+    const score = scoreOfficialBoardMatch(
+      { title: "University of Cincinnati R&D Engineer Co-op", location: "Cincinnati, OH" },
+      {
+        title: "University of Cincinnati R&D Engineer Co-op",
+        location: "Mason, Ohio, United States of America",
+        applyUrl: "https://pg.wd5.myworkdayjobs.com/1000/job/Mason/Co-op_R000155207",
+      },
+    );
+    expect(score).toBeGreaterThanOrEqual(OFFICIAL_BOARD_MATCH_THRESHOLD);
+  });
+});
+
+/**
+ * Regressions from the live miss dataset (60 fresh signals, 2026-08-23).
+ * Each case below is an employer whose own posting the matcher was rejecting.
+ */
+describe("word forms that mean the same discipline", () => {
+  it("REGRESSION: matches Infineon's 'Product Engineering' to a signal's 'Product Engineer'", () => {
+    // Measured: bestScore 0.67 against the 0.72 bar, on the employer's own
+    // Eightfold board, for the employer's own posting.
+    const score = scoreOfficialBoardMatch(
+      { title: "Intern- Product Engineer", location: "El Segundo, CA" },
+      {
+        title: "Intern - Product Engineering",
+        location: "El Segundo, CA",
+        applyUrl: "https://jobs.infineon.com/careers/job/12345",
+      },
+    );
+    expect(score).toBeGreaterThanOrEqual(OFFICIAL_BOARD_MATCH_THRESHOLD);
+  });
+
+  it("treats plural and singular forms of the same discipline as one", () => {
+    const score = scoreOfficialBoardMatch(
+      { title: "Data Systems Intern", location: "Austin, TX" },
+      {
+        title: "Data System Intern",
+        location: "Austin, TX",
+        applyUrl: "https://boards.greenhouse.io/example/jobs/1",
+      },
+    );
+    expect(score).toBeGreaterThanOrEqual(OFFICIAL_BOARD_MATCH_THRESHOLD);
+  });
+
+  it("does NOT collapse genuinely different disciplines", () => {
+    // Electrical and mechanical are different jobs however similar the rest of
+    // the title reads. This is the guard that keeps the stemmer honest.
+    const score = scoreOfficialBoardMatch(
+      { title: "Electrical Engineering Intern", location: "Austin, TX" },
+      {
+        title: "Mechanical Engineering Intern",
+        location: "Austin, TX",
+        applyUrl: "https://boards.greenhouse.io/example/jobs/2",
+      },
+    );
+    expect(score).toBeLessThan(OFFICIAL_BOARD_MATCH_THRESHOLD);
+  });
+});
+
+describe("multi-site locations", () => {
+  it("REGRESSION: a signal listing several sites matches a board naming one of them", () => {
+    const score = scoreOfficialBoardMatch(
+      { title: "Firmware Engineering Intern", location: "Austin, TX; San Jose, CA" },
+      {
+        title: "Firmware Engineering Intern",
+        location: "San Jose, CA",
+        applyUrl: "https://boards.greenhouse.io/example/jobs/3",
+      },
+    );
+    expect(score).toBeGreaterThanOrEqual(OFFICIAL_BOARD_MATCH_THRESHOLD);
+  });
+
+  it("still rejects a posting whose states share nothing with the signal", () => {
+    const score = scoreOfficialBoardMatch(
+      { title: "Firmware Engineering Intern", location: "Austin, TX; San Jose, CA" },
+      {
+        title: "Firmware Engineering Intern",
+        location: "Newark, NJ",
+        applyUrl: "https://boards.greenhouse.io/example/jobs/4",
+      },
+    );
+    expect(score).toBe(0);
+  });
+
+  it("reads every state out of a multi-site string, in order", () => {
+    expect(stateCodes("Phoenix, Arizona or Hillsboro, Oregon")).toEqual(["AZ", "OR"]);
+    expect(stateCodes("Austin, TX; San Jose, CA")).toEqual(["TX", "CA"]);
+    expect(stateCodes("Remote — United States")).toEqual([]);
+  });
+
+  it("treats missing location evidence as no evidence, never as a conflict", () => {
+    expect(locationsConflict("Remote", "Austin, TX")).toBe(false);
+    expect(locationsConflict(null, "Austin, TX")).toBe(false);
+    expect(locationsConflict("United States", "Austin, TX")).toBe(false);
+    expect(locationsConflict("Austin, TX", "Newark, NJ")).toBe(true);
+    expect(locationsConflict("Austin, TX or Newark, NJ", "Newark, NJ")).toBe(false);
+  });
+});
+
+describe("two-letter tokens that are not states", () => {
+  it("REGRESSION: does not read the word 'OR' as Oregon", () => {
+    // "Data Engineering Intern OR Student Co-Op" was being credited with a
+    // location of Oregon, which then let an unrelated posting share a state.
+    expect(stateCodes("Data Engineering Intern OR Student Co-Op")).toEqual([]);
+    expect(stateCodes("Remote OR Hybrid")).toEqual([]);
+  });
+
+  it("REGRESSION: does not read 'ME' or 'IN' mid-phrase as a state", () => {
+    expect(stateCodes("ME Intern, Training, Part time")).toEqual([]);
+    expect(stateCodes("Intern IN Manufacturing")).toEqual([]);
+  });
+
+  it("still reads the forms locations actually take", () => {
+    expect(stateCodes("Austin, TX")).toEqual(["TX"]);
+    expect(stateCodes("TX")).toEqual(["TX"]);
+    expect(stateCodes("USA, SD, Watertown")).toEqual(["SD"]);
+    expect(stateCodes("US-VA-STERLING-291")).toEqual(["VA"]);
+    expect(stateCodes("Cincinnati, OH | Mason, OH")).toEqual(["OH"]);
+    expect(stateCodes("Mason, Ohio, United States of America")).toEqual(["OH"]);
   });
 });

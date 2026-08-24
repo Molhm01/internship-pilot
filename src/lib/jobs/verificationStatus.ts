@@ -14,12 +14,15 @@ export const CANONICAL_VERIFICATION_STATUSES = [
 
 export type CanonicalVerificationStatus = (typeof CANONICAL_VERIFICATION_STATUSES)[number];
 
+/** Narrows an arbitrary string to one of the canonical statuses. */
+function isCanonicalVerificationStatus(status: string | null | undefined): status is CanonicalVerificationStatus {
+  return CANONICAL_VERIFICATION_STATUSES.some((candidate) => candidate === status);
+}
+
 // Converts old/legacy verification statuses to canonical ones
 export function canonicalVerificationStatus(status: string | null | undefined): CanonicalVerificationStatus {
   // Handle exact matches first for existing cases  
-  if (CANONICAL_VERIFICATION_STATUSES.includes(status as any)) {
-    return status as CanonicalVerificationStatus;
-  }
+  if (isCanonicalVerificationStatus(status)) return status;
   
   // Map legacy statuses 
   switch (status) {

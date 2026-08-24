@@ -5,6 +5,7 @@ export async function listIcimsJobs(
   atsIdentifier: string,
   careersUrl: string,
   companyName: string,
+  options: { throwOnFetchError?: boolean } = {},
 ): Promise<AtsJob[]> {
   const startUrls = new Set<string>();
   if (atsIdentifier && /^[a-z0-9-]+$/i.test(atsIdentifier)) {
@@ -18,5 +19,6 @@ export async function listIcimsJobs(
     additionalStartUrls: [...startUrls],
     maxListPages: 6,
     maxJobDetails: 35,
+    throwOnFetchError: options.throwOnFetchError,
   });
 }

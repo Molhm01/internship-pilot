@@ -143,19 +143,26 @@ describe("the deployed server never assumes its localhost runs Ollama", () => {
   it("routes every server-side model call through the guarded module", async () => {
     // The guard lives in one place on purpose. A caller that talks to Ollama
     // directly would bypass it, so no other server module may name the port.
-    const files = [
+    const modelCallers = [
       "src/lib/matching.ts",
       "src/lib/documents/select.ts",
       "src/lib/documents/bulletLibrary.ts",
       "src/lib/gmail/classify.ts",
       "src/lib/applications/browserAgent.ts",
       "src/lib/applications/diagnostics.ts",
-      "src/app/api/resume/analyze/route.ts",
+      "src/lib/resume/autoProfile.ts",
     ];
-    for (const file of files) {
+    for (const file of modelCallers) {
       const source = await repoFile(file);
       expect(source, `${file} must not build its own Ollama URL`).not.toContain("11434");
       expect(source, `${file} must use the shared Ollama module`).toContain("@/lib/ollama");
+    }
+
+    // Routes delegate inference to the modules above rather than calling the
+    // model themselves. They are still held to the no-own-URL half of the rule.
+    for (const file of ["src/app/api/resume/analyze/route.ts"]) {
+      const source = await repoFile(file);
+      expect(source, `${file} must not build its own Ollama URL`).not.toContain("11434");
     }
   });
 });
@@ -168,14 +175,20 @@ describe("local-only server capabilities", () => {
     expect(source.indexOf('assertLocalRuntime("typst")')).toBeLessThan(source.indexOf("compileTypst("));
   });
 
-  it("does not register long-lived timers on a cloud runtime", async () => {
-    // The scheduler's setInterval timers assume a process that stays alive.
-    // On a frozen-between-requests function they fire unpredictably and every
-    // cold start would add another set.
+  it("does not register long-lived timers in the web process at all", async () => {
+    // The scheduler's setInterval timers assume a process that stays alive. On
+    // a frozen-between-requests function they fire unpredictably and every cold
+    // start would add another set. Guarding only the cloud runtime turned out
+    // not to be enough: importing the scheduler here also dragged pg's Node
+    // built-ins into the Windows Webpack bundle. The scheduler is now its own
+    // process, so no runtime — local or cloud — starts it from instrumentation.
     const source = await repoFile("src/instrumentation.ts");
 
-    expect(source).toContain("isCloudRuntime()");
-    expect(source.indexOf("isCloudRuntime()")).toBeLessThan(source.indexOf("startScheduler"));
+    expect(source).not.toMatch(/startScheduler\s*\(/);
+    expect(source).not.toMatch(/setInterval\s*\(/);
+    expect(source).toContain("scheduler-worker");
+    // The transitive import-graph guard lives in
+    // src/lib/runtime/instrumentationBoundary.test.ts.
   });
 
   it("does not spawn a child process on a cloud runtime", async () => {

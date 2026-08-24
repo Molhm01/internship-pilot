@@ -32,11 +32,25 @@ function isPublic(pathname: string): boolean {
   // Better Auth's own endpoints, including the OAuth callback the browser is
   // redirected to by Google before any session exists.
   if (pathname.startsWith("/api/auth")) return true;
-  // The extension compatibility/local-supervisor health handshake is
-  // intentionally public and returns only version/build constants. `npm run
-  // local` uses this endpoint before any user has signed in, so protecting it
-  // creates a false startup timeout even while the server is healthy.
-  if (pathname === "/api/extension/health") return true;
+  // The extension authenticates with a hashed ExtensionToken in an
+  // Authorization header, not with the session cookie — see
+  // `withExtensionUser` in src/lib/applications/extensionAuth.ts, which every
+  // route under this prefix goes through. Rejecting them here for having no
+  // cookie is not defence in depth; it is an outage. The extension runs in
+  // whatever browser profile the agent drives, that profile need not be signed
+  // in to this origin, and the health handshake below is used before anyone has
+  // signed in at all.
+  //
+  // Same reasoning as `/api/cron/` further down: a route that carries its own
+  // credential has to be allowed to check it.
+  //
+  // `/api/extension/tokens` is the exception, and deliberately so: it is where
+  // a signed-in person mints and revokes those tokens from Settings, it
+  // authenticates with the session like every other private route, and nothing
+  // holding only an extension token has any business issuing more of them.
+  if (pathname.startsWith("/api/extension/") && !pathname.startsWith("/api/extension/tokens")) {
+    return true;
+  }
   // Aggregate-only production health/coverage diagnostics. These endpoints
   // expose counts/timestamps only — never user data, job details, credentials,
   // or secrets.
@@ -45,6 +59,12 @@ function isPublic(pathname: string): boolean {
   // authenticate themselves with CRON_SECRET, so the proxy must let the
   // request reach the route instead of replacing it with the normal API 401.
   if (pathname.startsWith("/api/cron/")) return true;
+  // The local launcher asks this before any account exists, and often before
+  // the server it is interrogating is one it can sign in to at all — that is
+  // the whole point: it is deciding whether the process on port 3000 came from
+  // this checkout, or is a stale build it needs to restart. The route itself
+  // refuses to answer in a cloud runtime, so nothing is exposed publicly.
+  if (pathname === "/api/local/instance") return true;
   return false;
 }
 

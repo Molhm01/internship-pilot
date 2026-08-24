@@ -30,7 +30,7 @@ function fixtureJob(overrides: Partial<RawInternListJob>): RawInternListJob {
     applyUrl: "https://jobright.ai/jobs/info/test-filter-job",
     h1bSponsored: "Unknown",
     ...overrides,
-  };
+  } as RawInternListJob;
 }
 
 async function cleanup(ids: string[]) {

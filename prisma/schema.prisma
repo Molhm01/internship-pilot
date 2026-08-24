@@ -269,6 +269,19 @@ model Company {
   lastETag              String? // conditional-request support for the generic careers-page scan
   lastModified          String?
   contentHash           String? // hash of the last-seen careers-page content — skip reprocessing when unchanged even without ETag/Last-Modified support
+  boardSnapshot         String? // JSON source-job-id array from the last successful complete-enough board poll
+  lastSuccessfulBoardAt DateTime?
+  lastBoardQueryMs      Int?
+  // Live configuration truth. An ATS enum alone never makes a board usable.
+  // VALIDATED | STALE | MALFORMED | UNTESTED | UNSUPPORTED | CUSTOM
+  atsConfigState        String    @default("UNTESTED")
+  atsConfigCheckedAt    DateTime?
+  atsValidatedAt        DateTime?
+  atsConfigErrorCode    String?
+  atsConfigEvidence     String? // JSON containing bounded-probe facts, never credentials
+  // A = recent relevant posting, B = historical relevant posting, C = none yet.
+  engineeringActivityTier String  @default("C")
+  lastEngineeringInternshipAt DateTime?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
@@ -292,11 +305,14 @@ model Company {
   csvCanonicalApplyRule     String?
 
   approvedAtsTenants ApprovedAtsTenant[]
+  officialBoardPolls OfficialBoardPoll[]
 
   @@index([atsType])
   @@index([nextCheckAt])
   @@index([priority])
   @@index([allowlisted])
+  @@index([atsConfigState])
+  @@index([engineeringActivityTier])
 }
 
 // Milestone (source-security): the specific, evidenced link between one
@@ -315,6 +331,105 @@ model ApprovedAtsTenant {
   approvedAt               DateTime @default(now())
 
   @@unique([companyId, atsType, atsIdentifier])
+}
+
+// Cache of "which official job board does this employer actually use?".
+//
+// A fresh discovery signal names an employer that is very often NOT in the
+// approved-employer CSV. Rather than dropping that internship, the fresh radar
+// resolves the employer independently: it takes the DOMAIN THE SOURCE ITSELF
+// PUBLISHED for the company (never a guessed one), crawls that domain's own
+// careers page, and only accepts an ATS tenant the employer's own page links
+// to. The outcome — positive or negative — is cached here so a five-minute
+// radar cadence never re-crawls the same employer.
+//
+// This table is deliberately SEPARATE from `Company`: `Company` is the curated
+// approved-employer registry that drives the scheduled sweep, and auto-resolved
+// employers must not silently join it.
+model EmployerBoardResolution {
+  id String @id @default(cuid())
+
+  /// Normalized company key (see normalizeCompanyKey) — the lookup identity.
+  normalizedCompany String @unique
+  /// Last raw company name seen from a source, for humans reading diagnostics.
+  companyName       String
+
+  /// Hostname the SOURCE published for this employer. Never inferred.
+  companyDomain String?
+  /// The employer page that produced the ATS evidence.
+  careersUrl    String?
+  atsType       String?
+  atsIdentifier String?
+
+  /// RESOLVED — a usable board config; UNRESOLVED — none found yet.
+  state      String  @default("UNRESOLVED")
+  /// One FreshSignalReason value explaining an UNRESOLVED state.
+  reasonCode String?
+  /// JSON: how the tenant was established (method, boardUrl, postingCount).
+  evidence   String?
+
+  attempts      Int       @default(0)
+  lastAttemptAt DateTime?
+  /// Negative results back off instead of being retried every radar tick.
+  nextAttemptAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([state, nextAttemptAt])
+}
+
+// Per-signal outcome of the fresh radar's official-resolution pipeline.
+//
+// The point of this table is that a fresh internship signal is NEVER silently
+// dropped. Every signal the radar sees gets a row, and every row carries a
+// CONCRETE reason code — not one generic "unresolved" bucket — plus a retry
+// schedule, so an employer whose board was briefly unreachable is tried again
+// instead of being lost.
+model FreshSignalResolution {
+  id String @id @default(cuid())
+
+  /// Discovery surface the signal came from ("jobright", "intern-list", ...).
+  signalSource String
+  /// The source's own stable id for the posting.
+  signalJobId  String
+
+  company           String
+  normalizedCompany String
+  title             String
+  location          String?
+
+  sourcePostedAt   DateTime?
+  sourceCapturedAt DateTime
+
+  /// PENDING | RESOLVED | CLOSED | DUPLICATE | ABANDONED
+  state        String  @default("PENDING")
+  /// SIGNAL_SEEN | OFFICIAL_SEARCH_QUEUED | OFFICIAL_SEARCHING |
+  /// OFFICIAL_RESOLVED | NO_MATCH_YET | TRANSIENT_FAILURE | PERMANENT_FAILURE
+  workflowState String @default("SIGNAL_SEEN")
+  /// A FreshSignalReason value. Null once state is RESOLVED.
+  reasonCode   String?
+  reasonDetail String?
+
+  /// direct_official_url | source_original_post | employer_board — how the
+  /// official destination was reached, once it was.
+  resolutionPath String?
+  resolvedUrl    String?
+  resolvedJobId  String?
+  /// Wall-clock milliseconds the successful resolution took.
+  resolutionMs   Int?
+
+  attempts      Int       @default(0)
+  firstSeenAt   DateTime  @default(now())
+  lastAttemptAt DateTime?
+  nextAttemptAt DateTime?
+
+  @@unique([signalSource, signalJobId])
+  @@index([state, nextAttemptAt])
+  @@index([workflowState, nextAttemptAt])
+  @@index([reasonCode])
+  @@index([resolvedJobId])
+  @@index([sourcePostedAt])
 }
 
 // An employer Intern List surfaced that isn't in the CSV allowlist. Held
@@ -416,6 +531,9 @@ model Job {
   sourcePostedText       String?
   // EXACT | RELATIVE_PARSED | DATE_ONLY | UNKNOWN — see src/lib/sync/sourceDate.ts.
   sourceDateConfidence   String?
+  // EMPLOYER_ATS_EXACT | EMPLOYER_ATS_DATE | EMPLOYER_JSON_LD |
+  // TRUSTED_RADAR_EXACT | TRUSTED_RADAR_RELATIVE | INFERRED | UNKNOWN.
+  sourceDateProvenance   String?
   // When the sync actually read the source. Relative dates are resolved against
   // THIS instant, once, at ingest — never recomputed at page load.
   sourceCapturedAt       DateTime?
@@ -424,6 +542,10 @@ model Job {
   // only for the newest run, so an older sync can never outrank a newer one.
   sourceSyncRunId        String?
   sourceRowIndex         Int?
+  // First time the official-first crawler itself observed this requisition.
+  // Kept separate from legacy/radar firstSeenAt for clean pipeline SLOs.
+  officialFirstSeenAt    DateTime?
+  discoveryPipeline     String?
   lastVerifiedAt         DateTime? // = "verifiedAt": when verificationStatus was last (re)computed
   compensation           String? // raw text, e.g. "$20-$23/hr"
   // Unverified | Pending | VERIFIED_OFFICIAL_AT_LAST_CHECK | NeedsReview |
@@ -512,9 +634,16 @@ model Job {
   classification       String?
   classificationReason String?
 
+  // A posting is closed from board absence only after two consecutive
+  // successful snapshots. Transient failures never increment this counter.
+  consecutiveBoardMisses Int       @default(0)
+  boardMissingSince      DateTime?
+  closedAt               DateTime?
+
   @@index([source, sourceJobId])
   @@index([sourcePostedAt])
   @@index([sourceSyncRunId, sourceRowIndex])
+  @@index([discoveryPipeline, officialFirstSeenAt])
   @@index([verificationStatus])
   @@index([activeFeed])
   @@index([scoringState])
@@ -557,6 +686,42 @@ model AtsSyncRun {
   failureSummary String?
 
   @@index([startedAt])
+}
+
+// One auditable result per official employer-board query. Provider-oriented
+// rows power the coverage report and make adapter return-on-effort measurable.
+model OfficialBoardPoll {
+  id        String   @id @default(cuid())
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  companyName String
+  provider    String
+  startedAt   DateTime
+  finishedAt  DateTime @default(now())
+  status      String // success | not_modified | unsupported | error
+
+  jobsScanned                 Int @default(0)
+  totalAvailableJobs          Int @default(0)
+  engineeringInternshipsFound Int @default(0)
+  newJobs                     Int @default(0)
+  updatedJobs                 Int @default(0)
+  missingJobs                 Int @default(0)
+  closedJobs                  Int @default(0)
+  durationMs                  Int @default(0)
+  errorCode                   String?
+  configState                 String?
+  paginationVerified          Boolean @default(false)
+  fullJdJobs                  Int @default(0)
+  exactTimestampJobs          Int @default(0)
+  dateOnlyJobs                Int @default(0)
+  relativeParsedJobs          Int @default(0)
+  radarFallbackJobs           Int @default(0)
+  unknownTimestampJobs        Int @default(0)
+
+  @@index([provider, startedAt])
+  @@index([companyId, startedAt])
+  @@index([status, startedAt])
 }
 
 // Append-only history of every verification/re-verification attempt on a job.

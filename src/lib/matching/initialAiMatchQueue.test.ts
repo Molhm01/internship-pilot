@@ -410,6 +410,44 @@ describe("durable INITIAL AI Match queue", () => {
     )).toBe(true);
   });
 
+  it("never starts the Ollama-backed scorer in a cloud runtime", async () => {
+    // Scoring runs on the user's own machine. On Vercel, localhost:11434 is
+    // the serverless function itself, so a worker started there does not fail
+    // fast — it spends the whole invocation timing out against a port nobody
+    // is listening on. Hosted ingestion already passes `startWorker: false`;
+    // this is the guarantee rather than the convention.
+    const cloudScorer = vi.fn();
+    __setInitialAiMatchScorerForTests(cloudScorer);
+    queueFindMany.mockResolvedValue([
+      { id: "initial-work", jobId: "job-new", userId: TEST_USER, matchType: "INITIAL", attemptCount: 0 },
+    ]);
+
+    const previous = process.env.INTERNSHIP_PILOT_RUNTIME;
+    process.env.INTERNSHIP_PILOT_RUNTIME = "cloud";
+    try {
+      const { triggerInitialAiMatchWorker } = await import("@/lib/matching/initialAiMatchQueue");
+      triggerInitialAiMatchWorker();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(cloudScorer).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env.INTERNSHIP_PILOT_RUNTIME;
+      else process.env.INTERNSHIP_PILOT_RUNTIME = previous;
+    }
+  });
+
+  it("keeps every hosted ingestion lane on the queue-only path", () => {
+    for (const lane of ["fresh", "standard", "maintenance"]) {
+      const source = readFileSync(
+        resolve(process.cwd(), `src/app/api/cron/job-ingestion/${lane}/route.ts`),
+        "utf8",
+      );
+      expect(source, `${lane} lane must not start the scorer`).not.toContain("triggerInitialAiMatchWorker");
+    }
+    // Discovery's own write path schedules without starting a worker.
+    const ingest = readFileSync(resolve(process.cwd(), "src/lib/sync/ingest.ts"), "utf8");
+    expect(ingest).toContain("startWorker: false");
+  });
+
   it("has no page-load, ApplicationSession, or legacy application-queue trigger", () => {
     const detailPage = readFileSync(resolve(process.cwd(), "src/app/(app)/jobs/[id]/page.tsx"), "utf8");
     const jobsRoute = readFileSync(resolve(process.cwd(), "src/app/api/jobs/route.ts"), "utf8");

@@ -28,6 +28,8 @@ export type AtsType =
   | "icims"
   | "taleo"
   | "successfactors"
+  | "eightfold"
+  | "phenom"
   | "usajobs"
   | "custom"
   | "unknown";
@@ -39,5 +41,24 @@ export async function fetchJsonSafe(url: string, init?: RequestInit, timeoutMs =
     return await res.json();
   } catch {
     return null;
+  }
+}
+
+/** Official polling must distinguish a healthy empty board from a failed
+ * request. Discovery probes may use fetchJsonSafe; configured board adapters
+ * use this throwing variant so failures drive backoff and never closure. */
+export async function fetchJsonRequired(url: string, init?: RequestInit, timeoutMs = 10_000): Promise<unknown> {
+  try {
+    const response = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    if (!response.ok) {
+      throw Object.assign(new Error(`Official ATS request returned HTTP ${response.status}.`), {
+        code: `ATS_HTTP_${response.status}`,
+      });
+    }
+    return await response.json();
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error) throw error;
+    const code = error instanceof Error && /timeout|abort/i.test(error.message) ? "ATS_TIMEOUT" : "ATS_NETWORK";
+    throw Object.assign(new Error("Official ATS request failed."), { code, cause: error });
   }
 }

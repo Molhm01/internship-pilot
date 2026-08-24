@@ -1,4 +1,4 @@
-import { fetchJsonSafe, type AtsJob } from "@/lib/ats/types";
+import { fetchJsonRequired, type AtsJob } from "@/lib/ats/types";
 
 type AshbyJob = {
   id: string;
@@ -15,9 +15,9 @@ type AshbyJob = {
 // Ashby's public Job Board API — official, documented, unauthenticated:
 // https://developers.ashbyhq.com/docs/public-job-posting-api
 export async function listAshbyJobs(boardName: string, companyName: string): Promise<AtsJob[]> {
-  const data = (await fetchJsonSafe(`https://api.ashbyhq.com/posting-api/job-board/${boardName}`)) as {
+  const data = (await fetchJsonRequired(`https://api.ashbyhq.com/posting-api/job-board/${boardName}`)) as {
     jobs?: AshbyJob[];
-  } | null;
+  };
   if (!data?.jobs?.length) return [];
 
   return data.jobs.map((j) => ({

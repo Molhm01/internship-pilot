@@ -15,7 +15,11 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
-vi.mock("@/lib/matching/initialAiMatchQueue", () => ({
+// Partial mock: only the scheduling call is replaced. `INITIAL_MATCH_TYPE` is a
+// real constant the module under test reads, and a mock that dropped it turned
+// every case in this suite into an unrelated BULK_SCORE_QUERY_FAILED.
+vi.mock("@/lib/matching/initialAiMatchQueue", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/matching/initialAiMatchQueue")>()),
   scheduleInitialAiMatch: (...args: unknown[]) => scheduleInitialAiMatch(...args),
 }));
 
@@ -121,14 +125,17 @@ describe("bulk INITIAL AI Match scheduling", () => {
   });
 
   it("reports lightweight queue status counts", async () => {
-    jobCount.mockResolvedValueOnce(8);
+    // `completed` is counted from the user's own scored jobs, not from the
+    // queue, so it is a Job count sitting between the two queue counts.
+    jobCount
+      .mockResolvedValueOnce(8) // totalUnscored
+      .mockResolvedValueOnce(12); // completed
     queueCount
-      .mockResolvedValueOnce(0)
-      .mockResolvedValueOnce(4)
-      .mockResolvedValueOnce(1)
-      .mockResolvedValueOnce(12)
-      .mockResolvedValueOnce(2)
-      .mockResolvedValueOnce(3);
+      .mockResolvedValueOnce(0) // readiness probe
+      .mockResolvedValueOnce(4) // queued
+      .mockResolvedValueOnce(1) // running
+      .mockResolvedValueOnce(2) // retryable failed
+      .mockResolvedValueOnce(3); // permanent failed
 
     await expect(getBulkInitialMatchStatus(TEST_USER)).resolves.toEqual({
       totalUnscored: 8,

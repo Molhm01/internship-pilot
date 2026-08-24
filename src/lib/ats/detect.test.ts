@@ -36,6 +36,16 @@ describe("detectAtsFromText", () => {
     });
   });
 
+  it("extracts the tenant from Greenhouse embed URLs instead of persisting embed", () => {
+    expect(detectAtsFromText(
+      '<script src="https://boards.greenhouse.io/embed/job_board/js?for=astspacemobile"></script>',
+    )).toEqual({ atsType: "greenhouse", atsIdentifier: "astspacemobile" });
+    expect(detectAtsFromText("https://boards.greenhouse.io/embed/job_board/js")).toEqual({
+      atsType: "unknown",
+      atsIdentifier: null,
+    });
+  });
+
   it("preserves the Workday shard and site in the identifier", () => {
     expect(
       detectAtsFromText("https://micron.wd1.myworkdayjobs.com/External/job/Boise/Intern_R123"),

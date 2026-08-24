@@ -134,6 +134,13 @@ describe("the production adapter", () => {
 
 describe("choosing a backend", () => {
   it("defaults to the filesystem locally and object storage in the cloud", () => {
+    // This asserts the *default*, so the explicit setting has to be absent.
+    // The publish-readiness workflow exports DOCUMENT_STORAGE_DRIVER=local for
+    // every job, which silently turned this into a second copy of the override
+    // test below — and then failed, because the override is what it proved.
+    delete process.env.DOCUMENT_STORAGE_DRIVER;
+    resetStorageForTests();
+
     process.env.INTERNSHIP_PILOT_RUNTIME = "local";
     expect(configuredDriver()).toBe("local");
 

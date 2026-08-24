@@ -2,10 +2,15 @@ import path from "node:path";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
 
-export const CSV_REL_PATH = "data/approved_engineering_employers.csv";
+// Production/local defaults to the user's curated data file. Diagnostics may
+// point this at a disposable fixture so a parser/import test can never overwrite
+// or depend on the real 497-employer source file.
+export const CSV_REL_PATH = process.env.APPROVED_EMPLOYERS_CSV_PATH?.trim() || "data/approved_engineering_employers.csv";
 
 function absolute(relativePath: string): string {
-  return path.join(/* turbopackIgnore: true */ process.cwd(), relativePath);
+  return path.isAbsolute(relativePath)
+    ? relativePath
+    : path.join(/* turbopackIgnore: true */ process.cwd(), relativePath);
 }
 
 // Minimal RFC4180-ish CSV parser: handles quoted fields, escaped quotes

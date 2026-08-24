@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import { MASTER_EDUCATION, MASTER_EXPERIENCE } from "@/lib/documents/masterResume";
+import { applicationNarrativeForUser, fillContextProfile } from "./fillProfile";
 import { classifyField, lookupAnswer } from "./answerBank";
 import { normalizeQuestionText } from "./approvedAnswers";
 import { applicationProfileForUser } from "@/lib/profile/applicationProfile";
@@ -127,44 +127,6 @@ function parseRunAnswers(value: string | null): Record<string, string> {
   }
 }
 
-function profileContext(profile: NonNullable<Awaited<ReturnType<typeof applicationProfileForUser>>>) {
-  let locationPreferences: string[] | null = null;
-  try {
-    const parsed = JSON.parse(profile.locationPreferences ?? "null");
-    locationPreferences = Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : null;
-  } catch {
-    locationPreferences = null;
-  }
-  return {
-    fullName: profile.fullName,
-    preferredName: profile.preferredName,
-    email: profile.email,
-    phone: profile.phone,
-    linkedin: profile.linkedin,
-    github: profile.github,
-    website: profile.website,
-    school: profile.school,
-    // Not carried by the user-owned profile. Null is the honest answer: the
-    // agent asks rather than filling a school the applicant never entered.
-    previousSchool: null,
-    addressStreet: profile.addressStreet,
-    addressCity: profile.addressCity,
-    addressState: profile.addressState,
-    addressZip: profile.addressZip,
-    countryOfResidence: profile.countryOfResidence,
-    willingToRelocate: profile.willingToRelocate,
-    locationPreferences,
-    internshipTermAvailability: profile.internshipTermAvailability,
-    salaryAnswerPreference: profile.salaryAnswerPreference,
-    workAuthorization: profile.workAuthorization,
-    requiresSponsorship: profile.requiresSponsorship,
-    clearanceEligible: profile.clearanceEligible,
-    eeoGender: profile.eeoGender,
-    eeoRaceEthnicity: profile.eeoRaceEthnicity,
-    eeoVeteranStatus: profile.eeoVeteranStatus,
-    eeoDisabilityStatus: profile.eeoDisabilityStatus,
-  };
-}
 
 function fieldDisplayLabel(field: ExtensionField): string {
   return field.groupLabel || field.label || field.ariaLabel || field.placeholder || field.nearbyText || field.name || "(Label unavailable)";
@@ -214,6 +176,9 @@ export async function buildExtensionFillPlan(input: FillPlanRequest, userId: str
     throw new Error("The selected cover letter is not job-specific, QA-passed, and identity-verified.");
   }
 
+  // Degree and most recent role come from this user's own history, never from
+  // a module constant holding somebody else's résumé.
+  const narrative = await applicationNarrativeForUser(userId);
   const approvedRows = await prisma.approvedAnswer.findMany({ where: { userId } });
   const reusableAnswers = new Map(approvedRows.map((row) => [row.questionText, row.answer]));
   const runAnswers = parseRunAnswers(run.answers);
@@ -224,14 +189,11 @@ export async function buildExtensionFillPlan(input: FillPlanRequest, userId: str
     company: run.job.company,
     applyUrl: run.job.officialApplyUrl ?? run.job.url ?? "",
     mode: "fill_to_submit",
-    profile: profileContext(profile),
+    profile: fillContextProfile(profile),
     resumeFilePath: resume.storagePath,
     coverLetterFilePath: coverLetter?.storagePath ?? null,
     coverLetterText: null,
-    educationDegree: MASTER_EDUCATION[0]?.degree ?? null,
-    recentExperience: MASTER_EXPERIENCE[0]
-      ? `${MASTER_EXPERIENCE[0].title} — ${MASTER_EXPERIENCE[0].organization}`
-      : null,
+    ...narrative,
     approvedRunAnswers: runAnswers,
   };
 

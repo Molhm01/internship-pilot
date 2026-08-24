@@ -7,13 +7,27 @@
 import { prisma } from "@/lib/db";
 import { listJobsForCompany } from "@/lib/ats";
 import type { AtsJob } from "@/lib/ats/types";
-import type { ResolvableAts } from "@/lib/ats/resolve";
 import { classifyInternship, type InternshipClassification } from "@/lib/sync/internshipClassifier";
 import { upsertClassifiedAtsJob, canonicalizeJobUrl } from "@/lib/sync/ingest";
+import { isTargetEngineeringRole } from "@/lib/sync/classify";
+import { isUsableProviderConfig } from "@/lib/sync/officialDiscoveryMetrics";
+
+export const SUPPORTED_OFFICIAL_PROVIDERS = [
+  "greenhouse",
+  "lever",
+  "ashby",
+  "workday",
+  "smartrecruiters",
+  "successfactors",
+  "eightfold",
+  "phenom",
+  "icims",
+] as const;
+export type SupportedOfficialProvider = (typeof SUPPORTED_OFFICIAL_PROVIDERS)[number];
 
 export type AtsEmployer = {
   name: string;
-  atsType: ResolvableAts;
+  atsType: SupportedOfficialProvider;
   atsIdentifier: string;
   careersUrl?: string | null;
 };
@@ -187,6 +201,12 @@ export async function runAtsIngestion(
           employmentType: job.employmentType,
         });
 
+        if (classification === "QUALIFYING_INTERNSHIP" && !isTargetEngineeringRole(job.title, job.description)) {
+          metrics.notInternship += 1;
+          recordFailure(metrics, "EXCLUDED_NOT_TARGET_ENGINEERING");
+          continue;
+        }
+
         countClassification(metrics, classification);
 
         if (classification !== "QUALIFYING_INTERNSHIP") {
@@ -260,28 +280,33 @@ function countClassification(metrics: AtsIngestMetrics, classification: Internsh
 }
 
 /** Load allowlisted employers that already have a resolved supported board. */
-export async function loadResolvedEmployers(vendors: ResolvableAts[]): Promise<AtsEmployer[]> {
+export async function loadResolvedEmployers(vendors: SupportedOfficialProvider[]): Promise<AtsEmployer[]> {
   const rows = await prisma.company.findMany({
     where: {
       allowlisted: true,
       monitoringStatus: "active",
       atsType: { in: vendors },
-      atsIdentifier: { not: null },
+      OR: [
+        { atsIdentifier: { not: null } },
+        { atsType: "successfactors", careersUrl: { not: null } },
+      ],
     },
     select: { name: true, atsType: true, atsIdentifier: true, careersUrl: true },
     orderBy: { name: "asc" },
   });
-  return rows.map((r) => ({
-    name: r.name,
-    atsType: r.atsType as ResolvableAts,
-    atsIdentifier: r.atsIdentifier as string,
-    careersUrl: r.careersUrl,
-  }));
+  return rows
+    .filter((row) => isUsableProviderConfig(row))
+    .map((r) => ({
+      name: r.name,
+      atsType: r.atsType as SupportedOfficialProvider,
+      atsIdentifier: r.atsIdentifier ?? r.careersUrl ?? r.name,
+      careersUrl: r.careersUrl,
+    }));
 }
 
 export async function recordSyncRun(
   metrics: AtsIngestMetrics,
-  vendors: ResolvableAts[],
+  vendors: SupportedOfficialProvider[],
   status: "success" | "error",
   errorMessage?: string,
 ): Promise<string> {

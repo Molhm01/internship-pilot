@@ -12,7 +12,7 @@ import { logAudit } from "./audit";
 import { normalizeQuestionText } from "./approvedAnswers";
 import { classifyErrorCode, type AtsType, type FillContext } from "./types";
 import { getApplicationSettings } from "./settings";
-import { MASTER_EDUCATION, MASTER_EXPERIENCE } from "@/lib/documents/masterResume";
+import { applicationNarrativeForUser, fillContextProfile } from "./fillProfile";
 import { assertGeneratedDocumentUploadable } from "@/lib/documents/identityGuard";
 import { isUsableResume } from "@/lib/documents/strategy";
 import { captureApplicationStep } from "./browserAgent";
@@ -108,6 +108,9 @@ export async function processApplicationRun(
     if (!run.userId) throw new Error("This application run has no owner and cannot be filled.");
     const profile = await applicationProfileForUser(run.userId);
     if (!profile) throw new Error("No Application Profile is saved.");
+    // Degree and most recent role come from this user's own history, never from
+    // a module constant holding somebody else's résumé.
+    const narrative = await applicationNarrativeForUser(run.userId);
     await assertGeneratedDocumentUploadable(resumeDoc.id);
     if (coverLetterDoc) await assertGeneratedDocumentUploadable(coverLetterDoc.id);
 
@@ -131,40 +134,11 @@ export async function processApplicationRun(
       company: job.company,
       applyUrl: officialApplyUrl,
       mode,
-      profile: {
-        fullName: profile.fullName,
-        preferredName: profile.preferredName,
-        email: profile.email,
-        phone: profile.phone,
-        linkedin: profile.linkedin,
-        github: profile.github,
-        website: profile.website,
-        school: profile.school,
-        previousSchool: null,
-        addressStreet: profile.addressStreet,
-        addressCity: profile.addressCity,
-        addressState: profile.addressState,
-        addressZip: profile.addressZip,
-        countryOfResidence: profile.countryOfResidence,
-        willingToRelocate: profile.willingToRelocate,
-        locationPreferences: parseStringArray(profile.locationPreferences),
-        internshipTermAvailability: profile.internshipTermAvailability,
-        salaryAnswerPreference: profile.salaryAnswerPreference,
-        workAuthorization: profile.workAuthorization,
-        requiresSponsorship: profile.requiresSponsorship,
-        clearanceEligible: profile.clearanceEligible,
-        eeoGender: profile.eeoGender,
-        eeoRaceEthnicity: profile.eeoRaceEthnicity,
-        eeoVeteranStatus: profile.eeoVeteranStatus,
-        eeoDisabilityStatus: profile.eeoDisabilityStatus,
-      },
+      profile: fillContextProfile(profile),
       resumeFilePath: resumeDoc.storagePath,
       coverLetterFilePath: coverLetterDoc?.storagePath ?? null,
       coverLetterText,
-      educationDegree: MASTER_EDUCATION[0]?.degree ?? null,
-      recentExperience: MASTER_EXPERIENCE[0]
-        ? `${MASTER_EXPERIENCE[0].title} — ${MASTER_EXPERIENCE[0].organization}`
-        : null,
+      ...narrative,
       approvedRunAnswers: parseRunAnswers(run.answers),
     };
 
@@ -416,16 +390,6 @@ function parseRunAnswers(json: string | null): Record<string, string> {
     );
   } catch {
     return {};
-  }
-}
-
-function parseStringArray(json: string | null): string[] | null {
-  if (!json) return null;
-  try {
-    const value = JSON.parse(json);
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : null;
-  } catch {
-    return null;
   }
 }
 

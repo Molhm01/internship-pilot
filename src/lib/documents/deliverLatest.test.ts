@@ -136,4 +136,21 @@ describe("re-sending the latest stored documents", () => {
     await expect(deliverLatestDocumentsForJob("job-1", "test-user", vi.fn()))
       .rejects.toBeInstanceOf(NoStoredDocumentsError);
   });
+
+  it("only ever selects the asking user's own documents", async () => {
+    // A Job row is shared by everyone who can see the posting, so "the newest
+    // QA-passed resume for this job" is not a question with one answer. Without
+    // the owner in the query, whichever applicant generated most recently won —
+    // and the other one was handed that person's resume and cover letter.
+    findFirst.mockResolvedValue(storedDocument(resumePath));
+
+    const deliver = vi.fn().mockResolvedValue({ delivered: true, path: "ok" });
+    await deliverLatestDocumentsForJob("job-1", "user-a", deliver);
+
+    expect(findFirst).toHaveBeenCalledTimes(2);
+    for (const [args] of findFirst.mock.calls as Array<[{ where: { userId?: string; jobId?: string } }]>) {
+      expect(args.where.userId).toBe("user-a");
+      expect(args.where.jobId).toBe("job-1");
+    }
+  });
 });

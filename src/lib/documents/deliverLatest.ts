@@ -41,6 +41,7 @@ export class NoStoredDocumentsError extends Error {
 async function deliverStored(
   storedType: "resume" | "coverLetter",
   jobId: string,
+  userId: string,
   job: { company: string; title: string },
   deliver: typeof deliverDocumentToAgent,
 ): Promise<AgentDeliveryOutcome | null> {
@@ -48,8 +49,13 @@ async function deliverStored(
   // Only a document that passed QA is eligible. An archived or failed version is
   // never attached to an application, so sending it to the agent would put a
   // file in front of an employer that this system already rejected.
+  // Scoped to the owner. `deliverLatestDocumentsForJob` already took a userId
+  // and this query dropped it, so on a job two people had both applied to the
+  // newest QA-passed version won regardless of whose it was — and one
+  // applicant pressing Deliver received the other applicant's résumé and cover
+  // letter.
   const latest = await prisma.generatedDocument.findFirst({
-    where: { jobId, type: storedType, qaStatus: "pass" },
+    where: { userId, jobId, type: storedType, qaStatus: "pass" },
     orderBy: { version: "desc" },
   });
   if (!latest) return null;
@@ -98,8 +104,8 @@ export async function deliverLatestDocumentsForJob(
   // Sequential rather than parallel: the agent writes both files into one
   // directory and updates one "latest" pointer per type, and two concurrent
   // uploads buy nothing on loopback.
-  const resume = await deliverStored("resume", jobId, job, deliver);
-  const coverLetter = await deliverStored("coverLetter", jobId, job, deliver);
+  const resume = await deliverStored("resume", jobId, userId, job, deliver);
+  const coverLetter = await deliverStored("coverLetter", jobId, userId, job, deliver);
 
   if (!resume && !coverLetter) {
     throw new NoStoredDocumentsError(

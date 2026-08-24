@@ -1,4 +1,4 @@
-import { fetchJsonSafe, type AtsJob } from "@/lib/ats/types";
+import { fetchJsonRequired, type AtsJob } from "@/lib/ats/types";
 
 type LeverPosting = {
   id: string;
@@ -13,9 +13,7 @@ type LeverPosting = {
 // Lever's public Postings API — official, documented, unauthenticated:
 // https://github.com/lever/postings-api
 export async function listLeverJobs(company: string, companyName: string): Promise<AtsJob[]> {
-  const data = (await fetchJsonSafe(`https://api.lever.co/v0/postings/${company}?mode=json`)) as
-    | LeverPosting[]
-    | null;
+  const data = (await fetchJsonRequired(`https://api.lever.co/v0/postings/${company}?mode=json`)) as LeverPosting[];
   if (!data?.length) return [];
 
   return data.map((j) => ({

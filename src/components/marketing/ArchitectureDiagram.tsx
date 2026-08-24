@@ -26,7 +26,7 @@ const NODES: Node[] = [
   {
     id: "profile",
     label: "Profile + job context",
-    sub: "SQLite",
+    sub: "PostgreSQL",
     icon: HardDrive,
     local: true,
     detail:

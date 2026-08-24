@@ -1,4 +1,4 @@
-import { fetchJsonSafe, type AtsJob } from "@/lib/ats/types";
+import { fetchJsonRequired, fetchJsonSafe, type AtsJob } from "@/lib/ats/types";
 
 type SmartRecruitersPosting = {
   id: string;
@@ -23,9 +23,9 @@ function flattenJobAdText(jobAd?: {
 // SmartRecruiters' public Postings API — official, documented, unauthenticated:
 // https://developers.smartrecruiters.com/docs/job-api
 export async function listSmartRecruitersJobs(companyId: string, companyName: string): Promise<AtsJob[]> {
-  const data = (await fetchJsonSafe(
+  const data = (await fetchJsonRequired(
     `https://api.smartrecruiters.com/v1/companies/${companyId}/postings?limit=100`,
-  )) as { content?: SmartRecruitersPosting[] } | null;
+  )) as { content?: SmartRecruitersPosting[] };
   if (!data?.content?.length) return [];
 
   const jobs: AtsJob[] = [];

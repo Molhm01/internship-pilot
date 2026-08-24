@@ -11,18 +11,22 @@ import {
   distanceFromCliftonMiles,
   parseCompensation,
 } from "@/lib/sync/classify";
-import { computeActiveFeed } from "@/lib/jobs/sourcePolicy";
+import { computeActiveFeed, isDirectOfficialSource } from "@/lib/jobs/sourcePolicy";
 import {
   destinationPersistenceData,
   isAggregatorUrl,
   resolveOfficialJobDestination,
+  stripTrackingParameters,
 } from "@/lib/applications/officialDestination";
 import { scheduleInitialAiMatchForAllUsers } from "@/lib/matching/initialAiMatchQueue";
 import type { InternshipClassification } from "@/lib/sync/internshipClassifier";
 import {
+  employerAtsProvenance,
   parseFirstSourceDate,
-  shouldReplaceSourcePostedAt,
+  shouldReplaceCanonicalSourceDate,
+  trustedRadarProvenance,
   type ParsedSourceDate,
+  type SourceDateProvenance,
 } from "@/lib/sync/sourceDate";
 
 // Normalize a title for fallback dedup.
@@ -105,6 +109,7 @@ type NormalizedJobInput = {
    * `postedAt`/`postedAtText` against `sourceCapturedAt`.
    */
   sourceDate?: ParsedSourceDate;
+  sourceDateProvenance?: SourceDateProvenance;
   /** When the source was READ. Relative dates resolve against this instant. */
   sourceCapturedAt?: Date;
   /** Identity of the sync run that produced this row, and its position in it. */
@@ -216,6 +221,7 @@ async function upsertNormalizedJob(
   input: NormalizedJobInput,
   now: Date,
   profile: VerificationProfile = AGGREGATOR_PROFILE,
+  options: { scheduleInitialMatch?: boolean } = {},
 ): Promise<"new" | "updated" | "unchanged"> {
   const existing = await findExistingJob(input);
   const company = await prisma.company.findFirst({
@@ -253,6 +259,11 @@ async function upsertNormalizedJob(
 
   const capturedAt = input.sourceCapturedAt ?? now;
   const sourceDate = input.sourceDate ?? parseFirstSourceDate([input.postedAt], capturedAt);
+  const sourceDateProvenance =
+    input.sourceDateProvenance
+    ?? (profile.verificationStatus === "VERIFIED_OFFICIAL_AT_LAST_CHECK"
+      ? employerAtsProvenance(sourceDate)
+      : trustedRadarProvenance(sourceDate));
   // Sync context is refreshed on EVERY sighting: the row-order fallback must
   // describe where the job sits in the newest sync, not an old one.
   const sourceSyncContext = {
@@ -262,20 +273,51 @@ async function upsertNormalizedJob(
   };
 
   if (existing) {
+    const descriptionChanged = Boolean(input.description) && existing.description !== input.description;
+    const canonicalPromotion =
+      profile.verificationStatus === "VERIFIED_OFFICIAL_AT_LAST_CHECK"
+      && (
+        existing.source !== input.source
+        || existing.verificationStatus !== profile.verificationStatus
+        || existing.atsType !== input.atsType
+        || existing.atsTenant !== input.atsTenant
+        || existing.closedAt !== null
+      );
     const changed =
-      existing.description !== input.description ||
+      canonicalPromotion ||
+      descriptionChanged ||
+      existing.title !== input.title ||
+      (input.location !== null && existing.location !== input.location) ||
+      (input.workplaceType !== null && existing.workplaceType !== input.workplaceType) ||
+      (input.requisitionId !== null && existing.requisitionId !== input.requisitionId) ||
       existing.sourceUrl !== input.sourceUrl ||
       existing.officialApplicationUrl !== destination.officialApplicationUrl ||
       existing.resolutionStatus !== destination.resolutionStatus;
     // Rediscovery must never make an old posting look new. The posting date is
     // written once and only replaced when THIS sighting carries a strictly more
     // reliable date (e.g. an exact timestamp replacing a parsed "3 days ago").
-    const replacePostedAt = shouldReplaceSourcePostedAt(
+    const replacePostedAt = shouldReplaceCanonicalSourceDate(
       {
         sourcePostedAt: existing.sourcePostedAt ?? null,
         sourceDateConfidence: existing.sourceDateConfidence ?? null,
+        sourceDateProvenance:
+          existing.sourceDateProvenance
+          ?? (existing.source
+            ? (isDirectOfficialSource(existing.source)
+              ? employerAtsProvenance({
+                  sourcePostedAt: existing.sourcePostedAt,
+                  sourcePostedText: existing.sourcePostedText,
+                  sourceDateConfidence: (existing.sourceDateConfidence ?? "UNKNOWN") as ParsedSourceDate["sourceDateConfidence"],
+                })
+              : trustedRadarProvenance({
+                  sourcePostedAt: existing.sourcePostedAt,
+                  sourcePostedText: existing.sourcePostedText,
+                  sourceDateConfidence: (existing.sourceDateConfidence ?? "UNKNOWN") as ParsedSourceDate["sourceDateConfidence"],
+                }))
+            : sourceDateProvenance),
       },
       sourceDate,
+      sourceDateProvenance,
     );
     await prisma.job.update({
       where: { id: existing.id },
@@ -287,13 +329,42 @@ async function upsertNormalizedJob(
               sourcePostedAt: sourceDate.sourcePostedAt,
               sourcePostedText: sourceDate.sourcePostedText,
               sourceDateConfidence: sourceDate.sourceDateConfidence,
+              sourceDateProvenance,
             }
           : {}),
         ...destinationData,
         ...(changed
           ? {
               description: input.description || existing.description,
+              title: input.title,
+              location: input.location ?? existing.location,
+              workplaceType: input.workplaceType ?? existing.workplaceType,
+              requisitionId: input.requisitionId ?? existing.requisitionId,
               sourceUrl: input.sourceUrl ?? existing.sourceUrl,
+              ...(descriptionChanged && existing.description
+                ? { scoringState: "STALE", scoringError: null }
+                : {}),
+            }
+          : {}),
+        ...(canonicalPromotion
+          ? {
+              source: input.source,
+              sourceJobId: input.sourceJobId,
+              requisitionId: input.requisitionId ?? existing.requisitionId,
+              verificationStatus: profile.verificationStatus,
+              reasonCode: profile.reasonCode,
+              verificationReason: profile.verificationReason,
+              verificationMethod: profile.verificationMethod,
+              lastVerifiedAt: now,
+              atsType: input.atsType ?? existing.atsType,
+              atsTenant: input.atsTenant ?? existing.atsTenant,
+              activeFeed: true,
+              consecutiveBoardMisses: 0,
+              boardMissingSince: null,
+              closedAt: null,
+              ...(!isDirectOfficialSource(existing.source)
+                ? { officialFirstSeenAt: now, discoveryPipeline: "official-first-v2" }
+                : {}),
             }
           : {}),
         // Refresh classification on rediscovery so a classifier improvement
@@ -321,6 +392,7 @@ async function upsertNormalizedJob(
       sourcePostedAt: sourceDate.sourcePostedAt,
       sourcePostedText: sourceDate.sourcePostedText,
       sourceDateConfidence: sourceDate.sourceDateConfidence,
+      sourceDateProvenance,
       ...sourceSyncContext,
       internshipTerm: input.internshipTerm,
       description: input.description,
@@ -332,6 +404,9 @@ async function upsertNormalizedJob(
       ...destinationData,
       workplaceType: input.workplaceType,
       firstSeenAt: now,
+      ...(profile.verificationStatus === "VERIFIED_OFFICIAL_AT_LAST_CHECK"
+        ? { officialFirstSeenAt: now, discoveryPipeline: "official-first-v2" }
+        : {}),
       lastSeenAt: now,
       compensation: input.compensation && input.compensation.toUpperCase() !== "N/A" ? input.compensation : null,
       // Provenance comes from the caller's profile. Aggregator listings stay
@@ -365,7 +440,12 @@ async function upsertNormalizedJob(
     },
   });
   try {
-    await scheduleInitialAiMatchForAllUsers(created.id);
+    // Discovery may enqueue optional downstream scoring, but it must never
+    // start model work in the crawler process. A separately scheduled worker
+    // owns that queue; fresh official jobs become visible immediately.
+    if (options.scheduleInitialMatch !== false) {
+      await scheduleInitialAiMatchForAllUsers(created.id, { startWorker: false });
+    }
   } catch (error) {
     // Scheduling is a short database operation, never a model request. A
     // temporary queue-write failure must not roll back successful ingestion.
@@ -453,6 +533,15 @@ export async function ingestJobs(
               sourceDateConfidence: raw.sourceDateConfidence,
             }
           : parseFirstSourceDate([raw.sourcePostedAt ?? raw.postedAt], capturedAt),
+        sourceDateProvenance: trustedRadarProvenance(
+          raw.sourceDateConfidence
+            ? {
+                sourcePostedAt: raw.sourcePostedAt,
+                sourcePostedText: raw.sourcePostedText,
+                sourceDateConfidence: raw.sourceDateConfidence,
+              }
+            : parseFirstSourceDate([raw.sourcePostedAt ?? raw.postedAt], capturedAt),
+        ),
         sourceCapturedAt: capturedAt,
         sourceSyncRunId: context.syncRunId ?? null,
         sourceRowIndex: raw.sourceRowIndex ?? null,
@@ -460,7 +549,7 @@ export async function ingestJobs(
         description: raw.qualifications || "",
         sourceUrl: raw.applyUrl,
         sourceListingUrl: raw.sourceListingUrl ?? raw.applyUrl,
-        officialApplicationUrl: raw.officialApplicationUrl,
+        officialApplicationUrl: raw.officialApplicationUrl ? stripTrackingParameters(raw.officialApplicationUrl) : raw.officialApplicationUrl,
         originalJobPostUrl: raw.originalJobPostUrl,
         workplaceType: raw.workModel,
         compensation: raw.salary,
@@ -488,6 +577,9 @@ export async function ingestAtsJobs(
   let updatedCount = 0;
   const now = new Date();
   const capturedAt = context.capturedAt ?? now;
+  const genericDateProvenance: SourceDateProvenance = /(?:^|:)spa$/i.test(source)
+    ? "EMPLOYER_JSON_LD"
+    : "INFERRED";
 
   for (const [sourceRowIndex, job] of jobs.entries()) {
     const result = await upsertNormalizedJob(
@@ -500,6 +592,7 @@ export async function ingestAtsJobs(
         location: job.location,
         postedAt: job.postedAt,
         sourceDate: parseFirstSourceDate([job.postedAt, job.postedAtText], capturedAt),
+        sourceDateProvenance: genericDateProvenance,
         sourceCapturedAt: capturedAt,
         sourceSyncRunId: context.syncRunId ?? null,
         sourceRowIndex,
@@ -507,7 +600,7 @@ export async function ingestAtsJobs(
         description: job.description,
         sourceUrl: job.applyUrl,
         sourceListingUrl: null,
-        officialApplicationUrl: job.applyUrl,
+        officialApplicationUrl: stripTrackingParameters(job.applyUrl),
         workplaceType: job.workplaceType,
         compensation: null,
         sponsorshipRaw: null,
@@ -539,8 +632,11 @@ export async function upsertClassifiedAtsJob(args: {
   syncRunId?: string | null;
   rowIndex?: number | null;
   capturedAt?: Date;
+  sourceDateProvenance?: SourceDateProvenance;
+  scheduleInitialMatch?: boolean;
 }): Promise<"new" | "updated" | "unchanged"> {
   const capturedAt = args.capturedAt ?? args.now ?? new Date();
+  const sourceDate = parseFirstSourceDate([args.job.postedAt, args.job.postedAtText], capturedAt);
   return upsertNormalizedJob(
     {
       source: args.source,
@@ -550,7 +646,8 @@ export async function upsertClassifiedAtsJob(args: {
       company: args.job.company,
       location: args.job.location,
       postedAt: args.job.postedAt,
-      sourceDate: parseFirstSourceDate([args.job.postedAt, args.job.postedAtText], capturedAt),
+      sourceDate,
+      sourceDateProvenance: args.sourceDateProvenance ?? employerAtsProvenance(sourceDate),
       sourceCapturedAt: capturedAt,
       sourceSyncRunId: args.syncRunId ?? null,
       sourceRowIndex: args.rowIndex ?? null,
@@ -560,7 +657,7 @@ export async function upsertClassifiedAtsJob(args: {
       // employer's own application page — not an aggregator listing.
       sourceUrl: args.job.applyUrl,
       sourceListingUrl: null,
-      officialApplicationUrl: args.job.applyUrl,
+      officialApplicationUrl: stripTrackingParameters(args.job.applyUrl),
       workplaceType: args.job.workplaceType,
       compensation: null,
       sponsorshipRaw: null,
@@ -571,5 +668,6 @@ export async function upsertClassifiedAtsJob(args: {
     },
     args.now ?? new Date(),
     directAtsProfile(args.atsType),
+    { scheduleInitialMatch: args.scheduleInitialMatch },
   );
 }

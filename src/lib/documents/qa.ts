@@ -93,6 +93,22 @@ export function evaluateDocumentQa(
   return { status: issues.length === 0 ? "pass" : "fail", issues };
 }
 
+/**
+ * How many pages the document ran to.
+ *
+ * Emitted here and recognised by `isPageCountIssue`, because it is the one
+ * strict-QA finding that is about layout rather than content: it says the
+ * document did not fit, not that it says the wrong things. Document generation
+ * tells those apart to decide whether recompiling could help.
+ */
+export function pageCountIssue(pageCount: number): string {
+  return `Document must be one page; found ${pageCount}.`;
+}
+
+export function isPageCountIssue(issue: string): boolean {
+  return /^Document must be one page; found \d+\.$/.test(issue);
+}
+
 export function evaluateStrictDocumentQa(
   extractedText: string,
   expectedHeadingsInOrder: string[],
@@ -125,7 +141,7 @@ export function evaluateStrictDocumentQa(
   for (const title of options.requiredProjectTitles ?? []) {
     if (!normalized.includes(title.replace(/\s+/g, " ").trim())) issues.push(`Selected project title "${title}" is missing.`);
   }
-  if (options.pageCount !== undefined && options.pageCount !== 1) issues.push(`Document must be one page; found ${options.pageCount}.`);
+  if (options.pageCount !== undefined && options.pageCount !== 1) issues.push(pageCountIssue(options.pageCount));
   if (options.kind === "resume") {
     const words = options.wordCount ?? normalized.split(/\s+/).filter(Boolean).length;
     if (words < 150) issues.push(`Resume has too little content (${words} words), indicating excessive unexplained whitespace.`);

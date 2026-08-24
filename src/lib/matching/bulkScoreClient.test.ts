@@ -57,11 +57,12 @@ describe("bulk score client", () => {
       failedToQueue: 0,
     }), { status: 200 }));
     await expect(requestScoreAllUnscored(fetcher)).resolves.toMatchObject({
+      eligible: 18,
       queued: 18,
+      skippedAlreadyScored: 384,
+      skippedAlreadyQueued: 0,
       failedToQueue: 0,
     });
-    const source = readFileSync(resolve(process.cwd(), "src/app/(app)/jobs/page.tsx"), "utf8");
-    expect(source).toContain("Queued ${result.queued} jobs for scoring.");
   });
 
   it("recovers the button and exposes the safe API message after failure", async () => {
@@ -131,11 +132,14 @@ describe("bulk score client", () => {
   });
 
   it("does not trigger bulk scoring on Jobs page load", () => {
+    // Scoring is queued server-side; the page only watches the queue. Opening
+    // Jobs must never schedule work, so what this guards is the absence of any
+    // POST to the scheduling endpoint from the page itself.
     const source = readFileSync(resolve(process.cwd(), "src/app/(app)/jobs/page.tsx"), "utf8");
-    expect(source).toContain("Score all unscored jobs");
-    expect(source).toContain("handleScoreAllUnscored");
-    expect(source).not.toContain("useEffect(() => {\n    void handleScoreAllUnscored");
-    expect(source).not.toContain('fetch("/api/jobs/score-unscored", { method: "POST" });');
+    expect(source).toContain("fetchBulkScoreStatus");
+    expect(source).toContain("startBulkScoreStatusPolling");
+    expect(source).not.toContain("requestScoreAllUnscored");
+    expect(source).not.toContain("/api/jobs/score-unscored");
   });
 
   it("rejects malformed scheduling responses", async () => {

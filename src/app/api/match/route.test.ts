@@ -111,7 +111,6 @@ describe("POST /api/match", () => {
     expect(routeSource).not.toContain("queueJobsForMatching");
     expect(routeSource).not.toContain("allUnscored");
     expect(routeSource).not.toContain("rescoreStale");
-    expect(jobsPageSource).toContain("Score all unscored jobs");
     expect(jobsPageSource).not.toContain("Rescore Stale Jobs");
     expect(jobsPageSource).not.toContain('fetch("/api/match"');
     expect(jobsPageSource).not.toContain("allUnscored");

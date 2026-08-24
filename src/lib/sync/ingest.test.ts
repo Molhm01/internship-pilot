@@ -21,6 +21,10 @@ vi.mock("@/lib/db", () => ({
 
 vi.mock("@/lib/applications/officialDestination", () => ({
   isAggregatorUrl: () => false,
+  // The canonical Apply URL is written through this; the real implementation
+  // strips aggregator attribution, and the identity stub keeps these fixtures
+  // measuring ingestion rather than URL cleaning.
+  stripTrackingParameters: (value: string) => value,
   resolveOfficialJobDestination: vi.fn().mockResolvedValue({
     sourceListingUrl: null,
     officialApplicationUrl: "https://employer.example/jobs/1",
@@ -40,7 +44,7 @@ vi.mock("@/lib/matching/initialAiMatchQueue", () => ({
   scheduleInitialAiMatchForAllUsers: (...args: unknown[]) => scheduleInitialAiMatch(...args),
 }));
 
-import { ingestAtsJobs } from "./ingest";
+import { ingestAtsJobs, upsertClassifiedAtsJob } from "./ingest";
 
 const importedJob = {
   sourceJobId: "source-1",
@@ -65,15 +69,48 @@ describe("job ingestion INITIAL AI Match trigger", () => {
     scheduleInitialAiMatch.mockResolvedValue({ scheduled: true, reason: "SCHEDULED" });
   });
 
-  it("schedules exactly one INITIAL match only after a genuinely new job is persisted", async () => {
+  it("queues exactly one INITIAL match without starting model work in discovery", async () => {
     await expect(ingestAtsJobs([importedJob], "ats:greenhouse")).resolves.toEqual({
       newCount: 1,
       updatedCount: 0,
     });
     expect(jobCreate).toHaveBeenCalledOnce();
     expect(scheduleInitialAiMatch).toHaveBeenCalledOnce();
-    expect(scheduleInitialAiMatch).toHaveBeenCalledWith("job-new");
+    expect(scheduleInitialAiMatch).toHaveBeenCalledWith("job-new", { startWorker: false });
     expect(jobCreate.mock.invocationCallOrder[0]).toBeLessThan(scheduleInitialAiMatch.mock.invocationCallOrder[0]);
+  });
+
+  it("discovers an official board job without any radar source", async () => {
+    await expect(upsertClassifiedAtsJob({
+      job: importedJob,
+      source: "greenhouse",
+      atsType: "greenhouse",
+      atsTenant: "signal-labs",
+      classification: "QUALIFYING_INTERNSHIP",
+      classificationReason: "Official board engineering internship.",
+    })).resolves.toBe("new");
+    expect(jobCreate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        source: "greenhouse",
+        atsType: "greenhouse",
+        verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
+        activeFeed: true,
+      }),
+    }));
+  });
+
+  it("lets bounded discovery diagnostics ingest without queueing model work", async () => {
+    await upsertClassifiedAtsJob({
+      job: importedJob,
+      source: "workday",
+      atsType: "workday",
+      atsTenant: "signal/External",
+      classification: "QUALIFYING_INTERNSHIP",
+      classificationReason: "Validated board role.",
+      scheduleInitialMatch: false,
+    });
+    expect(jobCreate).toHaveBeenCalledOnce();
+    expect(scheduleInitialAiMatch).not.toHaveBeenCalled();
   });
 
   it("does not schedule when an existing job is rediscovered or updated", async () => {
@@ -96,6 +133,43 @@ describe("job ingestion INITIAL AI Match trigger", () => {
     expect(jobUpdate).toHaveBeenCalledOnce();
     expect(jobCreate).not.toHaveBeenCalled();
     expect(scheduleInitialAiMatch).not.toHaveBeenCalled();
+  });
+
+  it("updates a hydrated JD while preserving the canonical official job identity", async () => {
+    jobFindFirst.mockResolvedValue({
+      id: "job-existing",
+      title: importedJob.title,
+      company: importedJob.company,
+      location: importedJob.location,
+      description: "",
+      source: "greenhouse",
+      sourceJobId: importedJob.sourceJobId,
+      requisitionId: null,
+      sourceUrl: importedJob.applyUrl,
+      officialApplicationUrl: "https://employer.example/jobs/1",
+      resolutionStatus: "RESOLVED",
+      verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
+      atsType: "greenhouse",
+      atsTenant: "signal-labs",
+      sourcePostedAt: importedJob.postedAt,
+      sourceDateConfidence: "DATE_ONLY",
+      sourceDateProvenance: "EMPLOYER_ATS_DATE",
+      closedAt: null,
+    });
+
+    await upsertClassifiedAtsJob({
+      job: importedJob,
+      source: "greenhouse",
+      atsType: "greenhouse",
+      atsTenant: "signal-labs",
+      classification: "QUALIFYING_INTERNSHIP",
+      classificationReason: "Official board engineering internship.",
+    });
+    expect(jobUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "job-existing" },
+      data: expect.objectContaining({ description: importedJob.description }),
+    }));
+    expect(jobCreate).not.toHaveBeenCalled();
   });
 
   it("keeps ingestion successful when background scheduling cannot start", async () => {

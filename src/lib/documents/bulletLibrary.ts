@@ -60,7 +60,10 @@ export async function generateBulletLibrary(userId: string): Promise<GenerateBul
 
   const validIds = new Set(facts.map((f) => f.id));
 
-  await prisma.resumeBullet.deleteMany({});
+  // Scoped to this user. Unscoped, one person regenerating their own library
+  // deleted every other account's bullets as well — and since the rows written
+  // below carried no owner, whatever survived was visible to everybody.
+  await prisma.resumeBullet.deleteMany({ where: { userId } });
 
   let count = 0;
   let rejected = 0;
@@ -71,7 +74,7 @@ export async function generateBulletLibrary(userId: string): Promise<GenerateBul
       continue;
     }
     await prisma.resumeBullet.create({
-      data: { category: b.category, text: b.text, factIds: JSON.stringify(realIds) },
+      data: { userId, category: b.category, text: b.text, factIds: JSON.stringify(realIds) },
     });
     count++;
   }

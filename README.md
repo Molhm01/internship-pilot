@@ -8,6 +8,28 @@ it starts each service exactly once, verifies migrations, waits for health, and
 opens the browser. It never starts a second copy on top of a healthy one and
 never kills unrelated processes.
 
+### Local architecture — three independent processes
+
+`npm run local` supervises three sibling Node processes:
+
+| Process | Entry point | What it does |
+| --- | --- | --- |
+| Website | `next dev` / `next start` | The Next.js app and its API routes |
+| Scheduler worker | `scripts/scheduler-worker.ts` | Radar discovery, verification, Gmail tracking, ATS scoring |
+| Application worker | `scripts/application-worker.ts` | The browser/autofill worker |
+
+The scheduler is **not** started by the web process. It used to run from
+`src/instrumentation.ts`, which pulled `@/lib/db` → `@prisma/adapter-pg` → `pg`
+→ `pgpass` into Next's bundle; on Windows Webpack that made the build fail to
+resolve the Node built-ins `fs` and `path`, and the whole website stopped
+compiling. `src/lib/runtime/instrumentationBoundary.test.ts` now fails if
+anything reaches back across that line.
+
+Because the processes are independent, a crash in the scheduler or the
+application worker leaves the website serving. You lose background discovery or
+autofill until it is restarted; all queue state is durable in PostgreSQL, so a
+restart resumes rather than loses work.
+
 ### FIRST-TIME SETUP
 
 Internship Pilot runs on PostgreSQL. `npx prisma dev` starts one locally with

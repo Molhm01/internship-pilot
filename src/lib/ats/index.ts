@@ -1,12 +1,20 @@
 import type { AtsJob } from "@/lib/ats/types";
 import { listGreenhouseJobs } from "@/lib/ats/greenhouse";
 import { listLeverJobs } from "@/lib/ats/lever";
+import { listWorkableJobs } from "@/lib/ats/workable";
+import { listIbmCareersJobs } from "@/lib/ats/ibmCareers";
+import { listByteDanceJobs } from "@/lib/ats/bytedanceCareers";
+import { listOracleRecruitingCloudJobs } from "@/lib/ats/oracleRecruitingCloud";
+import { listPaylocityJobs } from "@/lib/ats/paylocity";
 import { listAshbyJobs } from "@/lib/ats/ashby";
 import { listSmartRecruitersJobs } from "@/lib/ats/smartrecruiters";
-import { listWorkdayJobs } from "@/lib/ats/workday";
-import { listIcimsJobs } from "@/lib/ats/icims";
-import { listSuccessFactorsJobs } from "@/lib/ats/successfactors";
+import { probeWorkdayJobs } from "@/lib/ats/workday";
+import { listEightfoldJobs } from "@/lib/ats/eightfold";
+import { listPhenomJobs } from "@/lib/ats/phenom";
+import { listSpaEmbeddedJobs } from "@/lib/ats/spaDiscovery";
+import { listEmployerPageJobs, searchEmployerMirrorJobs } from "@/lib/ats/employerPageLinks";
 import { scanCareersPageForInternshipLinks } from "@/lib/ats/generic";
+import { probeStructuredPortalJobs } from "@/lib/ats/structuredCareer";
 
 export * from "@/lib/ats/types";
 export * from "@/lib/ats/detect";
@@ -27,6 +35,8 @@ export type CompanyForListing = {
 export type ListJobsResult = {
   jobs: AtsJob[];
   supported: boolean;
+  totalAvailableJobs?: number;
+  paginationVerified?: boolean;
   notModified?: boolean;
   etag?: string | null;
   lastModified?: string | null;
@@ -48,6 +58,20 @@ export async function listJobsForCompany(company: CompanyForListing): Promise<Li
     case "lever":
       if (!id) return { jobs: [], supported: false };
       return { jobs: await listLeverJobs(id, company.name), supported: true };
+    case "bytedance-careers":
+      if (!id) return { jobs: [], supported: false };
+      return { jobs: await listByteDanceJobs(id, company.name), supported: true };
+    case "ibm-careers":
+      return { jobs: await listIbmCareersJobs(company.name), supported: true };
+    case "oracle-recruiting-cloud":
+      if (!id) return { jobs: [], supported: false };
+      return { jobs: await listOracleRecruitingCloudJobs(id, company.name), supported: true };
+    case "paylocity":
+      if (!id) return { jobs: [], supported: false };
+      return { jobs: await listPaylocityJobs(id, company.name), supported: true };
+    case "workable":
+      if (!id) return { jobs: [], supported: false };
+      return { jobs: await listWorkableJobs(id, company.name), supported: true };
     case "ashby":
       if (!id) return { jobs: [], supported: false };
       return { jobs: await listAshbyJobs(id, company.name), supported: true };
@@ -56,22 +80,73 @@ export async function listJobsForCompany(company: CompanyForListing): Promise<Li
       return { jobs: await listSmartRecruitersJobs(id, company.name), supported: true };
     case "workday":
       if (!id) return { jobs: [], supported: false };
-      return {
-        jobs: await listWorkdayJobs(id, company.name, (title) => TARGET_KEYWORDS.test(title)),
-        supported: true,
-      };
+      {
+        const probe = await probeWorkdayJobs(id, company.careersUrl, company.name, (title) => TARGET_KEYWORDS.test(title));
+        return {
+          jobs: probe.jobs,
+          supported: true,
+          totalAvailableJobs: probe.totalAvailableJobs,
+          paginationVerified: probe.paginationVerified,
+        };
+      }
     case "icims":
       if (!id || !company.careersUrl) return { jobs: [], supported: false };
-      return {
-        jobs: await listIcimsJobs(id, company.careersUrl, company.name),
-        supported: true,
-      };
+      {
+        const probe = await probeStructuredPortalJobs({
+          kind: "icims",
+          companyName: company.name,
+          careersUrl: company.careersUrl,
+          additionalStartUrls: [`https://${id}.icims.com/jobs/search?ss=1`],
+          maxListPages: 6,
+          maxJobDetails: 35,
+          throwOnFetchError: true,
+        });
+        return {
+          jobs: probe.jobs,
+          supported: true,
+          totalAvailableJobs: probe.detailLinksFound,
+          paginationVerified: probe.readableListPages > 1 || probe.detailLinksFound <= 35,
+        };
+      }
+    case "eightfold":
+      if (!id) return { jobs: [], supported: false };
+      return { jobs: await listEightfoldJobs(id, company.name, { throwOnFetchError: true }), supported: true };
+    case "phenom":
+      if (!id) return { jobs: [], supported: false };
+      return { jobs: await listPhenomJobs(id, company.name, { throwOnFetchError: true }), supported: true };
+    case "employer-page": {
+      // The employer publishes its openings as ordinary links to real job
+      // pages. The "identifier" is the page holding those links.
+      const listUrl = id ?? company.careersUrl;
+      if (!listUrl) return { jobs: [], supported: false };
+      return { jobs: await listEmployerPageJobs(listUrl, company.name), supported: true };
+    }
+    case "spa": {
+      // No vendor tenant exists for this path: the "identifier" IS the careers
+      // page, and the postings come from data the page embeds (JSON-LD or a
+      // framework state blob) rather than from an ATS API.
+      const pageUrl = id ?? company.careersUrl;
+      if (!pageUrl) return { jobs: [], supported: false };
+      return { jobs: await listSpaEmbeddedJobs(pageUrl, company.name), supported: true };
+    }
     case "successfactors":
       if (!company.careersUrl) return { jobs: [], supported: false };
-      return {
-        jobs: await listSuccessFactorsJobs(company.careersUrl, company.name),
-        supported: true,
-      };
+      {
+        const probe = await probeStructuredPortalJobs({
+          kind: "successfactors",
+          companyName: company.name,
+          careersUrl: company.careersUrl,
+          maxListPages: 8,
+          maxJobDetails: 40,
+          throwOnFetchError: true,
+        });
+        return {
+          jobs: probe.jobs,
+          supported: true,
+          totalAvailableJobs: probe.detailLinksFound,
+          paginationVerified: probe.readableListPages > 1 || probe.detailLinksFound <= 40,
+        };
+      }
     case "taleo":
     case "custom": {
       if (!company.careersUrl) return { jobs: [], supported: false };
@@ -93,5 +168,42 @@ export async function listJobsForCompany(company: CompanyForListing): Promise<Li
     }
     default:
       return { jobs: [], supported: false };
+  }
+}
+
+/**
+ * Bounded, signal-specific search for providers whose public boards are too
+ * large for a cheap generic listing to guarantee recall.
+ *
+ * This is deliberately opt-in and provider-specific. TikTok/ByteDance can
+ * carry 1,000+ internship results, while current Eightfold Smart Apply sites
+ * server-render exact-query results. One exact-title request is both cheaper
+ * and more accurate than crawling every page, and it never weakens matching:
+ * the returned row still passes the ordinary title/location/company gates.
+ */
+export async function searchJobsForCompany(
+  company: CompanyForListing,
+  query: string,
+): Promise<AtsJob[]> {
+  const id = company.atsIdentifier;
+  if (!id || !query.trim()) return [];
+  switch (company.atsType) {
+    case "bytedance-careers":
+      return listByteDanceJobs(id, company.name, query);
+    case "eightfold":
+      return listEightfoldJobs(id, company.name, {
+        throwOnFetchError: true,
+        searchTerms: [query],
+      });
+    case "icims":
+      if (!company.careersUrl) return [];
+      return searchEmployerMirrorJobs(
+        company.careersUrl,
+        company.name,
+        query,
+        `${id}.icims.com`,
+      );
+    default:
+      return [];
   }
 }

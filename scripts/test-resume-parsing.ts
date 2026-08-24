@@ -55,3 +55,5 @@ main().catch((err) => {
   console.error("\nResume parsing test FAILED:", err.message);
   process.exitCode = 1;
 });
+
+export {};

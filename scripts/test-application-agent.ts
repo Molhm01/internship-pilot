@@ -1,62 +1,71 @@
 import "dotenv/config";
 import path from "node:path";
-import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { createClient } from "@libsql/client";
+import { prisma } from "@/lib/db";
+import { assertDisposablePostgres, announceDisposableDatabase } from "./lib/disposableDatabase";
+import { cleanupFixtures, CANDIDATE_A, FIXTURE_EMAIL_DOMAIN } from "./lib/applicationFixtures";
+import { seedFixtureProfile, signUpFixtureUser } from "./lib/fixtureSession";
+import { startMockAtsServer, type MockAtsServer } from "./lib/mockAtsServer";
+import { setSchedulerPaused } from "@/lib/sync/schedulerState";
 
-const productionDbUrl = process.env.DATABASE_URL ?? "file:./dev.db";
+/**
+ * Harness for the safe application-agent suite.
+ *
+ * The previous version created a scratch SQLite file, hashed six tables of the
+ * user's real `dev.db` through the libsql driver, and compared the hash
+ * afterwards to prove the tests had not touched production data. On PostgreSQL
+ * there is no file to copy, and that hash check has a better replacement: the
+ * suite refuses to start unless DATABASE_URL names a database the operator
+ * declared disposable, so there is no production data in reach to protect.
+ *
+ * What this process owns is the environment the child suite needs: a disposable
+ * database with migrations applied, a production Next server, an account that
+ * actually signed up (every route reads the session cookie and nothing else),
+ * and that account's profile. The child does the asserting.
+ */
 
-async function productionSnapshot(): Promise<string> {
-  const client = createClient({ url: productionDbUrl, timeout: 15_000 });
-  const tables = ["ApplicationProfile", "ResumeFact", "ResumeBullet", "ResumeDocument", "ApprovedAnswer", "GeneratedDocument"];
-  const snapshot: Record<string, unknown[]> = {};
-  try {
-    for (const table of tables) {
-      const result = await client.execute(`SELECT * FROM "${table}" ORDER BY rowid`);
-      snapshot[table] = result.rows.map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, typeof value === "bigint" ? value.toString() : value])));
-    }
-  } finally {
-    client.close();
-  }
-  return createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
-}
+const FIXTURE = "Application agent contract";
 
-async function run(command: string, args: string[], env: NodeJS.ProcessEnv, label: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
+function run(command: string, args: string[], env: NodeJS.ProcessEnv, label: string): Promise<void> {
+  return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd: process.cwd(), env, stdio: "inherit", windowsHide: true });
     child.once("error", reject);
-    child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`${label} exited with code ${code}.`)));
+    child.once("exit", (code) => (code === 0 ? resolve() : reject(new Error(`${label} exited with code ${code}.`))));
   });
 }
 
-async function waitForServer(url: string): Promise<void> {
-  const deadline = Date.now() + 30_000;
+async function waitForServer(url: string, timeoutMs = 120_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await fetch(url).then((response) => response.ok).catch(() => false)) return;
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (await fetch(url).then((response) => response.status < 500).catch(() => false)) return;
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  throw new Error(`Isolated test server did not become ready at ${url}.`);
+  throw new Error(`Test server did not become ready at ${url}.`);
 }
 
 async function main(): Promise<void> {
-  const before = await productionSnapshot();
+  const database = assertDisposablePostgres(FIXTURE);
+  announceDisposableDatabase(FIXTURE, database);
+
   const testRoot = path.join(process.cwd(), "data", "test-runs");
   await mkdir(testRoot, { recursive: true });
   const tempRoot = await mkdtemp(path.join(testRoot, "agent-"));
   const tempName = path.basename(tempRoot);
   if (!/^agent-[A-Za-z0-9]+$/.test(tempName)) throw new Error("Unexpected temporary test directory name.");
-  // Prisma's Windows SQLite migration engine rejects nested database paths, so
-  // use a uniquely-named disposable DB at the workspace root. It is still
-  // isolated from dev.db and is removed in finally after the production hash check.
-  const databaseFilename = `test-application-agent-${tempName}.db`;
-  const databaseAbsolute = path.join(process.cwd(), databaseFilename);
+
   const port = 31_000 + (process.pid % 1_000);
   const baseUrl = `http://127.0.0.1:${port}`;
-  const isolatedEnv = {
+  const isolatedEnv: NodeJS.ProcessEnv = {
     ...process.env,
-    DATABASE_URL: `file:./${databaseFilename}`,
     BASE_URL: baseUrl,
+    BETTER_AUTH_URL: baseUrl,
+    NEXT_PUBLIC_APP_URL: baseUrl,
+    // What the worker writes into the loaded extension's storage as its
+    // backend. Unset, the extension falls back to port 3000, finds nothing
+    // listening, and every fill reports "Internship Pilot is not reachable on
+    // this computer" after navigating and reading the form correctly.
+    INTERNSHIP_PILOT_BASE_URL: baseUrl,
     ISOLATED_TEST_MODE: "1",
     TEST_TEMP_ROOT: tempRoot,
     GENERATED_OUTPUT_DIR: path.join(tempRoot, "documents"),
@@ -68,32 +77,54 @@ async function main(): Promise<void> {
   };
 
   let server: ReturnType<typeof spawn> | null = null;
+  let mockAts: MockAtsServer | null = null;
   try {
-    // Prisma 7's Windows SQLite engine fails to initialize a missing file at
-    // this dynamically-generated path; an empty file is a valid SQLite seed.
-    await writeFile(databaseAbsolute, "", { flag: "wx" });
-    await run(process.execPath, [path.join(process.cwd(), "node_modules", "prisma", "build", "index.js"), "migrate", "deploy"], isolatedEnv, "temporary database migration");
-    server = spawn(process.execPath, [path.join(process.cwd(), "node_modules", "next", "dist", "bin", "next"), "start", "-p", String(port)], { cwd: process.cwd(), env: isolatedEnv, stdio: "inherit", windowsHide: true });
-    await waitForServer(`${baseUrl}/api/agent-diagnostics`);
-    await run(process.execPath, ["--import", "tsx", "scripts/test-application-agent-isolated.ts"], isolatedEnv, "isolated application-agent suite");
+    await run(process.execPath, [path.join(process.cwd(), "node_modules", "prisma", "build", "index.js"), "migrate", "deploy"], isolatedEnv, "disposable database migration");
+    await cleanupFixtures();
+    // Background discovery makes live network calls and writes jobs. Neither
+    // belongs in a deterministic fixture run, so the scheduler is paused before
+    // the server that would start it comes up.
+    await setSchedulerPaused(true);
+
+    server = spawn(process.execPath, [path.join(process.cwd(), "node_modules", "next", "dist", "bin", "next"), "start", "-p", String(port)], {
+      cwd: process.cwd(),
+      env: isolatedEnv,
+      stdio: "inherit",
+      windowsHide: true,
+    });
+    await waitForServer(`${baseUrl}/api/extension/health`);
+
+    // The employer is a separate origin with no session of its own — see
+    // scripts/lib/mockAtsServer.ts.
+    mockAts = await startMockAtsServer(port + 1);
+
+    // A real sign-up, so the child holds a session the server actually issued.
+    const email = `agent-suite${FIXTURE_EMAIL_DOMAIN}`;
+    const session = await signUpFixtureUser(baseUrl, email, `${CANDIDATE_A.legalFirstName} ${CANDIDATE_A.legalLastName}`);
+    await seedFixtureProfile(session.userId, { ...CANDIDATE_A, email });
+
+    await run(process.execPath, ["--import", "tsx", "scripts/test-application-agent-isolated.ts"], {
+      ...isolatedEnv,
+      // The worker fills for exactly one named account. Left unset it would
+      // refuse to guess, which is the correct behaviour and the wrong thing to
+      // leave a fixture depending on.
+      APPLICATION_WORKER_USER_ID: session.userId,
+      AGENT_TEST_USER_ID: session.userId,
+      AGENT_TEST_SESSION_COOKIE: session.cookie,
+      AGENT_TEST_EMAIL: email,
+      MOCK_ATS_BASE_URL: mockAts.baseUrl,
+    }, "isolated application-agent suite");
   } finally {
+    await mockAts?.close().catch(() => {});
     if (server && server.exitCode === null) server.kill("SIGTERM");
     await new Promise((resolve) => setTimeout(resolve, 500));
+    await cleanupFixtures().catch(() => {});
+    await prisma.$disconnect().catch(() => {});
     const resolvedTemp = path.resolve(tempRoot);
     if (resolvedTemp.startsWith(path.resolve(testRoot)) && path.basename(resolvedTemp).startsWith("agent-")) {
       await rm(resolvedTemp, { recursive: true, force: true });
     }
-    await Promise.all([
-      rm(databaseAbsolute, { force: true }),
-      rm(`${databaseAbsolute}-journal`, { force: true }),
-      rm(`${databaseAbsolute}-wal`, { force: true }),
-      rm(`${databaseAbsolute}-shm`, { force: true }),
-    ]);
   }
-
-  const after = await productionSnapshot();
-  if (before !== after) throw new Error("FAIL: isolated mock tests changed production profile, resume evidence, approved answers, or generated documents.");
-  console.log("  PASS: production profile, resume evidence, approved answers, and generated documents were unchanged.");
 }
 
 main().catch((error) => {

@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   parseFirstSourceDate,
   parseSourcePostedAt,
+  provenanceRank,
+  SOURCE_DATE_PROVENANCE,
+  shouldReplaceCanonicalSourceDate,
   shouldReplaceSourcePostedAt,
 } from "./sourceDate";
 
@@ -43,6 +46,49 @@ describe("relative source dates are parsed using the sync capture time", () => {
     const parsed = parseSourcePostedAt("Posted Today", CAPTURED_AT);
     expect(parsed.sourcePostedAt?.toISOString()).toBe("2026-08-01T00:00:00.000Z");
     expect(parsed.sourceDateConfidence).toBe("DATE_ONLY");
+  });
+});
+
+describe("official freshness provenance", () => {
+  const exactRadar = parseSourcePostedAt("2026-08-01T11:30:00.000Z", CAPTURED_AT);
+  const employerDate = parseSourcePostedAt("2026-08-01", CAPTURED_AT);
+
+  it("lets an employer ATS date outrank an exact aggregator timestamp", () => {
+    expect(shouldReplaceCanonicalSourceDate({
+      sourcePostedAt: exactRadar.sourcePostedAt,
+      sourceDateConfidence: exactRadar.sourceDateConfidence,
+      sourceDateProvenance: "TRUSTED_RADAR_EXACT",
+    }, employerDate, "EMPLOYER_ATS_DATE")).toBe(true);
+  });
+
+  it("never lets lower-authority radar freshness overwrite employer freshness", () => {
+    expect(shouldReplaceCanonicalSourceDate({
+      sourcePostedAt: employerDate.sourcePostedAt,
+      sourceDateConfidence: employerDate.sourceDateConfidence,
+      sourceDateProvenance: "EMPLOYER_ATS_DATE",
+    }, exactRadar, "TRUSTED_RADAR_EXACT")).toBe(false);
+  });
+
+  it("keeps unknown dates below every known date", () => {
+    const unknown = parseSourcePostedAt(null, CAPTURED_AT);
+    expect(shouldReplaceCanonicalSourceDate({
+      sourcePostedAt: employerDate.sourcePostedAt,
+      sourceDateConfidence: employerDate.sourceDateConfidence,
+      sourceDateProvenance: "EMPLOYER_ATS_DATE",
+    }, unknown, "UNKNOWN")).toBe(false);
+  });
+
+  it("persists the complete required authority order", () => {
+    expect(SOURCE_DATE_PROVENANCE).toEqual([
+      "UNKNOWN",
+      "INFERRED",
+      "TRUSTED_RADAR_RELATIVE",
+      "TRUSTED_RADAR_EXACT",
+      "EMPLOYER_JSON_LD",
+      "EMPLOYER_ATS_DATE",
+      "EMPLOYER_ATS_EXACT",
+    ]);
+    expect(SOURCE_DATE_PROVENANCE.map(provenanceRank)).toEqual([0, 1, 2, 3, 4, 5, 6]);
   });
 });
 

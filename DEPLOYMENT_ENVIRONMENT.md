@@ -32,7 +32,7 @@ declines the loopback call rather than attempting it.
 | `INTERNSHIP_PILOT_RUNTIME` | Optional, either side | No | `local` or `cloud`, overriding detection. Only needed for a self-hosted server that genuinely shares a machine with the user's Agent and Ollama. | No |
 | `DATABASE_POOL_MAX` | Optional, either side | No | Postgres connections per instance. Default 5. | No |
 | `DATABASE_CONNECT_TIMEOUT_MS` | Optional, either side | No | Connection acquisition timeout in ms. Default 15000. | No |
-| `CRON_SECRET` | Vercel production | **Yes** for hosted job ingestion | Authorizes Vercel requests to `/api/cron/job-ingestion`. Vercel sends it as a Bearer token. | **Yes** |
+| `CRON_SECRET` | Vercel production | **Yes** for hosted job ingestion | Authorizes every hosted ingestion lane (`/api/cron/job-ingestion/{fresh,standard,maintenance}`) and the legacy combined route. Sent as a Bearer token by Vercel Cron and by the GitHub Actions scheduler. | **Yes** |
 | `CRON_JOB_BATCH_SIZE` | Vercel production, optional | No | Number of due companies checked per hosted cron invocation. Defaults to 8 and is capped at 25. | No |
 | `OLLAMA_BASE_URL` | Local development only | No | Local model server. Default `http://localhost:11434`. On a cloud runtime a loopback value is recognised as unreachable and reported as **Local AI offline**; a non-loopback value the deployment can actually reach is used normally. | No |
 | `OLLAMA_MODEL` | Local development only | No | Chat model name. Default `qwen3.5:9b`. | No |
@@ -95,3 +95,55 @@ Never add a `NEXT_PUBLIC_` prefix to `DATABASE_URL`, `BLOB_READ_WRITE_TOKEN`,
 `INTERNSHIP_AGENT_TOKEN`, `BETTER_AUTH_SECRET`, `GOOGLE_CLIENT_SECRET`,
 `GMAIL_CLIENT_SECRET`, `GMAIL_TOKEN_ENCRYPTION_KEY`, `USAJOBS_API_KEY`,
 `GOOGLE_PLACES_API_KEY`, or `CRON_SECRET`.
+## Hosted ingestion cadence
+
+Ingestion is split into three routes, chosen by urgency rather than run as one
+daily batch:
+
+| Lane | Route | Work | Target cadence |
+| --- | --- | --- | --- |
+| A — fresh | `/api/cron/job-ingestion/fresh` | fresh radar signals resolved to official employer postings, priority crawl of a known employer's board, Tier-A structured ATS boards that are due, minimal freshness verification | ~5 minutes |
+| B — standard | `/api/cron/job-ingestion/standard` | Tier-B structured boards that are due, public direct-employer feeds, Intern List resolution, ordinary freshness verification | 20–30 minutes |
+| C — maintenance | `/api/cron/job-ingestion/maintenance` | whole-registry sweep including Custom/API employers, broad technical feeds, deep reverification, feed reconciliation and cleanup | daily |
+
+Every lane authenticates with `CRON_SECRET`, takes an exclusive lease so two
+invocations can never overlap, holds a hard runtime budget, and touches neither
+Ollama, ATS scoring, nor a browser. Discovery **queues** scoring; it never runs
+it. A newly discovered official job enters Discover as soon as it is ingested,
+without waiting for a score, a description hydration, or any AI step.
+
+### Platform limitation — cron frequency
+
+The Vercel **Hobby** plan allows at most two cron jobs, each at most once per
+day. It therefore cannot express the five-minute fresh lane. `vercel.json`
+declares only the two daily lanes the plan permits, and
+`.github/workflows/live-job-ingestion.yml` drives the real cadence over HTTPS
+with the same `CRON_SECRET`.
+
+GitHub's own scheduling floor is five minutes, and scheduled runs are queued
+rather than guaranteed on time — a tick can be late or dropped under load. That
+is the honest ceiling of the current fallback, not a five-minute guarantee.
+
+On a Vercel plan with minute-level cron, move all three lanes into
+`vercel.json` and delete the schedule block from that workflow. The routes need
+no change:
+
+```json
+"crons": [
+  { "path": "/api/cron/job-ingestion/fresh",       "schedule": "*/5 * * * *" },
+  { "path": "/api/cron/job-ingestion/standard",    "schedule": "*/25 * * * *" },
+  { "path": "/api/cron/job-ingestion/maintenance", "schedule": "0 8 * * *" }
+]
+```
+
+### Lane tuning (all optional)
+
+`CRON_FRESH_BUDGET_MS`, `CRON_FRESH_SIGNAL_LIMIT`, `CRON_FRESH_TIER_A_LIMIT`,
+`CRON_FRESH_CONCURRENCY`, `CRON_FRESH_VERIFY_LIMIT`,
+`CRON_STANDARD_BUDGET_MS`, `CRON_STANDARD_TIER_B_LIMIT`,
+`CRON_STANDARD_CONCURRENCY`, `CRON_STANDARD_PUBLIC_DIRECT_LIMIT`,
+`CRON_STANDARD_DISCOVERY_LIMIT`, `CRON_STANDARD_VERIFY_LIMIT`,
+`CRON_MAINTENANCE_BUDGET_MS`, `CRON_MAINTENANCE_VERIFY_LIMIT`,
+`CRON_COMPANY_SWEEP_LIMIT`, `CRON_COMPANY_SWEEP_CONCURRENCY`,
+`CRON_MASS_TECHNICAL_LIMIT`. Every one is clamped to a safe range in code, so
+a bad value degrades the lane rather than breaking it.

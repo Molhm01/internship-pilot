@@ -166,8 +166,55 @@ export function isValidOfficialApplicationUrl(
   return isSupportedAtsUrl(value) || isEmployerJobUrl(value);
 }
 
+/**
+ * Tracking parameters an aggregator appends to the employer's own URL.
+ *
+ * 226 of 1,485 published Apply URLs carried `?utm_source=Simplify&ref=Simplify`.
+ * The destination was the employer's real posting in every case, so this was
+ * never a wrong-destination bug — but it means the canonical URL this product
+ * calls "the employer's official application page" is stamped with a third
+ * party's attribution, and it is what the user's browser sends. The employer's
+ * URL is the one without it.
+ *
+ * Only known tracking keys are removed. Anything that could carry meaning to
+ * the employer's own site — a requisition id, a locale, a source code the
+ * employer itself uses — is left exactly as found.
+ */
+const TRACKING_PARAMS = new Set([
+  "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "utm_id",
+  "ref", "referrer", "gh_src", "gclid", "fbclid", "msclkid", "mc_cid", "mc_eid",
+  "trackingid", "src", "source",
+]);
+
+/** Aggregators whose attribution we strip. Never touches employer-set values. */
+const AGGREGATOR_ATTRIBUTION = /^(simplify|jobright|linkedin|indeed|glassdoor|ziprecruiter|zapply|handshake)$/i;
+
+export function stripTrackingParameters(value: string): string {
+  const parsed = parsedWebUrl(value);
+  if (!parsed) return value;
+
+  let changed = false;
+  for (const key of [...parsed.searchParams.keys()]) {
+    const lower = key.toLowerCase();
+    if (!TRACKING_PARAMS.has(lower)) continue;
+    // `src`/`source`/`ref` are also legitimate employer parameters on some
+    // boards, so those are only removed when the VALUE names an aggregator.
+    const ambiguous = lower === "src" || lower === "source" || lower === "ref";
+    if (ambiguous && !AGGREGATOR_ATTRIBUTION.test(parsed.searchParams.get(key) ?? "")) continue;
+    parsed.searchParams.delete(key);
+    changed = true;
+  }
+  if (!changed) return parsed.toString();
+
+  // A URL whose query is now empty should not keep a bare "?".
+  const query = parsed.searchParams.toString();
+  parsed.search = query ? `?${query}` : "";
+  return parsed.toString();
+}
+
 function canonicalUrl(value: string): string {
-  return parsedWebUrl(value)?.toString() ?? value;
+  const parsed = parsedWebUrl(value);
+  return parsed ? stripTrackingParameters(parsed.toString()) : value;
 }
 
 function decodeJsonString(raw: string): string | null {
