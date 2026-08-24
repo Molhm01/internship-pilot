@@ -12,6 +12,10 @@
 import "dotenv/config";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { pinCanonicalDatabaseUrl, announceCanonicalDatabase } from "./lib/canonicalDb";
+
+const canonical = pinCanonicalDatabaseUrl();
+
 import { prisma } from "@/lib/db";
 import { listJobsForCompany } from "@/lib/ats";
 import type { AtsJob } from "@/lib/ats/types";
@@ -404,6 +408,7 @@ async function resolveOne(signal: RawInternListJob): Promise<Result> {
 }
 
 async function main() {
+  announceCanonicalDatabase(await prisma.job.count(), canonical);
   const explicitLimit = process.argv.find((value) => value.startsWith("--limit="))?.slice("--limit=".length);
   const sampleSize = Number.parseInt(explicitLimit ?? process.argv.find((value) => /^\d+$/.test(value)) ?? "30", 10) || 30;
   const now = new Date();

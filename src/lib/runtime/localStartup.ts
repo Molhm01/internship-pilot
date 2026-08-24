@@ -17,6 +17,31 @@ export function normalizeLocalPrismaTcpUrl(databaseUrl: string, platform = proce
   return parsed.toString();
 }
 
+function normalizedLocalHost(hostname: string): string {
+  return hostname === "localhost" ? "127.0.0.1" : hostname;
+}
+
+/**
+ * Does `candidateUrl` point at the same physical database server as
+ * `canonical` (by host:port, never by database name)?
+ *
+ * This exists because a local Prisma Dev instance serves ONE database
+ * regardless of the database name in the connection URL — so a "disposable"
+ * fixture database name is not actually isolated if it shares the canonical
+ * instance's host:port. See scripts/lib/disposableDatabase.ts.
+ */
+export function isCanonicalInstanceUrl(candidateUrl: string, canonical: { host: string; port: number }): boolean {
+  try {
+    const parsed = new URL(candidateUrl);
+    return (
+      normalizedLocalHost(parsed.hostname) === normalizedLocalHost(canonical.host) &&
+      Number(parsed.port) === canonical.port
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * What `npm run local` should do about whatever is already on port 3000.
  *

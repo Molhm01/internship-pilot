@@ -16,6 +16,7 @@ vi.mock("@/lib/matching/initialAiMatchQueue", () => ({
 
 import {
   applyOfficialHydrationEvidence,
+  ashbyPostingIdFromUrl,
   hydrationPriority,
   type HydrationJob,
 } from "./jobDescriptionHydration";
@@ -90,5 +91,19 @@ describe("official quality hydration", () => {
     expect(baseline).toHaveBeenCalledWith("job-1");
     expect(scheduleAi).toHaveBeenCalledWith("job-1", { startWorker: false });
     expect(baseline.mock.invocationCallOrder[0]).toBeLessThan(scheduleAi.mock.invocationCallOrder[0]);
+  });
+
+  it("reads Ashby's own posting UUID out of the job URL instead of a third-party aggregator id", () => {
+    // A job discovered via an aggregator (Simplify, "zapply:", "dreamwork:", ...)
+    // stores THAT service's id in sourceJobId — it never matches an Ashby
+    // posting id. Ashby's own id is a UUID embedded in the job/apply URL.
+    expect(ashbyPostingIdFromUrl(
+      "https://jobs.ashbyhq.com/replit/7e0dafe8-3eec-442e-aa76-a4d84d779fb1/application?embed=true&utm_source=Simplify",
+    )).toBe("7e0dafe8-3eec-442e-aa76-a4d84d779fb1");
+  });
+
+  it("returns null when no UUID is present in the URL", () => {
+    expect(ashbyPostingIdFromUrl("https://jobs.ashbyhq.com/replit")).toBeNull();
+    expect(ashbyPostingIdFromUrl(null)).toBeNull();
   });
 });

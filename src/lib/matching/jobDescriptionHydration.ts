@@ -209,15 +209,32 @@ async function leverEvidence(rawUrl: string, capturedAt: Date): Promise<Official
   return { description, sourceDate, sourceDateProvenance: employerAtsProvenance(sourceDate) };
 }
 
-async function ashbyEvidence(job: HydrationJob, capturedAt: Date): Promise<OfficialHydrationEvidence | null> {
-  if (!job.atsTenant || !job.sourceJobId) return null;
+const UUID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+/**
+ * Ashby's own posting id, read out of an `https://jobs.ashbyhq.com/{board}/{id}`
+ * URL. A job discovered through a third-party aggregator (Simplify, Jobright,
+ * "zapply:"/"dreamwork:" boards, ...) stores THAT aggregator's id in
+ * sourceJobId, which never matches an Ashby posting id — the aggregator id is
+ * a different identifier scheme, not a broken/stale Ashby id. Ashby's own id
+ * is a UUID and it is always present in the canonical job/apply URL, so it is
+ * extracted from there instead of trusted from sourceJobId.
+ */
+export function ashbyPostingIdFromUrl(url: string | null | undefined): string | null {
+  return url?.match(UUID_PATTERN)?.[0]?.toLowerCase() ?? null;
+}
+
+async function ashbyEvidence(job: HydrationJob, officialUrl: string, capturedAt: Date): Promise<OfficialHydrationEvidence | null> {
+  const urlPostingId = ashbyPostingIdFromUrl(officialUrl) ?? ashbyPostingIdFromUrl(job.url);
+  const candidateId = urlPostingId ?? job.sourceJobId;
+  if (!job.atsTenant || !candidateId) return null;
   const response = await fetch(
     `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(job.atsTenant)}`,
     { headers: { accept: "application/json", "user-agent": USER_AGENT }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: "no-store" },
   );
   if (!response.ok) return null;
   const data = await response.json() as { jobs?: Array<{ id?: string; descriptionPlain?: string; publishedAt?: string }> };
-  const posting = data.jobs?.find((item) => item.id === job.sourceJobId);
+  const posting = data.jobs?.find((item) => item.id?.toLowerCase() === candidateId.toLowerCase());
   if (!posting) return null;
   const sourceDate = parseFirstSourceDate([posting.publishedAt], capturedAt);
   return {
@@ -273,7 +290,7 @@ async function fetchBestEvidence(
   } else if (ats === "lever") {
     specific = await leverEvidence(officialUrl, capturedAt);
   } else if (ats === "ashby") {
-    specific = await ashbyEvidence(job, capturedAt);
+    specific = await ashbyEvidence(job, officialUrl, capturedAt);
   } else if (ats === "smartrecruiters") {
     specific = await smartRecruitersEvidence(job, capturedAt);
   } else {

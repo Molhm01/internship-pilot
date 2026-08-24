@@ -24,6 +24,48 @@ export function classifyIcimsAccess(input: {
   return "PUBLIC_SEARCH_ONLY";
 }
 
+/**
+ * The ONE authoritative "supported/reachable" rule for recall reporting.
+ *
+ * A signal is excluded from the supported/reachable denominator only when NO
+ * generically-implementable fix could have resolved it — there was nothing a
+ * correct resolver could have done:
+ *   - UNKNOWN_COMPANY: no employer identity to resolve against at all.
+ *   - NO_ATS_CONFIG: employer identified, but no board is known to exist.
+ *   - NO_OFFICIAL_URL: the signal itself carries no employer-side URL to
+ *     resolve from (aggregator link only) — nothing to attempt resolution
+ *     against, not a resolver miss.
+ *   - BOT_WALL_BLOCKED / PROVIDER_ACCESS_BLOCKED: the board is confirmed
+ *     inaccessible to an ordinary public client. Bypassing bot walls is out of
+ *     scope; this is an intentionally-unsupported path, not an implementation
+ *     gap.
+ *   - POSTING_CLOSED: the resolver correctly determined the posting is gone.
+ *     Not creating a canonical job here is the CORRECT outcome, not a miss.
+ *
+ * Every other reason (board fetch failure, no/wrong board match, title or
+ * location mismatch, unindexed role, rejected destination URL, parser
+ * failure, transient network/rate-limit failure) stays IN the denominator:
+ * these represent cases our own implementation should, in principle, be able
+ * to resolve, and hiding them behind a bigger exclusion list would make
+ * recall look better without the pipeline actually getting better.
+ *
+ * Locked by src/lib/sync/providerQuality.test.ts — change the exclusion list
+ * there first if this rule should change, so the definition can't drift out
+ * from under a report without a reviewed diff.
+ */
+export const UNSUPPORTED_REACHABLE_REASONS = new Set([
+  "UNKNOWN_COMPANY",
+  "NO_ATS_CONFIG",
+  "NO_OFFICIAL_URL",
+  "BOT_WALL_BLOCKED",
+  "PROVIDER_ACCESS_BLOCKED",
+  "POSTING_CLOSED",
+]);
+
+export function isSupportedReachable(row: { resolvedJobId?: string | null; reasonCode?: string | null }): boolean {
+  return Boolean(row.resolvedJobId) || !UNSUPPORTED_REACHABLE_REASONS.has(row.reasonCode ?? "");
+}
+
 export type RecallRow = { canonical: boolean; supportedReachable: boolean };
 
 export function calculateRecall(rows: RecallRow[]) {

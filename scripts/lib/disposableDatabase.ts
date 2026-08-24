@@ -1,3 +1,5 @@
+import { resolveCanonicalDatabaseUrl, isCanonicalInstanceUrl } from "./canonicalDb";
+
 /**
  * The one gate every destructive fixture goes through.
  *
@@ -37,6 +39,34 @@ const DISPOSABLE_NAME = /(?:audit|test)/i;
  * "this is the real database" is to stop, and a boolean invites a caller to
  * carry on.
  */
+/**
+ * Closes the exact trap this module's file doc warns about: a "test"/"audit"
+ * named database URL that is actually the SAME local Prisma Dev instance the
+ * real app uses (that instance serves one database regardless of the name in
+ * the URL). Best-effort — if the canonical instance cannot be resolved (e.g.
+ * CI's real, separate Postgres service, or Prisma Dev not installed), this
+ * silently allows the name-based check to stand, since there is then no local
+ * canonical instance to collide with.
+ */
+function assertNotCanonicalInstance(fixture: string, raw: string, name: string): void {
+  let canonical: { host: string; port: number };
+  try {
+    canonical = resolveCanonicalDatabaseUrl();
+    if (isCanonicalInstanceUrl(raw, canonical)) {
+      throw new Error(
+        `${fixture} refuses database "${name}": it is on the same local Prisma Dev instance ("internship-pilot", ` +
+          `port ${canonical.port}) as the real canonical database. A local Prisma Dev instance serves ONE database ` +
+          "regardless of the name in the connection URL, so this name would still mutate real rows. " +
+          "Start a genuinely separate instance instead (`npx prisma dev --detach --name internship-pilot-audit`) " +
+          "and point DATABASE_URL at ITS reported port, or set ISOLATED_TEST_MODE=1 once you have done so.",
+      );
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("refuses database")) throw error;
+    // Canonical instance not resolvable in this environment — nothing to collide with.
+  }
+}
+
 export function assertDisposablePostgres(fixture: string): DisposableDatabase {
   const raw = process.env.DATABASE_URL?.trim();
   if (!raw) {
@@ -60,7 +90,10 @@ export function assertDisposablePostgres(fixture: string): DisposableDatabase {
 
   const name = url.pathname.replace(/^\//, "") || "(default)";
   if (process.env.ISOLATED_TEST_MODE === "1") return { name, reason: "explicit-isolated-mode" };
-  if (DISPOSABLE_NAME.test(name)) return { name, reason: "disposable-name" };
+  if (DISPOSABLE_NAME.test(name)) {
+    assertNotCanonicalInstance(fixture, raw, name);
+    return { name, reason: "disposable-name" };
+  }
 
   throw new Error(
     `${fixture} refuses to create and delete rows in database "${name}". ` +

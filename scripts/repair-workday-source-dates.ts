@@ -12,12 +12,17 @@
  *   npm run repair:workday-source-dates -- --apply  # bounded update
  */
 import "dotenv/config";
+import { pinCanonicalDatabaseUrl, announceCanonicalDatabase } from "./lib/canonicalDb";
+
+const canonical = pinCanonicalDatabaseUrl();
+
 import { prisma } from "@/lib/db";
 
 const apply = process.argv.includes("--apply");
 const BATCH_SIZE = 100;
 
 async function main() {
+  announceCanonicalDatabase(await prisma.job.count(), canonical);
   const rows = await prisma.job.findMany({
     where: {
       OR: [{ atsType: "workday" }, { source: "workday" }],

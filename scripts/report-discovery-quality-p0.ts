@@ -1,4 +1,8 @@
 import "dotenv/config";
+import { pinCanonicalDatabaseUrl, announceCanonicalDatabase } from "./lib/canonicalDb";
+
+const canonical = pinCanonicalDatabaseUrl();
+
 import { prisma } from "@/lib/db";
 import { discoverFreshnessGroup } from "@/lib/jobs/freshness";
 import { dateQuality, destinationQuality, jobDescriptionQuality } from "@/lib/jobs/jobQuality";
@@ -6,6 +10,7 @@ import {
   calculateFreshLatency,
   calculateRecall,
   classifyIcimsAccess,
+  isSupportedReachable,
   rankMissingProviders,
 } from "@/lib/sync/providerQuality";
 import { DISCOVERY_QUALITY_COHORT_KEY } from "@/lib/sync/schedulerState";
@@ -39,25 +44,30 @@ function missingClassification(company: { atsType: string | null; atsIdentifier:
 }
 
 async function main() {
+  announceCanonicalDatabase(await prisma.job.count(), canonical);
   const now = new Date();
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const [jobs, companies, signals, cohortSetting] = await Promise.all([
-    prisma.job.findMany({ where: { activeFeed: true }, select: {
-      id: true, source: true, atsType: true, description: true, jobResponsibilities: true, jobQualifications: true,
-      sourcePostedAt: true, sourceDateConfidence: true, firstSeenAt: true,
-      officialApplicationUrl: true, officialJobUrl: true, sourceListingUrl: true, resolutionStatus: true, verificationStatus: true,
-    } }),
-    prisma.company.findMany({ where: { allowlisted: true }, select: {
-      name: true, careersUrl: true, atsType: true, atsIdentifier: true, atsConfigState: true, atsConfigErrorCode: true,
-      atsConfigEvidence: true, priority: true, engineeringActivityTier: true, activeInternshipCount: true,
-      lastSuccessfulBoardAt: true,
-    } }),
-    prisma.freshSignalResolution.findMany({ where: { sourcePostedAt: { gte: sevenDaysAgo } }, select: {
-      company: true, normalizedCompany: true, state: true, reasonCode: true, resolvedJobId: true,
-      sourceCapturedAt: true, lastAttemptAt: true,
-    } }),
-    prisma.appSetting.findUnique({ where: { key: DISCOVERY_QUALITY_COHORT_KEY } }),
-  ]);
+  // Sequential, not Promise.all: four concurrent queries sharing one pooled
+  // connection have been observed to trip "Server has closed the connection"
+  // against a local Prisma Dev instance under connection pressure (stale
+  // connections left behind by a killed process, another instance also
+  // running, etc.). This is a diagnostic script, not a hot path — reliability
+  // here matters far more than shaving the few hundred ms four awaits cost.
+  const jobs = await prisma.job.findMany({ where: { activeFeed: true }, select: {
+    id: true, source: true, atsType: true, description: true, jobResponsibilities: true, jobQualifications: true,
+    sourcePostedAt: true, sourceDateConfidence: true, firstSeenAt: true,
+    officialApplicationUrl: true, officialJobUrl: true, sourceListingUrl: true, resolutionStatus: true, verificationStatus: true,
+  } });
+  const companies = await prisma.company.findMany({ where: { allowlisted: true }, select: {
+    name: true, careersUrl: true, atsType: true, atsIdentifier: true, atsConfigState: true, atsConfigErrorCode: true,
+    atsConfigEvidence: true, priority: true, engineeringActivityTier: true, activeInternshipCount: true,
+    lastSuccessfulBoardAt: true,
+  } });
+  const signals = await prisma.freshSignalResolution.findMany({ where: { sourcePostedAt: { gte: sevenDaysAgo } }, select: {
+    company: true, normalizedCompany: true, state: true, reasonCode: true, resolvedJobId: true,
+    sourceCapturedAt: true, lastAttemptAt: true,
+  } });
+  const cohortSetting = await prisma.appSetting.findUnique({ where: { key: DISCOVERY_QUALITY_COHORT_KEY } });
   const jobsById = new Map(jobs.map((job) => [job.id, job]));
   const quality = jobs.map((job) => ({ job, date: dateQuality(job), jd: jobDescriptionQuality(job), destination: destinationQuality(job) }));
   const freshKnown = jobs.filter((job) => discoverFreshnessGroup(job, now).startsWith("KNOWN_")).length;
@@ -84,17 +94,16 @@ async function main() {
     return { ...row, atsConfigState: company.atsConfigState, classification: missingClassification(company) };
   });
 
-  const hardReasons = new Set(["NO_ATS_CONFIG", "BOT_WALL_BLOCKED", "PROVIDER_ACCESS_BLOCKED"]);
   const recall = calculateRecall(signals.map((signal) => ({
     canonical: Boolean(signal.resolvedJobId),
-    supportedReachable: Boolean(signal.resolvedJobId) || !hardReasons.has(signal.reasonCode ?? ""),
+    supportedReachable: isSupportedReachable(signal),
   })));
   const cohortStartedAt = cohortSetting ? new Date(JSON.parse(cohortSetting.value) as string) : now;
   const latency = calculateFreshLatency(signals.map((signal) => ({
     sourceCapturedAt: signal.sourceCapturedAt,
     officialResolutionStartedAt: signal.lastAttemptAt,
     canonicalStoredAt: signal.resolvedJobId ? jobsById.get(signal.resolvedJobId)?.firstSeenAt ?? null : null,
-    supportedReachable: Boolean(signal.resolvedJobId) || !hardReasons.has(signal.reasonCode ?? ""),
+    supportedReachable: isSupportedReachable(signal),
   })), cohortStartedAt);
 
   const icims = companies.filter((company) => company.atsType === "icims").map((company) => classifyIcimsAccess({
