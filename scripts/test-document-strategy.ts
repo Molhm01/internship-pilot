@@ -40,7 +40,7 @@ async function makeJob(overrides: Record<string, unknown>) {
   });
 }
 
-async function makeResume(jobId: string, tailoringStatus: string) {
+async function makeResume(jobId: string, tailoringStatus: string, documentFingerprint: string | null = null) {
   return prisma.generatedDocument.create({
     data: {
       userId,
@@ -52,6 +52,7 @@ async function makeResume(jobId: string, tailoringStatus: string) {
       tailoringStatus,
       identityVerified: true,
       bulletIdsUsed: "[]",
+      documentFingerprint,
     },
   });
 }
@@ -106,6 +107,42 @@ async function main() {
     check(res.queued === true || res.status === "queued", "run queued with a legacy NOT_TAILORED resume");
   } catch (err) {
     check(false, `legacy resume should be usable, threw: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  console.log("\n6b) REGRESSION: a stale TAILORED résumé (fingerprint mismatch) is never reused as current");
+  // A TAILORED résumé whose stored fingerprint does not match the job's
+  // CURRENT fingerprint must not be silently treated as current just because
+  // it is QA-passed and identity-verified — those checks say the file is
+  // sound, not that its content still matches today's job/profile/JD. With
+  // no AI match on this fixture job, deterministic regeneration cannot
+  // happen either, so the correct outcome is: the stale TAILORED doc is
+  // ignored, and since no MASTER_RESUME_FALLBACK document exists, the run is
+  // blocked with NO_APPROVED_DOCUMENT rather than silently uploading stale
+  // tailored content.
+  const jobStale = await makeJob({ ...COMPLETE, title: "Stale Fingerprint Intern" });
+  await makeResume(jobStale.id, "TAILORED_WITH_SUPPORTED_CHANGES", "stale-fingerprint-from-a-different-jd");
+  try {
+    await enqueueApplication(jobStale.id, userId);
+    check(false, "should have thrown NO_APPROVED_DOCUMENT for a stale-fingerprint-only resume");
+  } catch (err) {
+    check(
+      err instanceof ApplicationAgentError && /No approved resume exists/i.test(err.message),
+      `stale TAILORED doc rejected, blocked with NO_APPROVED_DOCUMENT (got: ${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
+
+  console.log("\n6c) A stale TAILORED résumé alongside a valid MASTER_RESUME_FALLBACK still queues safely");
+  const jobStaleWithFallback = await makeJob({ ...COMPLETE, title: "Stale Plus Fallback Intern" });
+  await makeResume(jobStaleWithFallback.id, "TAILORED_WITH_SUPPORTED_CHANGES", "stale-fingerprint-from-a-different-jd");
+  await makeResume(jobStaleWithFallback.id, "MASTER_RESUME_FALLBACK");
+  try {
+    const res = await enqueueApplication(jobStaleWithFallback.id, userId);
+    check(res.queued === true, "run queued using the master-fallback resume, not the stale TAILORED one");
+    const run = await prisma.applicationRun.findFirst({ where: { id: res.runId, userId } });
+    const usedDoc = await prisma.generatedDocument.findUnique({ where: { id: run?.resumeDocumentId ?? "" } });
+    check(usedDoc?.tailoringStatus === "MASTER_RESUME_FALLBACK", `used the master-fallback document, not the stale TAILORED one (got tailoringStatus=${usedDoc?.tailoringStatus})`);
+  } catch (err) {
+    check(false, `should not throw, but threw: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   console.log("\n6) A job with NO approved resume blocks with NO_APPROVED_DOCUMENT");

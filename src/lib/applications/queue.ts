@@ -6,6 +6,8 @@ import { recordRunStage } from "./validation";
 import { canonicalAvailability, AVAILABILITY, isActiveAvailability } from "@/lib/jobs/verificationModel";
 import { isUsableResume, strategyFromTailoringStatus, jobDescriptionCompleteness, documentStrategyReason, type DocumentStrategy } from "@/lib/documents/strategy";
 import { hydrateJobDescriptionForApply } from "@/lib/matching/jobDescriptionHydration";
+import { ensureApplicationDocuments } from "@/lib/documents/applicationReadiness";
+import { computeDocumentFingerprint } from "@/lib/documents/documentFingerprint";
 
 export const ACTIVE_APPLICATION_STATUSES = ["queued", "running", "needs_user_action"] as const;
 
@@ -112,19 +114,85 @@ export async function enqueueApplication(
     }
   }
 
-  const usableResumes = job.generatedDocuments.filter((document) => isUsableResume(document));
-  const resume = usableResumes.find((d) => strategyFromTailoringStatus(d.tailoringStatus) === "TAILORED")
-    ?? usableResumes.find((d) => strategyFromTailoringStatus(d.tailoringStatus) === "PARTIAL_TAILORING")
-    ?? usableResumes[0];
   const completeness = jobDescriptionCompleteness(jobForCompleteness);
+
+  // Prefer a CURRENT document — one whose stored fingerprint still matches
+  // the job's fingerprint right now (JD content, approved profile/facts,
+  // latest match, master resume revision, generation policy). This is the
+  // fix for the known gap: hydration can change the canonical JD after an
+  // older TAILORED/PARTIAL_TAILORING document was generated from thin
+  // content, and that stale document must not be silently reused just
+  // because it still passes QA/identity — those checks say the FILE is
+  // sound, not that its CONTENT still matches what the job says today.
+  // ensureApplicationDocuments reuses a fingerprint-matching document when
+  // one exists, or generates a current one (deterministic: template
+  // composition from the already-computed baseline match + approved
+  // profile/facts + local Typst — no live AI/Ollama call). Any failure here
+  // (no match yet, missing profile fields, generation error) falls through
+  // to the pre-existing MASTER_RESUME_FALLBACK behavior below, unchanged.
+  let resume: (typeof job.generatedDocuments)[number] | undefined;
+  let coverLetter: (typeof job.generatedDocuments)[number] | undefined;
   let documentStrategy: DocumentStrategy;
-  if (!resume) {
-    documentStrategy = "NO_APPROVED_DOCUMENT";
-    throw new ApplicationAgentError(documentStrategyReason(documentStrategy, completeness));
+  let strategyReason: string;
+  let currentFingerprint: string | null = null;
+
+  try {
+    // Resume only here: a cover letter is optional (below), and a cover
+    // letter generation failure must never cost the applicant an otherwise
+    // good, current resume.
+    currentFingerprint = await computeDocumentFingerprint(jobId, userId);
+    const ready = await ensureApplicationDocuments(jobId, userId, { includeCoverLetter: false });
+    resume = ready.documents.find((document) => document.type === "resume");
+  } catch {
+    // Deterministic generation was not possible right now (no AI match yet,
+    // incomplete profile, generation failure, ...) — fall through to reusing
+    // whatever was already approved, exactly as before this change.
   }
-  documentStrategy = "EXISTING_APPROVED_DOCUMENT";
-  const strategyReason = `${documentStrategyReason("EXISTING_APPROVED_DOCUMENT", completeness)} (${strategyFromTailoringStatus(resume.tailoringStatus)})`;
-  const coverLetter = job.generatedDocuments.find((document) => document.type === "coverLetter" && document.qaStatus === "pass" && document.identityVerified);
+  if (resume && currentFingerprint) {
+    // Optional: only attach a cover letter that is ALSO current for this
+    // exact fingerprint. A cover letter generated against a now-stale JD is
+    // rejected the same way a stale resume is — never silently reused, and
+    // never fabricated to fill the gap; the application simply proceeds
+    // without one, per the existing optional-cover-letter policy.
+    coverLetter = job.generatedDocuments.find((document) =>
+      document.type === "coverLetter"
+      && document.qaStatus === "pass"
+      && document.identityVerified
+      && document.documentFingerprint === currentFingerprint,
+    );
+  }
+
+  if (resume) {
+    documentStrategy = "EXISTING_APPROVED_DOCUMENT";
+    strategyReason = `${documentStrategyReason("EXISTING_APPROVED_DOCUMENT", completeness)} (${strategyFromTailoringStatus(resume.tailoringStatus)})`;
+  } else {
+    // Fallback path, unchanged from the pre-existing behavior: a document is
+    // reusable here regardless of fingerprint currency ONLY when it is a
+    // MASTER_RESUME_FALLBACK document — that strategy never claimed to be
+    // tailored to this job's JD, so it cannot go stale the way a TAILORED or
+    // PARTIAL_TAILORING document can.
+    const usableResumes = job.generatedDocuments.filter((document) =>
+      isUsableResume(document) && strategyFromTailoringStatus(document.tailoringStatus) === "MASTER_RESUME_FALLBACK",
+    );
+    resume = usableResumes[0];
+    if (!resume) {
+      documentStrategy = "NO_APPROVED_DOCUMENT";
+      throw new ApplicationAgentError(documentStrategyReason(documentStrategy, completeness));
+    }
+    documentStrategy = "EXISTING_APPROVED_DOCUMENT";
+    strategyReason = `${documentStrategyReason("EXISTING_APPROVED_DOCUMENT", completeness)} (${strategyFromTailoringStatus(resume.tailoringStatus)})`;
+    // Same staleness standard as the happy path: a cover letter is
+    // job-specific content, so one generated against a different JD
+    // fingerprint is never attached here either — no fingerprint, no reuse.
+    if (currentFingerprint) {
+      coverLetter = job.generatedDocuments.find((document) =>
+        document.type === "coverLetter"
+        && document.qaStatus === "pass"
+        && document.identityVerified
+        && document.documentFingerprint === currentFingerprint,
+      );
+    }
+  }
   const activeKey = applicationActiveKey(userId, jobId);
 
   // Repair duplicate active rows for THIS OWNER only. Legacy rows may still
