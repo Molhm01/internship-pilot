@@ -541,3 +541,53 @@ export async function hydrateMissingDescriptionsForScoring(options: {
     skippedCooldown,
   };
 }
+
+const HYDRATION_JOB_SELECT = {
+  id: true,
+  title: true,
+  company: true,
+  description: true,
+  jobResponsibilities: true,
+  jobQualifications: true,
+  officialJobUrl: true,
+  originalJobPostUrl: true,
+  officialApplicationUrl: true,
+  officialApplyUrl: true,
+  url: true,
+  resolutionStatus: true,
+  verificationStatus: true,
+  atsType: true,
+  atsTenant: true,
+  sourceJobId: true,
+  scoringError: true,
+  scoringQueuedAt: true,
+  sourcePostedAt: true,
+  sourcePostedText: true,
+  sourceDateConfidence: true,
+  sourceDateProvenance: true,
+  firstSeenAt: true,
+} as const;
+
+/**
+ * A single job's bounded priority JD hydration — the "user just clicked
+ * Apply" path, distinct from the bulk sweep above.
+ *
+ * Bounded by the same per-request FETCH_TIMEOUT_MS every evidence fetcher in
+ * this file already uses; a slow or unreachable official source fails this
+ * call quickly rather than making the applicant wait indefinitely. On any
+ * failure (fetch error, no evidence, still thin) this returns `hydrated:
+ * false` and does NOT throw — the caller's existing MASTER_RESUME_FALLBACK
+ * path is the correct, already-safe response to "no usable JD was found,"
+ * not an exception.
+ */
+export async function hydrateJobDescriptionForApply(jobId: string): Promise<{ hydrated: boolean }> {
+  const job = await prisma.job.findUnique({ where: { id: jobId }, select: HYDRATION_JOB_SELECT });
+  if (!job) return { hydrated: false };
+  if (hasUsableJobDescription(job)) return { hydrated: false };
+  try {
+    const outcome = await hydrateOne(job, new Date());
+    return { hydrated: outcome.descriptionHydrated };
+  } catch {
+    return { hydrated: false };
+  }
+}

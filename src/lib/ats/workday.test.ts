@@ -173,6 +173,13 @@ describe("Workday board listing", () => {
     )).toBe("/job/Dayton/Systems-Engineering-Intern_R5030140-1");
   });
 
+  it("REGRESSION: handles a locale segment inserted before the site (Blackstone: /zh-CN/{site}/job/...)", () => {
+    expect(workdayExternalPathFromUrl(
+      "https://blackstone.wd1.myworkdayjobs.com/zh-CN/Blackstone_Campus_Careers/job/New-York/XMLNAME-2027-Data-Science-Summer-Analyst_44862",
+      "Blackstone_Campus_Careers",
+    )).toBe("/job/New-York/XMLNAME-2027-Data-Science-Summer-Analyst_44862");
+  });
+
   it("returns null when the URL does not belong to the given site", () => {
     expect(workdayExternalPathFromUrl("https://acme.wd5.myworkdayjobs.com/OtherSite/job/x", "External")).toBeNull();
     expect(workdayExternalPathFromUrl("not-a-url", "External")).toBeNull();

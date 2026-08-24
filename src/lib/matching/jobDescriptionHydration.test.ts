@@ -1,11 +1,17 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const updateJob = vi.fn();
+const findUniqueJob = vi.fn();
 const baseline = vi.fn();
 const scheduleAi = vi.fn();
 
 vi.mock("@/lib/db", () => ({
-  prisma: { job: { update: (...args: unknown[]) => updateJob(...args) } },
+  prisma: {
+    job: {
+      update: (...args: unknown[]) => updateJob(...args),
+      findUnique: (...args: unknown[]) => findUniqueJob(...args),
+    },
+  },
 }));
 vi.mock("@/lib/matching/baselineScoring", () => ({
   baselineScoreJobForAllEligibleUsers: (...args: unknown[]) => baseline(...args),
@@ -17,6 +23,7 @@ vi.mock("@/lib/matching/initialAiMatchQueue", () => ({
 import {
   applyOfficialHydrationEvidence,
   ashbyPostingIdFromUrl,
+  hydrateJobDescriptionForApply,
   hydrationPriority,
   type HydrationJob,
 } from "./jobDescriptionHydration";
@@ -105,5 +112,52 @@ describe("official quality hydration", () => {
   it("returns null when no UUID is present in the URL", () => {
     expect(ashbyPostingIdFromUrl("https://jobs.ashbyhq.com/replit")).toBeNull();
     expect(ashbyPostingIdFromUrl(null)).toBeNull();
+  });
+});
+
+describe("apply-time bounded priority hydration", () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  // Scenario A: already-usable JD — no hydration attempt, no network call.
+  it("A: does not attempt hydration when the job already has a usable JD", async () => {
+    findUniqueJob.mockResolvedValue(job({ description: "Responsibilities and qualifications. ".repeat(20) }));
+    global.fetch = vi.fn(() => { throw new Error("must not fetch"); }) as unknown as typeof fetch;
+    const result = await hydrateJobDescriptionForApply("job-1");
+    expect(result).toEqual({ hydrated: false });
+  });
+
+  // Scenario C: hydration attempted but the official source is unreachable — bounded, never throws.
+  it("C: a failed hydration attempt returns hydrated:false instead of throwing (caller falls back to MASTER_RESUME_FALLBACK)", async () => {
+    findUniqueJob.mockResolvedValue(job({ description: "", atsType: null, officialJobUrl: null, url: null, officialApplicationUrl: null }));
+    global.fetch = vi.fn().mockRejectedValue(new Error("network unreachable")) as unknown as typeof fetch;
+    const result = await hydrateJobDescriptionForApply("job-1");
+    expect(result).toEqual({ hydrated: false });
+  });
+
+  it("returns hydrated:false for a job that no longer exists, without throwing", async () => {
+    findUniqueJob.mockResolvedValue(null);
+    const result = await hydrateJobDescriptionForApply("missing-job");
+    expect(result).toEqual({ hydrated: false });
+  });
+
+  // Scenario B: hydration succeeds — the canonical job description is
+  // updated so any subsequent tailoring/scoring reads the real JD.
+  it("B: a successful hydration updates the canonical job row and never fabricates content", async () => {
+    findUniqueJob.mockResolvedValue(job({
+      description: "",
+      atsType: "workday",
+      officialJobUrl: "https://acme.wd5.myworkdayjobs.com/External/job/intern-1",
+      sourceJobId: "/job/intern-1",
+    }));
+    global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      jobPostingInfo: { jobDescription: "Real Responsibilities and qualifications from the employer. ".repeat(10) },
+    }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+    const result = await hydrateJobDescriptionForApply("job-1");
+    expect(result).toEqual({ hydrated: true });
+    const data = updateJob.mock.calls[0]?.[0]?.data as Record<string, unknown>;
+    expect(data.description).toContain("Real Responsibilities");
   });
 });

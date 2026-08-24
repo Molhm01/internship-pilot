@@ -5,6 +5,7 @@ import type { AtsType } from "./types";
 import { recordRunStage } from "./validation";
 import { canonicalAvailability, AVAILABILITY, isActiveAvailability } from "@/lib/jobs/verificationModel";
 import { isUsableResume, strategyFromTailoringStatus, jobDescriptionCompleteness, documentStrategyReason, type DocumentStrategy } from "@/lib/documents/strategy";
+import { hydrateJobDescriptionForApply } from "@/lib/matching/jobDescriptionHydration";
 
 export const ACTIVE_APPLICATION_STATUSES = ["queued", "running", "needs_user_action"] as const;
 
@@ -93,11 +94,29 @@ export async function enqueueApplication(
     await prisma.job.update({ where: { id: job.id }, data: { officialApplyUrl } });
   }
 
+  // One bounded priority JD hydration attempt before deciding document
+  // strategy — the whole point is to give the TAILORED path a real chance
+  // before falling back, never to block Apply on it. hydrateJobDescriptionForApply
+  // never throws and is bounded by the same per-request fetch timeout every
+  // other JD hydration path in this codebase already uses, so a slow or
+  // unreachable official source cannot make this call hang.
+  let jobForCompleteness: { description: string; jobResponsibilities: string | null; jobQualifications: string | null } = job;
+  if (jobDescriptionCompleteness(job) !== "complete") {
+    const { hydrated } = await hydrateJobDescriptionForApply(jobId).catch(() => ({ hydrated: false }));
+    if (hydrated) {
+      const refreshed = await prisma.job.findUnique({
+        where: { id: jobId },
+        select: { description: true, jobResponsibilities: true, jobQualifications: true },
+      });
+      if (refreshed) jobForCompleteness = refreshed;
+    }
+  }
+
   const usableResumes = job.generatedDocuments.filter((document) => isUsableResume(document));
   const resume = usableResumes.find((d) => strategyFromTailoringStatus(d.tailoringStatus) === "TAILORED")
     ?? usableResumes.find((d) => strategyFromTailoringStatus(d.tailoringStatus) === "PARTIAL_TAILORING")
     ?? usableResumes[0];
-  const completeness = jobDescriptionCompleteness(job);
+  const completeness = jobDescriptionCompleteness(jobForCompleteness);
   let documentStrategy: DocumentStrategy;
   if (!resume) {
     documentStrategy = "NO_APPROVED_DOCUMENT";

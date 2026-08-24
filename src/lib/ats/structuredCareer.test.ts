@@ -192,3 +192,95 @@ describe("iCIMS bot-wall detection via HTTP 405", () => {
     }
   });
 });
+
+describe("SuccessFactors detail-link discovery does not lose real internships", () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  function jobPage(title: string) {
+    return `<html><head><title>${title}</title></head><body>
+      <h1>${title}</h1>
+      <div itemprop="description">${"Responsibilities and qualifications. ".repeat(20)}</div>
+    </body></html>`;
+  }
+
+  it("REGRESSION: does not require the list-page anchor text to say 'intern' to fetch a detail page", async () => {
+    // Gulfstream Aerospace measured: 131 real detail links on its
+    // SuccessFactors board, 0 of whose list-page anchor text contained
+    // "intern"/"co-op" — the true title only appears on the detail page. The
+    // old pre-filter dropped every one of them before a single detail page
+    // was ever fetched. The real STUDENT_ROLE_HINT check on the PARSED title
+    // (not the anchor text) is what should decide inclusion.
+    const landing = `<html><body>
+      <a href="/job/Senior-Engineer-GA/1000/">Senior Engineer</a>
+      <a href="/job/Engineering-Intern-GA/1001/">Engineering Intern</a>
+    </body></html>`;
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      if (url === "https://careers.acme.example/") {
+        return Promise.resolve(new Response(landing, { status: 200, headers: { "content-type": "text/html" } }));
+      }
+      if (url.includes("/job/Senior-Engineer-GA/1000/")) {
+        return Promise.resolve(new Response(jobPage("Senior Engineer"), { status: 200, headers: { "content-type": "text/html" } }));
+      }
+      if (url.includes("/job/Engineering-Intern-GA/1001/")) {
+        return Promise.resolve(new Response(jobPage("Engineering Intern"), { status: 200, headers: { "content-type": "text/html" } }));
+      }
+      return Promise.resolve(new Response("", { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const probe = await probeStructuredPortalJobs({
+      kind: "successfactors",
+      companyName: "Acme",
+      careersUrl: "https://careers.acme.example/",
+      maxListPages: 1,
+      maxJobDetails: 10,
+    });
+    expect(probe.jobs.map((j) => j.title)).toContain("Engineering Intern");
+    // A non-intern role is still correctly excluded, by its real title.
+    expect(probe.jobs.map((j) => j.title)).not.toContain("Senior Engineer");
+  });
+
+  it("REGRESSION: visits a student-labeled category page before a generic one, within a bounded detail budget", async () => {
+    // A board with many "Engineering" category jobs discovered before an
+    // "Entry-level Positions and Internships" category must not let the
+    // generic category crowd every internship out of a bounded detail-fetch
+    // budget (maxJobDetails).
+    const landing = `<html><body>
+      <a href="/go/Engineering/1">Engineering</a>
+      <a href="/go/Entry-level-Positions-and-Internships/2">Entry-level Positions and Internships</a>
+    </body></html>`;
+    const engineeringCategory = Array.from({ length: 5 }, (_, i) =>
+      `<a href="/job/Senior-Engineer-${i}/${2000 + i}/">Senior Engineer ${i}</a>`).join("\n");
+    const internCategory = `<a href="/job/Intern-Role/3000/">Intern Role</a>`;
+
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      if (url === "https://careers.acme.example/") {
+        return Promise.resolve(new Response(landing, { status: 200, headers: { "content-type": "text/html" } }));
+      }
+      if (url.includes("/go/Engineering/1")) {
+        return Promise.resolve(new Response(`<html><body>${engineeringCategory}</body></html>`, { status: 200, headers: { "content-type": "text/html" } }));
+      }
+      if (url.includes("/go/Entry-level-Positions-and-Internships/2")) {
+        return Promise.resolve(new Response(`<html><body>${internCategory}</body></html>`, { status: 200, headers: { "content-type": "text/html" } }));
+      }
+      if (url.includes("/job/Intern-Role/3000/")) {
+        return Promise.resolve(new Response(jobPage("Software Engineering Intern"), { status: 200, headers: { "content-type": "text/html" } }));
+      }
+      if (/\/job\/Senior-Engineer-/.test(url)) {
+        return Promise.resolve(new Response(jobPage("Senior Engineer"), { status: 200, headers: { "content-type": "text/html" } }));
+      }
+      return Promise.resolve(new Response("", { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const probe = await probeStructuredPortalJobs({
+      kind: "successfactors",
+      companyName: "Acme",
+      careersUrl: "https://careers.acme.example/",
+      maxListPages: 3,
+      maxJobDetails: 3, // smaller than the 5 Engineering + 1 Intern candidates
+    });
+    expect(probe.jobs.map((j) => j.title)).toContain("Software Engineering Intern");
+  });
+});

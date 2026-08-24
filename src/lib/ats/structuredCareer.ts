@@ -409,6 +409,19 @@ export async function probeStructuredPortalJobs(options: {
   const visited = new Set<string>();
   const allowedHosts = new Set<string>();
   const details = new Map<string, string>();
+  // List-page anchor text is an unreliable pre-filter: SuccessFactors in
+  // particular renders many boards' list rows without "intern"/"co-op"
+  // wording anywhere in the raw anchor (Gulfstream Aerospace measured: 131
+  // detail links found, 0 matched the hint, 0 job pages ever fetched — even
+  // though several ARE genuine internships once the real title is read off
+  // the detail page). Hint-matching links are still fetched FIRST — this is
+  // a priority order, not an exclusion filter; the real STUDENT_ROLE_HINT
+  // check on the parsed detail-page title (below) is what actually decides
+  // whether a posting counts, so a non-intern link surviving this stage still
+  // gets correctly dropped once its true title is known.
+  const hintedDetails = new Map<string, string>();
+  const unhintedDetails = new Map<string, string>();
+  const maxDetailScan = maxJobDetails * 4;
   let readableListPages = 0;
   let detailLinksFound = 0;
   let employerMirrorAvailable = false;
@@ -440,17 +453,33 @@ export async function probeStructuredPortalJobs(options: {
         detailLinksFound += 1;
         if (!hostLooksLikeAts(options.kind, base.hostname)) employerMirrorAvailable = true;
         const hint = `${link.text} ${link.url}`;
-        if (STUDENT_ROLE_HINT.test(hint) && !details.has(link.url)) {
-          details.set(link.url, link.text);
+        if (hintedDetails.has(link.url) || unhintedDetails.has(link.url)) continue;
+        if (STUDENT_ROLE_HINT.test(hint)) {
+          hintedDetails.set(link.url, link.text);
+        } else if (hintedDetails.size + unhintedDetails.size < maxDetailScan) {
+          unhintedDetails.set(link.url, link.text);
         }
         continue;
       }
 
       if (looksLikePortalNavigation(options.kind, link, base) && !queued.has(link.url)) {
         queued.add(link.url);
-        queue.push(link.url);
+        // A category/navigation page whose own label hints at student roles
+        // (e.g. Gulfstream Aerospace's "Entry-level Positions and
+        // Internships") is visited BEFORE generic categories, so its detail
+        // links land inside the bounded per-crawl detail-fetch budget instead
+        // of being crowded out by a large unrelated category (e.g.
+        // "Engineering") that happens to be discovered first.
+        if (STUDENT_ROLE_HINT.test(`${link.text} ${link.url}`)) queue.unshift(link.url);
+        else queue.push(link.url);
       }
     }
+  }
+
+  for (const [url, text] of hintedDetails) details.set(url, text);
+  for (const [url, text] of unhintedDetails) {
+    if (details.size >= maxDetailScan) break;
+    details.set(url, text);
   }
 
   // A confirmed bot wall on the job SEARCH/LIST endpoint is grounds to report

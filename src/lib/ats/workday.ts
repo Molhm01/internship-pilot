@@ -177,9 +177,15 @@ function normalizedWorkdayDetail(detail: WorkdayDetail | null): WorkdayJobDetail
 export function workdayExternalPathFromUrl(url: string, site: string): string | null {
   try {
     const pathname = new URL(url).pathname;
-    const prefix = `/${site}`;
-    if (!pathname.startsWith(`${prefix}/`)) return null;
-    return pathname.slice(prefix.length) || null;
+    const prefix = `/${site}/`;
+    // Workday sometimes inserts a locale segment before the site
+    // (`/zh-CN/{site}/job/...`, `/en-US/{site}/job/...`) — measured on
+    // Blackstone. Find the site segment wherever it starts, not only at the
+    // very front of the path, so a locale prefix does not hide the job path.
+    const index = pathname.indexOf(prefix);
+    if (index < 0) return null;
+    const rest = pathname.slice(index + prefix.length - 1);
+    return rest === "/" ? null : rest;
   } catch {
     return null;
   }
