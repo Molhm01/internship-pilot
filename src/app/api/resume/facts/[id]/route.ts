@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { FACT_TYPES } from "@/lib/statuses";
 import { notFoundResponse, withUser } from "@/lib/auth/session";
 import { scheduleAutomaticScoresForUser } from "@/lib/matching/automaticScoring";
+import { backfillBaselineScoresForUser } from "@/lib/matching/baselineScoring";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -55,6 +56,7 @@ export const PATCH = withUser<Params>(async (request, user, { params }) => {
   if (updated.count === 0) return notFoundResponse("Fact not found");
 
   const fact = await prisma.resumeFact.findFirst({ where: { id, userId: user.id } });
+  await backfillBaselineScoresForUser(user.id);
   queueRefreshAfterProfileChange(user.id);
   return NextResponse.json({ fact });
 });
@@ -63,6 +65,7 @@ export const DELETE = withUser<Params>(async (_request, user, { params }) => {
   const { id } = await params;
   const deleted = await prisma.resumeFact.deleteMany({ where: { id, userId: user.id } });
   if (deleted.count === 0) return notFoundResponse("Fact not found");
+  await backfillBaselineScoresForUser(user.id);
   queueRefreshAfterProfileChange(user.id);
   return NextResponse.json({ ok: true });
 });

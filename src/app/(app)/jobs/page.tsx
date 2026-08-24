@@ -57,10 +57,18 @@ type JobCounts = {
   scoring: number;
   eligibilityPass: number;
   eligibilityFail: number;
+  baselineScored: number;
+  aiRefined: number;
+  profileReady: boolean;
   total: number;
 };
 
-const PAGE_SIZE = 60;
+const PAGE_SIZE = 50;
+type DiscoverView = "fresh" | "all" | "older";
+
+function parseDiscoverView(value: string | null): DiscoverView {
+  return value === "all" || value === "older" ? value : "fresh";
+}
 
 // useSearchParams makes this subtree client-rendered, so it must sit inside a
 // Suspense boundary for the rest of the route to prerender (Next.js App Router
@@ -82,6 +90,8 @@ export default function JobsPage() {
 function JobsPageContent() {
   const [jobs, setJobs] = useState<JobCardData[]>([]);
   const [total, setTotal] = useState(0);
+  const [profileReady, setProfileReady] = useState(true);
+  const [scoreReadinessMessage, setScoreReadinessMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -104,6 +114,7 @@ function JobsPageContent() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const sort: JobSort = parseJobSort(searchParams.get("sort"));
+  const discoverView = parseDiscoverView(searchParams.get("view"));
 
   const setSort = useCallback((next: JobSort) => {
     const params = new URLSearchParams(searchParams.toString());
@@ -112,12 +123,21 @@ function JobsPageContent() {
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
   }, [pathname, router, searchParams]);
 
+  const setDiscoverView = useCallback((next: DiscoverView) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === "fresh") params.delete("view");
+    else params.set("view", next);
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }, [pathname, router, searchParams]);
+
   const queryFor = useMemo(() => (offset: number) => {
     const params = applyJobSort(buildJobsQuery(filters), sort);
+    if (discoverView !== "fresh") params.set("view", discoverView);
     params.set("limit", String(PAGE_SIZE));
     params.set("offset", String(offset));
     return params;
-  }, [filters, sort]);
+  }, [discoverView, filters, sort]);
 
   const loadCounts = useCallback(async () => {
     setCountsError(null);
@@ -139,6 +159,8 @@ function JobsPageContent() {
       ) as JobCardData[];
       setJobs(uniqueJobs);
       setTotal(data.total);
+      setProfileReady(data.profileReady !== false);
+      setScoreReadinessMessage(data.scoreReadinessMessage ?? null);
     } catch (err) {
       setJobs([]);
       setTotal(0);
@@ -241,7 +263,7 @@ function JobsPageContent() {
     <PageBody>
       <PageHeader
         title="Discover"
-        description="Every legitimate discovered internship in one feed, ordered by when the source says it was posted. Upload one resume and ATS matching runs automatically as job descriptions become available."
+        description="Fresh internships from the last 7 days, newest first. Every job gets an immediate baseline match; AI refinement runs in the background."
         meta={
           counts && (
             <>
@@ -276,8 +298,9 @@ function JobsPageContent() {
             <Metric label="Verified" value={counts.officiallyVerified.toLocaleString()} tone="positive" />
             <Metric label="Source listed" value={counts.sourceListed.toLocaleString()} tone="info" />
             <Metric label="Pending" value={counts.verificationPending.toLocaleString()} tone="caution" />
-            <Metric label="Scored" value={counts.scored.toLocaleString()} />
-            <Metric label="Unscored" value={counts.unscored.toLocaleString()} tone="caution" />
+            {counts.profileReady && <Metric label="Scored" value={counts.scored.toLocaleString()} />}
+            {counts.profileReady && <Metric label="Baseline" value={counts.baselineScored.toLocaleString()} />}
+            {counts.profileReady && <Metric label="AI refined" value={counts.aiRefined.toLocaleString()} />}
             <Metric label="Eligible" value={counts.eligibilityPass.toLocaleString()} tone="positive" />
             <Metric label="Ineligible" value={counts.eligibilityFail.toLocaleString()} tone="critical" />
             <Metric label="Closed" value={counts.closedConfirmed.toLocaleString()} tone="critical" />
@@ -308,6 +331,22 @@ function JobsPageContent() {
       )}
 
       <div className="mb-4 flex flex-wrap items-center gap-2 border-y border-hairline py-2">
+        <div className="flex items-center gap-1" aria-label="Discover view">
+          {([
+            ["fresh", "Fresh · 7 days"],
+            ["all", "All Active"],
+            ["older", "Older · 8–30 days"],
+          ] as const).map(([value, label]) => (
+            <Button
+              key={value}
+              size="sm"
+              variant={discoverView === value ? "primary" : "ghost"}
+              onClick={() => setDiscoverView(value)}
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
         <label className="flex items-center gap-2 text-micro font-medium uppercase tracking-[0.075em] text-tertiary">
           Sort
           <Select
@@ -406,7 +445,13 @@ function JobsPageContent() {
         />
       )}
 
-      {viewState === "loading" ? (
+      {!profileReady && !fetchError && (
+        <Notice tone="info" className="mb-4">
+          {scoreReadinessMessage ?? "Complete your profile to activate job matching."}
+        </Notice>
+      )}
+
+      {!profileReady && viewState !== "loading" ? null : viewState === "loading" ? (
         <SkeletonRows rows={6} />
       ) : viewState === "error" ? null : viewState === "empty" ? (
         <EmptyState

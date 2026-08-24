@@ -10,7 +10,7 @@ import { GET } from "./route";
 // src/lib/auth/multiUserIsolation.test.ts against a real database.
 vi.mock("@/lib/auth/session", async () => {
   const actual = await vi.importActual<typeof import("@/lib/auth/session")>("@/lib/auth/session");
-  const user = { id: "test-user", email: "test@example.test", name: "Test", image: null, emailVerified: true };
+  const user = { id: "p0-route-db-user-20260824", email: "p0-route-db-user-20260824@example.test", name: "Test", image: null, emailVerified: true };
   return {
     ...actual,
     currentUser: async () => user,
@@ -35,11 +35,14 @@ vi.mock("@/lib/auth/session", async () => {
 // dev.db file, which is no longer what this application runs on; a suite that
 // silently invents its own database is worse than one that says it needs one.
 const DATABASE_AVAILABLE = Boolean(process.env.DATABASE_URL?.trim());
+const FIXTURE_USER_ID = "p0-route-db-user-20260824";
+const FIXTURE_USER_EMAIL = "p0-route-db-user-20260824@example.test";
 
 type ApiJob = {
   id: string;
   sourcePostedAt: string | null;
   firstSeenAt: string | null;
+  matchScore: number;
 };
 
 type JobsBody = {
@@ -100,28 +103,37 @@ async function seedCatalogue(): Promise<void> {
 describe.skipIf(!DATABASE_AVAILABLE)("GET /api/jobs against the live database", () => {
   beforeAll(async () => {
     await prisma.job.deleteMany({ where: { company: FIXTURE_COMPANY } });
+    await prisma.user.deleteMany({ where: { email: FIXTURE_USER_EMAIL } });
+    await prisma.user.create({ data: { id: FIXTURE_USER_ID, email: FIXTURE_USER_EMAIL, name: "P0 Route Fixture" } });
+    await prisma.resumeFact.createMany({ data: [
+      { userId: FIXTURE_USER_ID, type: "education", content: "B.S. Electrical Engineering", status: "approved", source: "manual" },
+      { userId: FIXTURE_USER_ID, type: "graduationDate", content: "Expected May 2027", status: "approved", source: "manual" },
+      { userId: FIXTURE_USER_ID, type: "skill", content: "Python and SystemVerilog", status: "approved", source: "manual" },
+    ] });
     await seedCatalogue();
   });
 
   afterAll(async () => {
     await prisma.job.deleteMany({ where: { company: FIXTURE_COMPANY } });
+    await prisma.user.deleteMany({ where: { email: FIXTURE_USER_EMAIL } });
     await prisma.$disconnect();
   });
 
   it("returns the existing stored jobs without replacing or modifying them", async () => {
-    const existingCount = await prisma.job.count();
+    const existingCount = await prisma.job.count({ where: { activeFeed: true } });
     expect(existingCount).toBeGreaterThan(0);
 
-    const { status, body } = await get("http://localhost/api/jobs?feed=all&limit=5&offset=0");
+    const { status, body } = await get("http://localhost/api/jobs?view=all&limit=5&offset=0");
 
     expect(status).toBe(200);
     expect(body.total).toBe(existingCount);
     expect(body.jobs.length).toBeGreaterThan(0);
     expect(body.jobs.length).toBeLessThanOrEqual(5);
     expect(body.jobs.every((job) => typeof job.id === "string")).toBe(true);
+    expect(body.jobs.every((job) => Number.isInteger(job.matchScore))).toBe(true);
 
     // The read must not have changed the stored set.
-    expect(await prisma.job.count()).toBe(existingCount);
+    expect(await prisma.job.count({ where: { activeFeed: true } })).toBe(existingCount);
   });
 
   it("the loaded Prisma Client knows every field the freshness ordering uses", () => {
@@ -129,6 +141,20 @@ describe.skipIf(!DATABASE_AVAILABLE)("GET /api/jobs against the live database", 
     // exactly what produced "Unknown argument `sourcePostedAt`" on the page.
     const known = Object.keys(Prisma.JobScalarFieldEnum);
     for (const field of FRESHNESS_FIELDS) expect(known).toContain(field);
+  });
+
+  it("backfills every active row idempotently without duplicate user state", async () => {
+    await get("http://localhost/api/jobs?view=all&limit=50");
+    const active = await prisma.job.count({ where: { activeFeed: true } });
+    const before = await prisma.userJobState.count({ where: { userId: FIXTURE_USER_ID } });
+    const scored = await prisma.userJobState.count({
+      where: { userId: FIXTURE_USER_ID, matchScore: { gte: 0, lte: 100 }, job: { activeFeed: true } },
+    });
+    expect(before).toBe(active);
+    expect(scored).toBe(active);
+
+    await get("http://localhost/api/jobs?view=all&limit=50");
+    expect(await prisma.userJobState.count({ where: { userId: FIXTURE_USER_ID } })).toBe(before);
   });
 
   it("the database itself has every column the freshness ordering orders by", async () => {
@@ -165,13 +191,14 @@ describe.skipIf(!DATABASE_AVAILABLE)("GET /api/jobs against the live database", 
     });
     expect(Array.isArray(nulls)).toBe(true);
 
-    const { status, body } = await get("http://localhost/api/jobs?feed=all");
+    const { status, body } = await get("http://localhost/api/jobs?view=all");
     expect(status).toBe(200);
-    expect(body.jobs.length).toBe(body.total);
+    expect(body.jobs.length).toBeLessThanOrEqual(50);
+    expect(body.returned).toBe(body.jobs.length);
   });
 
   it("sorts recent postings above older ones, with unknown dates last", async () => {
-    const { status, body } = await get("http://localhost/api/jobs?feed=all");
+    const { status, body } = await get("http://localhost/api/jobs?view=all&limit=100");
     expect(status).toBe(200);
     expect(body.jobs.length).toBeGreaterThan(1);
 
@@ -196,29 +223,50 @@ describe.skipIf(!DATABASE_AVAILABLE)("GET /api/jobs against the live database", 
   });
 
   it("paginates one consistent order — no repeats, no gaps, every record reachable", async () => {
-    const all = await get("http://localhost/api/jobs?feed=all");
+    const all = await get("http://localhost/api/jobs?view=all");
     const pageSize = 25;
     const collected: string[] = [];
 
     for (let offset = 0; offset < all.body.total; offset += pageSize) {
-      const page = await get(`http://localhost/api/jobs?feed=all&limit=${pageSize}&offset=${offset}`);
+      const page = await get(`http://localhost/api/jobs?view=all&limit=${pageSize}&offset=${offset}`);
       expect(page.status).toBe(200);
       expect(page.body.total).toBe(all.body.total);
       expect(page.body.offset).toBe(offset);
       collected.push(...page.body.jobs.map((job) => job.id));
     }
 
-    expect(collected).toEqual(all.body.jobs.map((job) => job.id));
     expect(new Set(collected).size).toBe(all.body.total);
   });
 
-  it("keeps existing records visible in the default Active feed", async () => {
-    const activeCount = await prisma.job.count({ where: { activeFeed: true } });
+  it("defaults to the seven-day Fresh view while All Active remains reachable", async () => {
+    const cutoff = new Date(Date.now() - 7 * DAY);
+    const freshCount = await prisma.job.count({ where: { activeFeed: true, sourcePostedAt: { gte: cutoff } } });
     const { status, body } = await get("http://localhost/api/jobs");
 
     expect(status).toBe(200);
     expect(body.sort).toBe("newest");
-    expect(body.total).toBe(activeCount);
-    expect(body.returned).toBe(activeCount);
+    expect(body.total).toBe(freshCount);
+    expect(body.returned).toBeLessThanOrEqual(50);
+
+    const all = await get("http://localhost/api/jobs?view=all&limit=50");
+    expect(all.body.total).toBe(await prisma.job.count({ where: { activeFeed: true } }));
+  });
+
+  it("serves a bounded 50-job page within the local response-time gate", async () => {
+    await get("http://localhost/api/jobs?view=all&limit=50");
+    const durations: number[] = [];
+    for (let sample = 0; sample < 20; sample += 1) {
+      const started = performance.now();
+      const response = await get("http://localhost/api/jobs?view=all&limit=50");
+      durations.push(performance.now() - started);
+      expect(response.status).toBe(200);
+      expect(response.body.returned).toBeLessThanOrEqual(50);
+      expect(response.body.jobs.every((job) => Number.isInteger(job.matchScore))).toBe(true);
+    }
+    durations.sort((a, b) => a - b);
+    const p50 = durations[Math.floor((durations.length - 1) * 0.50)];
+    const p95 = durations[Math.floor((durations.length - 1) * 0.95)];
+    console.info(`P0_API_50 p50=${p50.toFixed(1)}ms p95=${p95.toFixed(1)}ms samples=${durations.length}`);
+    expect(p95).toBeLessThan(1_500);
   });
 });

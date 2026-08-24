@@ -12,16 +12,13 @@ const VALID_SCORE = { gte: 0, lte: 100 };
 function unscoredActiveWhere(userId: string): Prisma.JobWhereInput {
   return {
     activeFeed: true,
-    AND: [
-      {
-        OR: [
-          { userStates: { none: { userId } } },
-          { userStates: { some: { userId, matchScore: null } } },
-          { userStates: { some: { userId, matchScore: { lt: 0 } } } },
-          { userStates: { some: { userId, matchScore: { gt: 100 } } } },
-        ],
-      },
-      { matchResults: { none: { userId, score: VALID_SCORE } } },
+    // BASELINE is a usable numeric score, but this query measures optional AI
+    // refinement work. Keeping those two states separate prevents a baseline
+    // from accidentally suppressing its queued refinement.
+    OR: [
+      { userStates: { none: { userId } } },
+      { userStates: { some: { userId, scoreSource: null } } },
+      { userStates: { some: { userId, scoreSource: { not: "AI_REFINED" } } } },
     ],
   };
 }
@@ -118,7 +115,10 @@ export async function scheduleAllUnscoredActiveJobs(
       prisma.job.count({ where: { activeFeed: true } }),
       prisma.job.findMany({
         where: unscoredActiveWhere(userId),
-        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        orderBy: [
+          { sourcePostedAt: { sort: "desc", nulls: "last" } },
+          { id: "desc" },
+        ],
         select: { id: true },
       }),
     ]);

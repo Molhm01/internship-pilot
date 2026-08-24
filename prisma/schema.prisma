@@ -1325,6 +1325,15 @@ model UserJobState {
   matchScore        Int?
   eligibilityStatus String?
   matchedAt         DateTime?
+  /// BASELINE is the deterministic local score available immediately;
+  /// AI_REFINED is a completed model refinement over the same two inputs.
+  scoreSource                String?
+  /// Exact approved candidate-profile revision used for the displayed score.
+  scoreProfileRevision       String?
+  /// Exact canonical job scoring-input fingerprint used for the displayed score.
+  scoreJobFingerprint        String?
+  /// Explainable JSON rubric evidence for BASELINE; null for AI_REFINED.
+  scoreExplanation           String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1333,6 +1342,7 @@ model UserJobState {
   @@index([userId])
   @@index([jobId])
   @@index([userId, applicationStatus])
+  @@index([userId, scoreSource])
 }
 
 /**

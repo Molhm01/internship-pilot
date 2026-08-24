@@ -69,6 +69,8 @@
     "ats:sync": "tsx scripts/ats-sync.ts",
     "employers:repair": "tsx scripts/repair-employer-backlog.ts",
     "ai-match:backfill-unscored": "tsx scripts/ai-match-backfill-unscored.ts",
+    "match:backfill-baseline": "tsx scripts/backfill-baseline-scores.ts",
+    "jobs:report-p0": "tsx scripts/report-scoring-freshness-p0.ts",
     "ai-match:benchmark": "tsx scripts/benchmark-ai-match.ts",
     "typecheck": "tsc --noEmit",
     "db:dev": "prisma dev",

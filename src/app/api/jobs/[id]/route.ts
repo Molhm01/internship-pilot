@@ -3,6 +3,11 @@ import { prisma } from "@/lib/db";
 import { TRACKER_STATUSES } from "@/lib/statuses";
 import { parseSourcePostedAt } from "@/lib/sync/sourceDate";
 import { withUser } from "@/lib/auth/session";
+import {
+  baselineScoreJobForAllEligibleUsers,
+  loadApprovedBaselineProfile,
+} from "@/lib/matching/baselineScoring";
+import { scheduleInitialAiMatchForAllUsers } from "@/lib/matching/initialAiMatchQueue";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -16,6 +21,8 @@ type Params = { params: Promise<{ id: string }> };
  */
 export const GET = withUser<Params>(async (_req, user, { params }) => {
   const { id } = await params;
+  const profileReady = Boolean(await loadApprovedBaselineProfile(user.id));
+  if (profileReady) await baselineScoreJobForAllEligibleUsers(id);
   const startedAt = performance.now();
   const row = await prisma.job.findUnique({
     where: { id },
@@ -43,10 +50,12 @@ export const GET = withUser<Params>(async (_req, user, { params }) => {
       status: state?.applicationStatus ?? "DISCOVERED",
       matchScore: state?.matchScore ?? null,
       eligibilityStatus: state?.eligibilityStatus ?? null,
+      scoreSource: state?.scoreSource ?? null,
       saved: state?.saved ?? false,
       hidden: state?.hidden ?? false,
       notes: state?.notes ?? null,
     },
+    profileReady,
   });
 });
 
@@ -91,6 +100,11 @@ export const PATCH = withUser<Params>(async (req, user, { params }) => {
       Object.keys(data).length > 0
         ? await prisma.job.update({ where: { id }, data })
         : await prisma.job.findUniqueOrThrow({ where: { id } });
+
+    if (Object.keys(data).length > 0 && job.activeFeed) {
+      await baselineScoreJobForAllEligibleUsers(id);
+      await scheduleInitialAiMatchForAllUsers(id, { startWorker: false });
+    }
 
     let state = null;
     if (applicationStatus) {

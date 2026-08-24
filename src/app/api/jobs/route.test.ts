@@ -1,20 +1,52 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const findMany = vi.fn();
+const countJobs = vi.fn();
+const findUserStates = vi.fn();
 const createJob = vi.fn();
 const scheduleInitialAiMatch = vi.fn();
 const upsertUserJobState = vi.fn();
+const transaction = vi.fn();
 
 vi.mock("@/lib/db", () => ({
   prisma: {
     job: {
       findMany: (...args: unknown[]) => findMany(...args),
+      count: (...args: unknown[]) => countJobs(...args),
       create: (...args: unknown[]) => createJob(...args),
     },
     userJobState: {
       upsert: (...args: unknown[]) => upsertUserJobState(...args),
+      findMany: (...args: unknown[]) => findUserStates(...args),
     },
+    $transaction: (...args: unknown[]) => transaction(...args),
   },
+}));
+
+vi.mock("@/lib/matching/profileFingerprint", () => ({
+  approvedProfileRevision: vi.fn().mockResolvedValue({ hash: "a".repeat(64), factCount: 2 }),
+}));
+
+vi.mock("@/lib/matching/baselineScoring", () => ({
+  backfillBaselineScoresForUser: vi.fn().mockResolvedValue({ profileReady: true, baselineWritten: 0 }),
+  loadApprovedBaselineProfile: vi.fn().mockResolvedValue({ userId: "test-user", revision: "a".repeat(64), facts: [] }),
+  loadAllApprovedBaselineProfiles: vi.fn().mockResolvedValue([{ userId: "test-user", revision: "a".repeat(64), facts: [] }]),
+  calculateBaselineScore: vi.fn().mockReturnValue({
+    score: 70,
+    eligibilityStatus: "Unknown",
+    scoreSource: "BASELINE",
+    profileRevision: "a".repeat(64),
+    jobFingerprint: "b".repeat(64),
+    explanation: "{}",
+  }),
+  baselineStateData: vi.fn().mockReturnValue({
+    matchScore: 70,
+    eligibilityStatus: "Unknown",
+    scoreSource: "BASELINE",
+    scoreProfileRevision: "a".repeat(64),
+    scoreJobFingerprint: "b".repeat(64),
+    scoreExplanation: "{}",
+  }),
 }));
 
 vi.mock("@/lib/applications/officialDestination", () => ({
@@ -33,10 +65,12 @@ vi.mock("@/lib/applications/officialDestination", () => ({
 }));
 
 vi.mock("@/lib/matching/initialAiMatchQueue", () => ({
-  scheduleInitialAiMatch: (...args: unknown[]) => scheduleInitialAiMatch(...args),
+  scheduleInitialAiMatchForAllUsers: (...args: unknown[]) => scheduleInitialAiMatch(...args),
 }));
 
 import { GET, POST } from "./route";
+import { sortJobs, type JobSort } from "@/lib/jobs/jobSort";
+import { loadApprovedBaselineProfile } from "@/lib/matching/baselineScoring";
 
 const existingJobs = [
   {
@@ -45,7 +79,7 @@ const existingJobs = [
     company: "Signal Labs",
     location: "Newark, NJ",
     workplaceType: "Remote",
-    userStates: [{ applicationStatus: "DISCOVERED", matchScore: 84, eligibilityStatus: "Pass", saved: false, hidden: false, notes: null }],
+    userStates: [{ applicationStatus: "DISCOVERED", matchScore: 84, eligibilityStatus: "Pass", scoreProfileRevision: "a".repeat(64), scoreJobFingerprint: "b".repeat(64), saved: false, hidden: false, notes: null }],
     verificationStatus: "ACTIVE_SOURCE_LISTED",
     sourceListingUrl: "https://source.example/jobs/1",
     officialApplicationUrl: "https://employer.example/apply/1",
@@ -60,7 +94,7 @@ const existingJobs = [
     company: "Board Works",
     location: "Boston, MA",
     workplaceType: "On Site",
-    userStates: [{ applicationStatus: "SAVED", matchScore: 62, eligibilityStatus: "Unknown", saved: true, hidden: false, notes: null }],
+    userStates: [{ applicationStatus: "SAVED", matchScore: 62, eligibilityStatus: "Unknown", scoreProfileRevision: "a".repeat(64), scoreJobFingerprint: "b".repeat(64), saved: true, hidden: false, notes: null }],
     verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
     sourceListingUrl: "https://source.example/jobs/2",
     officialApplicationUrl: "https://employer.example/apply/2",
@@ -74,10 +108,16 @@ const existingJobs = [
 describe("GET /api/jobs", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    findMany.mockResolvedValue(existingJobs);
+    findMany.mockImplementation((args: { skip?: number; take?: number } = {}) => {
+      const start = args.skip ?? 0;
+      return Promise.resolve(existingJobs.slice(start, start + (args.take ?? existingJobs.length)));
+    });
+    countJobs.mockResolvedValue(2);
+    findUserStates.mockResolvedValue([]);
     createJob.mockResolvedValue({ id: "job-new", title: "New Firmware Intern" });
     scheduleInitialAiMatch.mockResolvedValue({ scheduled: true, reason: "SCHEDULED" });
     upsertUserJobState.mockResolvedValue({ applicationStatus: "DISCOVERED" });
+    transaction.mockImplementation((operations: Promise<unknown>[]) => Promise.all(operations));
   });
 
   it("returns 200 with existing jobs and preserves job fields", async () => {
@@ -106,15 +146,46 @@ describe("GET /api/jobs", () => {
     expect(body.jobs[0]).not.toHaveProperty("userStates");
   });
 
+  it("uses a single user-level profile readiness block instead of null-scored cards", async () => {
+    vi.mocked(loadApprovedBaselineProfile).mockResolvedValueOnce(null);
+    const response = await GET(new Request("http://localhost/api/jobs"), {});
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      profileReady: false,
+      jobs: [],
+      scoreReadinessMessage: "Complete your profile to activate job matching.",
+    });
+    expect(findMany).not.toHaveBeenCalled();
+  });
+
+  it("defaults to a 50-row seven-day Fresh page and keeps All Active explicit", async () => {
+    await GET(new Request("http://localhost/api/jobs"), {});
+    expect(findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ activeFeed: true, sourcePostedAt: { gte: expect.any(Date) } }),
+      skip: 0,
+      take: 50,
+    }));
+
+    await GET(new Request("http://localhost/api/jobs?view=all"), {});
+    const args = findMany.mock.calls.at(-1)?.[0] as { where: Record<string, unknown> };
+    expect(args.where.activeFeed).toBe(true);
+    expect(args.where).not.toHaveProperty("sourcePostedAt");
+  });
+
   it("preserves database filters, JSON filters, ordering, and pagination", async () => {
+    countJobs
+      .mockResolvedValueOnce(2)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(1);
     const response = await GET(new Request(
       "http://localhost/api/jobs?feed=all&location=Newark&status=DISCOVERED&workplaceType=Remote&matchScoreMin=70&disciplines=firmware&graduationYear=2027&limit=1&offset=0",
     ), {});
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(findMany).toHaveBeenCalledWith({
-      where: {
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
         // `mode` is required on PostgreSQL to keep the case-insensitive
         // matching SQLite gave this filter for free.
         location: { contains: "Newark", mode: "insensitive" },
@@ -124,7 +195,7 @@ describe("GET /api/jobs", () => {
         userStates: {
           some: { userId: "test-user", applicationStatus: "DISCOVERED", matchScore: { gte: 70 } },
         },
-      },
+      }),
       // Newest SOURCE posting first — never newest row-insert first.
       orderBy: [
         { sourcePostedAt: { sort: "desc", nulls: "last" } },
@@ -136,7 +207,7 @@ describe("GET /api/jobs", () => {
         matchResults: { where: { userId: "test-user" }, orderBy: { createdAt: "desc" }, take: 1 },
         userStates: { where: { userId: "test-user" }, take: 1 },
       },
-    });
+    }));
     expect(body).toMatchObject({
       total: 1,
       offset: 0,
@@ -205,7 +276,7 @@ describe("GET /api/jobs", () => {
 
     expect(response.status).toBe(201);
     expect(createJob).toHaveBeenCalledOnce();
-    expect(scheduleInitialAiMatch).toHaveBeenCalledWith("job-new", "test-user");
+    expect(scheduleInitialAiMatch).toHaveBeenCalledWith("job-new", { startWorker: false });
     expect(createJob.mock.invocationCallOrder[0]).toBeLessThan(scheduleInitialAiMatch.mock.invocationCallOrder[0]);
   });
 });
@@ -246,7 +317,7 @@ const freshnessFixture = [
     updatedAt: ago(MINUTE),
     firstSeenAt: ago(MINUTE),
     scoringState: "SCORING",
-    userStates: [{ applicationStatus: "DISCOVERED", matchScore: 91, eligibilityStatus: null, saved: false, hidden: false, notes: null }],
+    userStates: [{ applicationStatus: "DISCOVERED", matchScore: 91, eligibilityStatus: null, scoreProfileRevision: "a".repeat(64), scoreJobFingerprint: "b".repeat(64), saved: false, hidden: false, notes: null }],
     verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
     disciplineTags: null,
     graduationYears: null,
@@ -259,7 +330,7 @@ const freshnessFixture = [
     updatedAt: ago(2 * MINUTE),
     firstSeenAt: ago(2 * MINUTE),
     scoringState: "SCORED",
-    userStates: [{ applicationStatus: "DISCOVERED", matchScore: 88, eligibilityStatus: null, saved: false, hidden: false, notes: null }],
+    userStates: [{ applicationStatus: "DISCOVERED", matchScore: 88, eligibilityStatus: null, scoreProfileRevision: "a".repeat(64), scoreJobFingerprint: "b".repeat(64), saved: false, hidden: false, notes: null }],
     verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
     disciplineTags: null,
     graduationYears: null,
@@ -320,7 +391,45 @@ async function orderedIds(url: string): Promise<string[]> {
 describe("GET /api/jobs default freshness ordering", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    findMany.mockResolvedValue(freshnessFixture);
+    countJobs.mockResolvedValue(freshnessFixture.length);
+    const enriched = freshnessFixture.map((job) => ({
+      ...job,
+      userStates: job.userStates ?? [{
+        applicationStatus: "DISCOVERED",
+        matchScore: job.matchScore ?? 50,
+        eligibilityStatus: "Unknown",
+        scoreSource: "BASELINE",
+        scoreProfileRevision: "a".repeat(64),
+        scoreJobFingerprint: "b".repeat(64),
+        saved: false,
+        hidden: false,
+        notes: null,
+      }],
+    }));
+    findMany.mockImplementation((args: { orderBy?: Array<Record<string, unknown>>; skip?: number; take?: number } = {}) => {
+      const first = args.orderBy?.[0] ?? {};
+      const selected: JobSort = "firstSeenAt" in first
+        ? "discovered"
+        : JSON.stringify(first).includes("asc")
+          ? "oldest"
+          : "newest";
+      const ordered = sortJobs(enriched, selected);
+      const start = args.skip ?? 0;
+      return Promise.resolve(ordered.slice(start, start + (args.take ?? ordered.length)));
+    });
+    findUserStates.mockImplementation((args: { skip?: number; take?: number } = {}) => {
+      const ordered = sortJobs(
+        enriched.map((job) => ({ ...job, matchScore: job.userStates[0].matchScore })),
+        "match",
+      );
+      const start = args.skip ?? 0;
+      return Promise.resolve(ordered.slice(start, start + (args.take ?? ordered.length)).map((job) => ({
+        ...job.userStates[0],
+        userId: "test-user",
+        jobId: job.id,
+        job: { ...job, userStates: undefined },
+      })));
+    });
   });
 
   it("returns newest source posting first, with unknown dates last", async () => {

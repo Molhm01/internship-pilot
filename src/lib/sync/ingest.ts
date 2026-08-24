@@ -19,6 +19,12 @@ import {
   stripTrackingParameters,
 } from "@/lib/applications/officialDestination";
 import { scheduleInitialAiMatchForAllUsers } from "@/lib/matching/initialAiMatchQueue";
+import {
+  baselineStateData,
+  baselineScoreJobForAllEligibleUsers,
+  calculateBaselineScore,
+  loadAllApprovedBaselineProfiles,
+} from "@/lib/matching/baselineScoring";
 import type { InternshipClassification } from "@/lib/sync/internshipClassifier";
 import {
   employerAtsProvenance,
@@ -377,11 +383,43 @@ async function upsertNormalizedJob(
           : {}),
       },
     });
+    if ((descriptionChanged || canonicalPromotion) && (existing.activeFeed || canonicalPromotion)) {
+      // A changed JD or newly activated canonical posting immediately replaces
+      // any stale AI display value with the deterministic current-input score.
+      // The durable model queue is scheduled only after that numeric score is
+      // safe to show.
+      await baselineScoreJobForAllEligibleUsers(existing.id);
+      await scheduleInitialAiMatchForAllUsers(existing.id, { startWorker: false });
+    }
     return changed ? "updated" : "unchanged";
   }
 
   const disciplineTags = classifyDisciplines(input.title, input.description);
   const { min: compMinHourly, max: compMaxHourly } = parseCompensation(input.compensation);
+  const activeFeed = computeActiveFeed({
+    source: input.source,
+    verificationStatus: profile.verificationStatus,
+    company: input.company,
+  });
+  const scoringInput = {
+    title: input.title,
+    company: input.company,
+    location: input.location,
+    workplaceType: input.workplaceType,
+    internshipTerm: input.internshipTerm,
+    description: input.description,
+    disciplineTags: JSON.stringify(disciplineTags),
+    sophomoreEligible: classifySophomoreEligible(input.description),
+    graduationYears: JSON.stringify(classifyGraduationYears(input.description)),
+    sponsorship: classifySponsorship(input.sponsorshipRaw),
+    citizenshipOrClearance: classifyCitizenshipOrClearance(input.description),
+    season: classifySeason(input.internshipTerm),
+  };
+  const approvedProfiles = activeFeed ? await loadAllApprovedBaselineProfiles() : [];
+  const initialUserStates = approvedProfiles.map((candidate) => ({
+    userId: candidate.userId,
+    ...baselineStateData(calculateBaselineScore(candidate, scoringInput)),
+  }));
 
   const created = await prisma.job.create({
     data: {
@@ -423,20 +461,20 @@ async function upsertNormalizedJob(
       classificationReason: input.classificationReason ?? null,
       // Visibility is decided centrally by source policy. Never by whether an
       // AI score or a tailored document exists.
-      activeFeed: computeActiveFeed({
-        source: input.source,
-        verificationStatus: profile.verificationStatus,
-        company: input.company,
-      }),
-      disciplineTags: JSON.stringify(disciplineTags),
-      sophomoreEligible: classifySophomoreEligible(input.description),
-      graduationYears: JSON.stringify(classifyGraduationYears(input.description)),
-      sponsorship: classifySponsorship(input.sponsorshipRaw),
-      citizenshipOrClearance: classifyCitizenshipOrClearance(input.description),
+      activeFeed,
+      disciplineTags: scoringInput.disciplineTags,
+      sophomoreEligible: scoringInput.sophomoreEligible,
+      graduationYears: scoringInput.graduationYears,
+      sponsorship: scoringInput.sponsorship,
+      citizenshipOrClearance: scoringInput.citizenshipOrClearance,
       compMinHourly,
       compMaxHourly,
-      season: classifySeason(input.internshipTerm),
+      season: scoringInput.season,
       distanceMilesFromClifton: distanceFromCliftonMiles(input.location),
+      // Nested creation is in the SAME transaction as Job creation. An active
+      // job therefore cannot become visible to an eligible user before its
+      // deterministic score exists.
+      ...(initialUserStates.length > 0 ? { userStates: { create: initialUserStates } } : {}),
     },
   });
   try {

@@ -2,9 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const jobFindFirst = vi.fn();
 const jobFindMany = vi.fn();
+const jobFindUnique = vi.fn();
 const jobCreate = vi.fn();
 const jobUpdate = vi.fn();
 const companyFindFirst = vi.fn();
+const resumeFactFindMany = vi.fn();
+const userJobStateFindMany = vi.fn();
 const scheduleInitialAiMatch = vi.fn();
 
 vi.mock("@/lib/db", () => ({
@@ -12,10 +15,13 @@ vi.mock("@/lib/db", () => ({
     job: {
       findFirst: (...args: unknown[]) => jobFindFirst(...args),
       findMany: (...args: unknown[]) => jobFindMany(...args),
+      findUnique: (...args: unknown[]) => jobFindUnique(...args),
       create: (...args: unknown[]) => jobCreate(...args),
       update: (...args: unknown[]) => jobUpdate(...args),
     },
     company: { findFirst: (...args: unknown[]) => companyFindFirst(...args) },
+    resumeFact: { findMany: (...args: unknown[]) => resumeFactFindMany(...args) },
+    userJobState: { findMany: (...args: unknown[]) => userJobStateFindMany(...args) },
   },
 }));
 
@@ -63,17 +69,26 @@ describe("job ingestion INITIAL AI Match trigger", () => {
     vi.resetAllMocks();
     jobFindFirst.mockResolvedValue(null);
     jobFindMany.mockResolvedValue([]);
+    jobFindUnique.mockResolvedValue(null);
     companyFindFirst.mockResolvedValue(null);
+    resumeFactFindMany.mockResolvedValue([
+      { id: "fact-1", userId: "candidate-1", type: "skill", content: "Embedded Python", detail: null },
+    ]);
+    userJobStateFindMany.mockResolvedValue([]);
     jobCreate.mockResolvedValue({ id: "job-new" });
     jobUpdate.mockResolvedValue({});
     scheduleInitialAiMatch.mockResolvedValue({ scheduled: true, reason: "SCHEDULED" });
   });
 
   it("queues exactly one INITIAL match without starting model work in discovery", async () => {
-    await expect(ingestAtsJobs([importedJob], "ats:greenhouse")).resolves.toEqual({
-      newCount: 1,
-      updatedCount: 0,
-    });
+    await expect(upsertClassifiedAtsJob({
+      job: importedJob,
+      source: "greenhouse",
+      atsType: "greenhouse",
+      atsTenant: "signal-labs",
+      classification: "QUALIFYING_INTERNSHIP",
+      classificationReason: "Official board engineering internship.",
+    })).resolves.toBe("new");
     expect(jobCreate).toHaveBeenCalledOnce();
     expect(scheduleInitialAiMatch).toHaveBeenCalledOnce();
     expect(scheduleInitialAiMatch).toHaveBeenCalledWith("job-new", { startWorker: false });
@@ -176,11 +191,24 @@ describe("job ingestion INITIAL AI Match trigger", () => {
     scheduleInitialAiMatch.mockRejectedValue(new Error("Ollama offline or queue unavailable"));
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-    await expect(ingestAtsJobs([importedJob], "ats:greenhouse")).resolves.toEqual({
-      newCount: 1,
-      updatedCount: 0,
-    });
+    await expect(upsertClassifiedAtsJob({
+      job: importedJob,
+      source: "greenhouse",
+      atsType: "greenhouse",
+      atsTenant: "signal-labs",
+      classification: "QUALIFYING_INTERNSHIP",
+      classificationReason: "Official board engineering internship.",
+    })).resolves.toBe("new");
     expect(jobCreate).toHaveBeenCalledOnce();
+    const createData = jobCreate.mock.calls[0][0].data;
+    expect(createData.userStates.create).toEqual([
+      expect.objectContaining({
+        userId: "candidate-1",
+        matchScore: expect.any(Number),
+        scoreSource: "BASELINE",
+      }),
+    ]);
+    expect(Number.isInteger(createData.userStates.create[0].matchScore)).toBe(true);
     expect(errorLog).toHaveBeenCalledWith(
       "[ingest] initial AI Match scheduling failed",
       { jobId: "job-new", errorCode: "SCHEDULE_FAILED" },

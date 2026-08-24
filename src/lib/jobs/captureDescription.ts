@@ -199,6 +199,10 @@ export async function captureAndSaveOfficialJobDescription(jobId: string): Promi
       jobQualifications: JSON.stringify(captured.qualifications),
     },
   });
+  const { baselineScoreJobForAllEligibleUsers } = await import("@/lib/matching/baselineScoring");
+  const { scheduleInitialAiMatchForAllUsers } = await import("@/lib/matching/initialAiMatchQueue");
+  await baselineScoreJobForAllEligibleUsers(jobId);
+  await scheduleInitialAiMatchForAllUsers(jobId, { startWorker: false });
   return captured;
 }
 

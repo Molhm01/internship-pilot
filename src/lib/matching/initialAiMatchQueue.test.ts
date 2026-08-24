@@ -86,6 +86,19 @@ describe("durable INITIAL AI Match queue", () => {
     __setInitialAiMatchScorerForTests(null);
   });
 
+  it("selects runnable AI work by source freshness before backlog age", async () => {
+    queueFindFirst.mockResolvedValue(null);
+    await expect(processNextInitialAiMatch(new Date("2026-08-24T12:00:00.000Z"))).resolves.toBe(false);
+    expect(queueFindFirst).toHaveBeenCalledWith(expect.objectContaining({
+      orderBy: [
+        { job: { sourcePostedAt: { sort: "desc", nulls: "last" } } },
+        { nextAttemptAt: "asc" },
+        { createdAt: "asc" },
+        { id: "asc" },
+      ],
+    }));
+  });
+
   it("schedules a genuinely new job once and deduplicates repeated events", async () => {
     const backgroundScorer = vi.fn();
     __setInitialAiMatchScorerForTests(backgroundScorer);
