@@ -59,6 +59,7 @@ export type InitialMatchScheduleResult = {
   reason:
     | "SCHEDULED"
     | "JOB_NOT_FOUND"
+    | "JOB_NOT_ACTIVE"
     | "ALREADY_SCORED"
     | "ALREADY_SCHEDULED"
     | "JOB_DESCRIPTION_INSUFFICIENT"
@@ -157,6 +158,7 @@ export async function scheduleInitialAiMatch(
       where: { id: jobId },
       select: {
         id: true,
+        activeFeed: true,
         description: true,
         jobResponsibilities: true,
         jobQualifications: true,
@@ -187,6 +189,7 @@ export async function scheduleInitialAiMatch(
   ]);
 
   if (!job) return { scheduled: false, reason: "JOB_NOT_FOUND" };
+  if (!job.activeFeed) return { scheduled: false, reason: "JOB_NOT_ACTIVE" };
   const existingScore = job.userStates[0]?.matchScore ?? null;
   const existingSource = job.userStates[0]?.scoreSource ?? null;
   const validExistingScore = Number.isInteger(existingScore)
@@ -378,6 +381,7 @@ export async function processNextInitialAiMatch(now = new Date()): Promise<boole
       ],
       state: { in: ["PENDING", "RETRYABLE_FAILED"] },
       nextAttemptAt: { lte: now },
+      job: { activeFeed: true },
     },
     // sourcePostedAt DESC is a strict refinement of the required freshness
     // buckets (<24h, <72h, <=7d, 8-14d, older, unknown). Crucially it precedes

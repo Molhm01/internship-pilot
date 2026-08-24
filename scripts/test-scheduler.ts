@@ -2,11 +2,16 @@ import "dotenv/config";
 import { prisma } from "@/lib/db";
 import { nextCheckTimeFor } from "@/lib/sync/companyDiscovery";
 import { scanCareersPageForInternshipLinks } from "@/lib/ats/generic";
-import { isSchedulerPaused, setSchedulerPaused } from "@/lib/sync/schedulerState";
-
-const BASE_URL = process.env.BASE_URL ?? "http://localhost:3000";
+import {
+  getSchedulerPauseState,
+  getSchedulerHealth,
+  isSchedulerPaused,
+  setSchedulerPaused,
+  type SchedulerPauseMetadata,
+} from "@/lib/sync/schedulerState";
 
 let failures = 0;
+let initialPause: { paused: boolean; metadata: SchedulerPauseMetadata | null } | null = null;
 function check(condition: boolean, message: string) {
   if (condition) {
     console.log(`  PASS: ${message}`);
@@ -17,21 +22,21 @@ function check(condition: boolean, message: string) {
 }
 
 async function main() {
+  initialPause = await getSchedulerPauseState();
   console.log("1) Cadence: priority=5min, standard=15-30min staggered, low=daily");
-  const priorityNext = nextCheckTimeFor("priority", 0).getTime() - Date.now();
-  check(Math.abs(priorityNext - 5 * 60 * 1000) < 2000, `priority cadence is ~5 minutes (got ${Math.round(priorityNext / 1000)}s)`);
-  const standardNext = (nextCheckTimeFor("standard", 0).getTime() - Date.now()) / 60000;
-  check(standardNext >= 15 && standardNext <= 30, `standard cadence falls within 15-30 min (got ${standardNext.toFixed(1)} min)`);
+  const priorityNext = (nextCheckTimeFor("priority", 0, "workday").getTime() - Date.now()) / 60000;
+  check(priorityNext >= 5 && priorityNext <= 10, `priority structured-provider cadence is 5-10 minutes (got ${priorityNext.toFixed(1)} min)`);
+  const standardNext = (nextCheckTimeFor("standard", 0, "workday").getTime() - Date.now()) / 60000;
+  check(standardNext >= 20 && standardNext <= 30, `standard structured-provider cadence falls within 20-30 min (got ${standardNext.toFixed(1)} min)`);
   const lowNext = (nextCheckTimeFor("low", 0).getTime() - Date.now()) / 60000;
   check(Math.abs(lowNext - 24 * 60) < 1, `low-priority cadence is ~daily (got ${lowNext.toFixed(1)} min)`);
 
   console.log("\n2) Exponential backoff on repeated failures, capped at 24h");
-  const base = 5;
-  const after1 = (nextCheckTimeFor("priority", 1).getTime() - Date.now()) / 60000;
-  const after2 = (nextCheckTimeFor("priority", 2).getTime() - Date.now()) / 60000;
-  const after10 = (nextCheckTimeFor("priority", 10).getTime() - Date.now()) / 60000;
-  check(Math.abs(after1 - base * 2) < 1, `1 failure doubles the interval (got ${after1.toFixed(1)} min, expected ~${base * 2})`);
-  check(Math.abs(after2 - base * 4) < 1, `2 failures quadruple the interval (got ${after2.toFixed(1)} min, expected ~${base * 4})`);
+  const after1 = (nextCheckTimeFor("priority", 1, "workday").getTime() - Date.now()) / 60000;
+  const after2 = (nextCheckTimeFor("priority", 2, "workday").getTime() - Date.now()) / 60000;
+  const after10 = (nextCheckTimeFor("priority", 10, "workday").getTime() - Date.now()) / 60000;
+  check(after1 >= 10 && after1 <= 20, `1 failure doubles the jittered 5-10 minute interval (got ${after1.toFixed(1)} min)`);
+  check(after2 >= 20 && after2 <= 40, `2 failures quadruple the jittered 5-10 minute interval (got ${after2.toFixed(1)} min)`);
   check(Math.abs(after10 - 24 * 60) < 1, `backoff is capped at 24h even after many failures (got ${after10.toFixed(1)} min)`);
 
   console.log("\n3) Conditional requests: a 304 response is treated as 'nothing new' without re-parsing");
@@ -64,23 +69,22 @@ async function main() {
   }
 
   console.log("\n4) Pause / Resume Monitoring");
-  await setSchedulerPaused(true);
+  await setSchedulerPaused(true, {
+    source: "test-scheduler",
+    reason: "bounded_pause_resume_test",
+    // A killed test process still cannot strand this temporary pause forever.
+    expiresAt: new Date(Date.now() + 2 * 60 * 1000),
+  });
   check((await isSchedulerPaused()) === true, "scheduler reports paused after setSchedulerPaused(true)");
-  const pauseRes = await fetch(`${BASE_URL}/api/scheduler/pause`, { method: "POST" });
-  const pauseData = await pauseRes.json();
-  check(pauseData.paused === true, "POST /api/scheduler/pause returns paused: true");
-  const statusRes = await fetch(`${BASE_URL}/api/scheduler/status`);
-  const statusData = await statusRes.json();
-  check(statusData.paused === true, "GET /api/scheduler/status reflects paused: true");
+  const pausedHealth = await getSchedulerHealth();
+  check(pausedHealth.paused === true, "durable scheduler health reflects paused: true");
+  check(pausedHealth.pause?.source === "test-scheduler", "pause ownership is observable");
 
-  const resumeRes = await fetch(`${BASE_URL}/api/scheduler/resume`, { method: "POST" });
-  const resumeData = await resumeRes.json();
-  check(resumeData.paused === false, "POST /api/scheduler/resume returns paused: false");
+  await setSchedulerPaused(false, { source: "test-scheduler", reason: "bounded_pause_resume_test_complete" });
   check((await isSchedulerPaused()) === false, "scheduler reports not paused after resuming");
 
   console.log("\n5) Scheduler health panel data shape");
-  const healthRes = await fetch(`${BASE_URL}/api/scheduler/status`);
-  const health = await healthRes.json();
+  const health = await getSchedulerHealth();
   const tickNames = Object.keys(health.ticks ?? {});
   check(
     ["internList", "csvSync", "queue", "companyDiscovery", "nearbyWeekly", "gmail"].every((n) => tickNames.includes(n)),
@@ -90,6 +94,7 @@ async function main() {
     const tick = health.ticks[name];
     check(typeof tick.nextRunAt === "string", `${name} has a next scheduled run time`);
   }
+  check(health.worker?.healthy === true, "persistent scheduler worker heartbeat is healthy");
 
   console.log(failures === 0 ? "\nAll scheduler tests PASSED." : `\n${failures} test(s) FAILED.`);
   if (failures > 0) process.exitCode = 1;
@@ -101,5 +106,16 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => {
+    if (initialPause) {
+      const metadata = initialPause.metadata;
+      await setSchedulerPaused(initialPause.paused, {
+        source: metadata?.source ?? "test-scheduler",
+        reason: metadata?.reason ?? "restore_pre_test_scheduler_state",
+        expiresAt: metadata?.expiresAt ? new Date(metadata.expiresAt) : null,
+      }).catch((error) => {
+        console.error("Could not restore the pre-test scheduler pause state:", error);
+        process.exitCode = 1;
+      });
+    }
     await prisma.$disconnect();
   });

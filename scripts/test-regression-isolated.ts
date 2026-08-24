@@ -11,6 +11,7 @@ const defaultScripts = [
   "test-verification-model.ts",
   "test-document-strategy.ts",
   "test-scoring-queue.ts",
+  "test-discovery-score-integration.ts",
   "test-local-firms.ts",
   "test-gmail-tracking.ts",
   "test-application-multi-user-isolation.ts",

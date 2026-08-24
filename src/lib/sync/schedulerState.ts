@@ -1,18 +1,114 @@
 import { prisma } from "@/lib/db";
 
 const PAUSE_KEY = "scheduler:paused";
+const PAUSE_METADATA_KEY = "scheduler:pause:metadata";
+const HEARTBEAT_KEY = "scheduler:worker:heartbeat";
 const TICK_KEY_PREFIX = "scheduler:tick:";
 
-export async function isSchedulerPaused(): Promise<boolean> {
-  const setting = await prisma.appSetting.findUnique({ where: { key: PAUSE_KEY } });
-  return setting?.value === "true";
+export type SchedulerPauseMetadata = {
+  paused: boolean;
+  source: string;
+  reason: string;
+  changedAt: string;
+  expiresAt: string | null;
+};
+
+export type SchedulerHeartbeat = {
+  startedAt: string;
+  lastSeenAt: string;
+  pid: number;
+  runtime: string;
+};
+
+function parseJson<T>(value: string | null | undefined): T | null {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return null;
+  }
 }
 
-export async function setSchedulerPaused(paused: boolean): Promise<void> {
+export function pauseIsActive(
+  storedValue: string | null | undefined,
+  metadata: SchedulerPauseMetadata | null,
+  now = new Date(),
+): boolean {
+  if (storedValue !== "true") return false;
+  if (!metadata?.expiresAt) return true;
+  const expiresAt = Date.parse(metadata.expiresAt);
+  return !Number.isFinite(expiresAt) || expiresAt > now.getTime();
+}
+
+export function heartbeatIsHealthy(
+  heartbeat: SchedulerHeartbeat | null,
+  now = new Date(),
+  staleAfterMs = 45_000,
+): boolean {
+  if (!heartbeat) return false;
+  const lastSeenAt = Date.parse(heartbeat.lastSeenAt);
+  return Number.isFinite(lastSeenAt) && now.getTime() - lastSeenAt <= staleAfterMs;
+}
+
+export async function getSchedulerPauseState(): Promise<{
+  paused: boolean;
+  metadata: SchedulerPauseMetadata | null;
+}> {
+  // Keep these sequential: pause checks sit on every lane entry and do not
+  // benefit from occupying two of the local stack's deliberately small pool.
+  const setting = await prisma.appSetting.findUnique({ where: { key: PAUSE_KEY } });
+  const metadataSetting = await prisma.appSetting.findUnique({ where: { key: PAUSE_METADATA_KEY } });
+  const metadata = parseJson<SchedulerPauseMetadata>(metadataSetting?.value);
+  return { paused: pauseIsActive(setting?.value, metadata), metadata };
+}
+
+export async function isSchedulerPaused(): Promise<boolean> {
+  const state = await getSchedulerPauseState();
+  if (!state.paused && state.metadata?.expiresAt && state.metadata.paused) {
+    await setSchedulerPaused(false, {
+      source: "scheduler",
+      reason: "temporary_pause_expired",
+    });
+  }
+  return state.paused;
+}
+
+export async function setSchedulerPaused(
+  paused: boolean,
+  context: { source?: string; reason?: string; expiresAt?: Date | null } = {},
+): Promise<void> {
+  const metadata: SchedulerPauseMetadata = {
+    paused,
+    source: context.source ?? "unknown",
+    reason: context.reason ?? (paused ? "unspecified_pause" : "unspecified_resume"),
+    changedAt: new Date().toISOString(),
+    expiresAt: context.expiresAt?.toISOString() ?? null,
+  };
+  await prisma.$transaction(async (tx) => {
+    await tx.appSetting.upsert({
+      where: { key: PAUSE_KEY },
+      update: { value: String(paused) },
+      create: { key: PAUSE_KEY, value: String(paused) },
+    });
+    await tx.appSetting.upsert({
+      where: { key: PAUSE_METADATA_KEY },
+      update: { value: JSON.stringify(metadata) },
+      create: { key: PAUSE_METADATA_KEY, value: JSON.stringify(metadata) },
+    });
+  });
+}
+
+export async function recordSchedulerHeartbeat(startedAt: string): Promise<void> {
+  const heartbeat: SchedulerHeartbeat = {
+    startedAt,
+    lastSeenAt: new Date().toISOString(),
+    pid: process.pid,
+    runtime: process.env.INTERNSHIP_PILOT_RUNTIME ?? "unknown",
+  };
   await prisma.appSetting.upsert({
-    where: { key: PAUSE_KEY },
-    update: { value: String(paused) },
-    create: { key: PAUSE_KEY, value: String(paused) },
+    where: { key: HEARTBEAT_KEY },
+    update: { value: JSON.stringify(heartbeat) },
+    create: { key: HEARTBEAT_KEY, value: JSON.stringify(heartbeat) },
   });
 }
 
@@ -82,15 +178,30 @@ export async function recordTickResult(
   });
 }
 
-export async function getSchedulerHealth(): Promise<{ paused: boolean; ticks: Record<string, TickInfo> }> {
-  const paused = await isSchedulerPaused();
+export async function getSchedulerHealth(): Promise<{
+  paused: boolean;
+  pause: SchedulerPauseMetadata | null;
+  worker: SchedulerHeartbeat & { healthy: boolean } | null;
+  ticks: Record<string, TickInfo>;
+}> {
+  const pauseState = await getSchedulerPauseState();
   const settings = await prisma.appSetting.findMany({
-    where: { key: { startsWith: TICK_KEY_PREFIX } },
+    where: { OR: [{ key: { startsWith: TICK_KEY_PREFIX } }, { key: HEARTBEAT_KEY }] },
   });
   const ticks: Record<string, TickInfo> = {};
+  let heartbeat: SchedulerHeartbeat | null = null;
   for (const s of settings) {
+    if (s.key === HEARTBEAT_KEY) {
+      heartbeat = parseJson<SchedulerHeartbeat>(s.value);
+      continue;
+    }
     const name = s.key.slice(TICK_KEY_PREFIX.length);
     ticks[name] = JSON.parse(s.value) as TickInfo;
   }
-  return { paused, ticks };
+  return {
+    paused: pauseState.paused,
+    pause: pauseState.metadata,
+    worker: heartbeat ? { ...heartbeat, healthy: heartbeatIsHealthy(heartbeat) } : null,
+    ticks,
+  };
 }

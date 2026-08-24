@@ -57,7 +57,9 @@ process.on("unhandledRejection", (reason) => {
   console.error(`[scheduler-worker] unhandled rejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`);
 });
 
-startScheduler();
+const scoringEnabled = process.env.SCHEDULER_SCORING_ENABLED !== "false";
+startScheduler({ scoringEnabled });
 console.log(
-  `[scheduler-worker] Ready (PID ${process.pid}, Ollama model ${process.env.OLLAMA_MODEL ?? "not configured"}).`,
+  `[scheduler-worker] Ready (PID ${process.pid}, scoring ${scoringEnabled ? "enabled" : "disabled"}, ` +
+    `Ollama model ${scoringEnabled ? process.env.OLLAMA_MODEL ?? "not configured" : "not used"}).`,
 );

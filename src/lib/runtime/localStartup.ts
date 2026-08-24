@@ -3,6 +3,21 @@ import { compareLocalInstance, type InstanceExpectation } from "@/lib/runtime/lo
 import type { AssetHealthReport } from "@/lib/runtime/documentAssets";
 
 /**
+ * Prisma Dev reports a `localhost` TCP URL. On Windows that name may resolve
+ * to ::1 even though the embedded Postgres listener is bound only on IPv4;
+ * node-postgres then fails with "Connection terminated unexpectedly". Keep
+ * Prisma's dynamically selected port and every query parameter, but make the
+ * loopback family explicit for child processes launched by `npm run local`.
+ */
+export function normalizeLocalPrismaTcpUrl(databaseUrl: string, platform = process.platform): string {
+  if (platform !== "win32") return databaseUrl;
+  const parsed = new URL(databaseUrl);
+  if (parsed.hostname !== "localhost") return databaseUrl;
+  parsed.hostname = "127.0.0.1";
+  return parsed.toString();
+}
+
+/**
  * What `npm run local` should do about whatever is already on port 3000.
  *
  * This is a pure decision so it can be tested without a stack: the failure it

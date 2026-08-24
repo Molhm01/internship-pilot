@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import type { Prisma } from "@/generated/prisma/client";
 import type { RawInternListJob } from "@/lib/sync/internListAdapter";
 import type { AtsJob } from "@/lib/ats/types";
 import {
@@ -421,8 +422,7 @@ async function upsertNormalizedJob(
     ...baselineStateData(calculateBaselineScore(candidate, scoringInput)),
   }));
 
-  const created = await prisma.job.create({
-    data: {
+  const jobData = {
       title: input.title,
       company: input.company,
       location: input.location,
@@ -471,17 +471,26 @@ async function upsertNormalizedJob(
       compMaxHourly,
       season: scoringInput.season,
       distanceMilesFromClifton: distanceFromCliftonMiles(input.location),
-      // Nested creation is in the SAME transaction as Job creation. An active
-      // job therefore cannot become visible to an eligible user before its
-      // deterministic score exists.
-      ...(initialUserStates.length > 0 ? { userStates: { create: initialUserStates } } : {}),
-    },
-  });
+  } satisfies Prisma.JobUncheckedCreateInput;
+  const created = initialUserStates.length > 0
+    ? await prisma.$transaction(async (tx) => {
+        // Keep the two writes sequential inside one explicit transaction.
+        // Prisma adapter-pg currently executes parts of nested relation writes
+        // concurrently on one pg transaction client, which can corrupt the
+        // unnamed prepared statement and surface PostgreSQL 08P01. This keeps
+        // the atomic visibility invariant without using that nested-write path.
+        const job = await tx.job.create({ data: jobData });
+        await tx.userJobState.createMany({
+          data: initialUserStates.map((state) => ({ ...state, jobId: job.id })),
+        });
+        return job;
+      })
+    : await prisma.job.create({ data: jobData });
   try {
     // Discovery may enqueue optional downstream scoring, but it must never
     // start model work in the crawler process. A separately scheduled worker
     // owns that queue; fresh official jobs become visible immediately.
-    if (options.scheduleInitialMatch !== false) {
+    if (activeFeed && options.scheduleInitialMatch !== false) {
       await scheduleInitialAiMatchForAllUsers(created.id, { startWorker: false });
     }
   } catch (error) {

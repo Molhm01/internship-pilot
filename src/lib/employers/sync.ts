@@ -24,6 +24,28 @@ function parseVerifiedDate(raw: string | null): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/**
+ * CSV ownership is intentionally narrow. Provider detection owns atsType,
+ * atsIdentifier and every validation/telemetry field, so a routine registry
+ * refresh must never reset a previously validated board to UNTESTED.
+ */
+export function approvedEmployerCsvUpdateData(row: ApprovedEmployerRow) {
+  return {
+    careersUrl: row.careersUrl,
+    source: "csv",
+    allowlisted: true,
+    csvSector: row.sector,
+    csvCareerDomain: row.careerDomain,
+    csvEeCpeFit: row.eeCpeFit,
+    csvVerificationStatus: row.verificationStatus,
+    csvVerificationBasis: row.verificationBasis,
+    csvVerifiedDate: parseVerifiedDate(row.verifiedDate),
+    csvRecommendedSearchTerms: row.recommendedSearchTerms,
+    csvCanonicalApplyRule: row.canonicalApplyRule,
+    industry: row.sector,
+  };
+}
+
 // Syncs the Company table from data/approved_engineering_employers.csv —
 // this file is the ONLY thing (besides Intern List, and manually-added
 // jobs) allowed to drive scheduled discovery. Rows no longer present in the
@@ -54,20 +76,7 @@ export async function syncApprovedEmployersFromCsv(): Promise<CsvSyncResult> {
     seenNames.add(row.employer.trim().toLowerCase());
     const existing = await prisma.company.findUnique({ where: { name: row.employer } });
 
-    const data = {
-      careersUrl: row.careersUrl,
-      source: "csv",
-      allowlisted: true,
-      csvSector: row.sector,
-      csvCareerDomain: row.careerDomain,
-      csvEeCpeFit: row.eeCpeFit,
-      csvVerificationStatus: row.verificationStatus,
-      csvVerificationBasis: row.verificationBasis,
-      csvVerifiedDate: parseVerifiedDate(row.verifiedDate),
-      csvRecommendedSearchTerms: row.recommendedSearchTerms,
-      csvCanonicalApplyRule: row.canonicalApplyRule,
-      industry: row.sector,
-    };
+    const data = approvedEmployerCsvUpdateData(row);
 
     if (existing) {
       await prisma.company.update({ where: { id: existing.id }, data });

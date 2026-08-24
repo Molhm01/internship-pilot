@@ -13,6 +13,9 @@ import { setSchedulerPaused } from "@/lib/sync/schedulerState";
 export async function POST() {
   const denied = await guardSession();
   if (denied) return denied;
-  await setSchedulerPaused(true);
+  await setSchedulerPaused(true, {
+    source: "scheduler-api",
+    reason: "manual_operator_pause",
+  });
   return NextResponse.json({ paused: true });
 }

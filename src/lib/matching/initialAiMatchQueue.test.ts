@@ -47,6 +47,7 @@ const TEST_USER = "test-user";
 
 const schedulableJob = {
   id: "job-new",
+  activeFeed: true,
   userStates: [],
   description: "Build and test embedded firmware, analyze device data, document results, and collaborate with engineers throughout the product lifecycle.",
   jobResponsibilities: null,
@@ -148,6 +149,12 @@ describe("durable INITIAL AI Match queue", () => {
   });
 
   it("does not schedule a job with a valid score, missing description, or missing profile facts", async () => {
+    jobFindUnique.mockResolvedValueOnce({ ...schedulableJob, activeFeed: false });
+    await expect(scheduleInitialAiMatch("inactive-job", TEST_USER)).resolves.toMatchObject({
+      scheduled: false,
+      reason: "JOB_NOT_ACTIVE",
+    });
+
     jobFindUnique.mockResolvedValueOnce({
       ...schedulableJob,
       matchResults: [{ id: "existing-match" }],

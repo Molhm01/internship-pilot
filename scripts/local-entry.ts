@@ -102,7 +102,7 @@ function forwardSignal(child: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
-configureOllamaModel();
+if (!args.includes("--discovery-only")) configureOllamaModel();
 
 const child = spawn(
   process.execPath,

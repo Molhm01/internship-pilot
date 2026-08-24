@@ -2,7 +2,12 @@ import { runDiscoverySync } from "@/lib/sync/discover";
 import { runQueueBatch } from "@/lib/sync/queue";
 import { runCompanyDiscoveryBatch } from "@/lib/sync/companyDiscovery";
 import { runNearbyFirmSearch } from "@/lib/sync/nearbyDiscovery";
-import { isSchedulerPaused, recordTickResult, scheduleNextTick } from "@/lib/sync/schedulerState";
+import {
+  isSchedulerPaused,
+  recordSchedulerHeartbeat,
+  recordTickResult,
+  scheduleNextTick,
+} from "@/lib/sync/schedulerState";
 import { syncAllConnectedGmailInboxes } from "@/lib/gmail/sync";
 import { isGmailConfigured } from "@/lib/gmail/oauth";
 import { syncApprovedEmployersFromCsv } from "@/lib/employers/sync";
@@ -86,17 +91,30 @@ async function runIfNotPaused<T>(
 // Windows Webpack then failed to resolve the Node built-ins `fs` and `path`.
 // All durable scheduling state lives in Postgres, so a restart resumes from the
 // database instead of starting a second copy of the same work.
-export function startScheduler() {
+export function startScheduler(options: { scoringEnabled?: boolean } = {}) {
   if (globalThis.__internshipPilotSchedulerStarted) return;
   globalThis.__internshipPilotSchedulerStarted = true;
+  const scoringEnabled = options.scoringEnabled !== false;
 
   log("starting persistent scheduler (all state is durable in Postgres)");
+
+  const schedulerStartedAt = new Date().toISOString();
+  void recordSchedulerHeartbeat(schedulerStartedAt).catch((error) =>
+    log(`health heartbeat failed: ${error instanceof Error ? error.message : String(error)}`),
+  );
+  setInterval(() => {
+    void recordSchedulerHeartbeat(schedulerStartedAt).catch((error) =>
+      log(`health heartbeat failed: ${error instanceof Error ? error.message : String(error)}`),
+    );
+  }, 15_000);
 
   // Resume durable ATS work immediately, then check again every 30 seconds.
   // The maintenance sweep below CREATES any missing work; this drain loop keeps
   // consuming it continuously without waiting for the next two-minute sweep.
-  triggerInitialAiMatchWorker();
-  setInterval(() => triggerInitialAiMatchWorker(), 30 * 1000);
+  if (scoringEnabled) {
+    triggerInitialAiMatchWorker();
+    setInterval(() => triggerInitialAiMatchWorker(), 30 * 1000);
+  }
 
   const runFreshRadar = () =>
     runIfNotPaused(
@@ -267,7 +285,7 @@ export function startScheduler() {
   setInterval(runCsvSync, SCHEDULES.csvSync.intervalMs);
   setInterval(runVerificationQueue, SCHEDULES.queue.intervalMs);
   setInterval(runCompanyDiscovery, SCHEDULES.companyDiscovery.intervalMs);
-  setInterval(runScoringMaintenance, SCHEDULES.scoring.intervalMs);
+  if (scoringEnabled) setInterval(runScoringMaintenance, SCHEDULES.scoring.intervalMs);
   setInterval(runNearby, SCHEDULES.nearbyWeekly.intervalMs);
   setInterval(runGmail, SCHEDULES.gmail.intervalMs);
 
@@ -283,7 +301,7 @@ export function startScheduler() {
     await runInternList();
     await runCompanyDiscovery();
     await runVerificationQueue();
-    await runScoringMaintenance();
+    if (scoringEnabled) await runScoringMaintenance();
     if (isGmailConfigured()) await runGmail();
   })();
 
@@ -292,6 +310,7 @@ export function startScheduler() {
   // independent of the actual bootstrap work above.
   void (async () => {
     for (const name of Object.keys(SCHEDULES) as (keyof typeof SCHEDULES)[]) {
+      if (name === "scoring" && !scoringEnabled) continue;
       await scheduleNextTick(name, SCHEDULES[name].label, SCHEDULES[name].intervalMs);
     }
   })();

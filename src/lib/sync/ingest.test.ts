@@ -8,6 +8,8 @@ const jobUpdate = vi.fn();
 const companyFindFirst = vi.fn();
 const resumeFactFindMany = vi.fn();
 const userJobStateFindMany = vi.fn();
+const userJobStateCreateMany = vi.fn();
+const transaction = vi.fn();
 const scheduleInitialAiMatch = vi.fn();
 
 vi.mock("@/lib/db", () => ({
@@ -21,7 +23,11 @@ vi.mock("@/lib/db", () => ({
     },
     company: { findFirst: (...args: unknown[]) => companyFindFirst(...args) },
     resumeFact: { findMany: (...args: unknown[]) => resumeFactFindMany(...args) },
-    userJobState: { findMany: (...args: unknown[]) => userJobStateFindMany(...args) },
+    userJobState: {
+      findMany: (...args: unknown[]) => userJobStateFindMany(...args),
+      createMany: (...args: unknown[]) => userJobStateCreateMany(...args),
+    },
+    $transaction: (...args: unknown[]) => transaction(...args),
   },
 }));
 
@@ -75,8 +81,13 @@ describe("job ingestion INITIAL AI Match trigger", () => {
       { id: "fact-1", userId: "candidate-1", type: "skill", content: "Embedded Python", detail: null },
     ]);
     userJobStateFindMany.mockResolvedValue([]);
+    userJobStateCreateMany.mockResolvedValue({ count: 1 });
     jobCreate.mockResolvedValue({ id: "job-new" });
     jobUpdate.mockResolvedValue({});
+    transaction.mockImplementation((callback: (tx: unknown) => unknown) => callback({
+      job: { create: (...args: unknown[]) => jobCreate(...args) },
+      userJobState: { createMany: (...args: unknown[]) => userJobStateCreateMany(...args) },
+    }));
     scheduleInitialAiMatch.mockResolvedValue({ scheduled: true, reason: "SCHEDULED" });
   });
 
@@ -125,6 +136,17 @@ describe("job ingestion INITIAL AI Match trigger", () => {
       scheduleInitialMatch: false,
     });
     expect(jobCreate).toHaveBeenCalledOnce();
+    expect(scheduleInitialAiMatch).not.toHaveBeenCalled();
+  });
+
+  it("does not spend AI queue capacity on an unverified discovery signal", async () => {
+    await expect(ingestAtsJobs([importedJob], "intern-list")).resolves.toEqual({
+      newCount: 1,
+      updatedCount: 0,
+    });
+    expect(jobCreate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ activeFeed: false }),
+    }));
     expect(scheduleInitialAiMatch).not.toHaveBeenCalled();
   });
 
@@ -200,15 +222,16 @@ describe("job ingestion INITIAL AI Match trigger", () => {
       classificationReason: "Official board engineering internship.",
     })).resolves.toBe("new");
     expect(jobCreate).toHaveBeenCalledOnce();
-    const createData = jobCreate.mock.calls[0][0].data;
-    expect(createData.userStates.create).toEqual([
+    expect(userJobStateCreateMany).toHaveBeenCalledWith({ data: [
       expect.objectContaining({
         userId: "candidate-1",
+        jobId: "job-new",
         matchScore: expect.any(Number),
         scoreSource: "BASELINE",
       }),
-    ]);
-    expect(Number.isInteger(createData.userStates.create[0].matchScore)).toBe(true);
+    ] });
+    const state = userJobStateCreateMany.mock.calls[0][0].data[0];
+    expect(Number.isInteger(state.matchScore)).toBe(true);
     expect(errorLog).toHaveBeenCalledWith(
       "[ingest] initial AI Match scheduling failed",
       { jobId: "job-new", errorCode: "SCHEDULE_FAILED" },

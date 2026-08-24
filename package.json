@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "tsx scripts/start-all.ts",
     "local": "tsx scripts/local-entry.ts",
+    "local:discovery": "tsx scripts/local-entry.ts --discovery-only",
     "local:status": "tsx scripts/local-status.ts",
     "local:stop": "tsx scripts/local-stop.ts",
     "dev:web": "next dev",
@@ -55,6 +56,7 @@
     "test:verification-model": "tsx scripts/test-verification-model.ts",
     "test:document-strategy": "tsx scripts/test-document-strategy.ts",
     "test:scoring-queue": "tsx scripts/test-scoring-queue.ts",
+    "test:discovery-score-integration": "tsx scripts/test-discovery-score-integration.ts",
     "test:local-firms": "tsx scripts/test-local-firms.ts",
     "backfill:active-feed": "tsx scripts/backfill-active-feed.ts",
     "backfill:source-posted-at": "tsx scripts/backfill-source-posted-at.ts",
