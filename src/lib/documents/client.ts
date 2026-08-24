@@ -8,7 +8,15 @@ export type StoredGeneratedDocument = {
   tailoringStatus: string | null;
   tailoringAudit: string | null;
   identityVerified: boolean;
+  documentFingerprint: string | null;
   createdAt: string;
+};
+
+export type ApplicationDocumentReadinessResponse = {
+  ok: true;
+  fingerprint: string;
+  reused: boolean;
+  documents: StoredGeneratedDocument[];
 };
 
 export class DocumentRequestError extends Error {
@@ -112,6 +120,24 @@ export async function fetchJobDocuments(
     throw new DocumentRequestError("The saved-document response was not readable.");
   }
   return payload.documents as StoredGeneratedDocument[];
+}
+
+export async function ensureCurrentApplicationDocuments(
+  jobId: string,
+  includeCoverLetter: boolean,
+  fetcher: typeof fetch = fetch,
+): Promise<ApplicationDocumentReadinessResponse> {
+  const response = await fetcher(`/api/jobs/${jobId}/application-documents`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ includeCoverLetter }),
+  });
+  if (!response.ok) throw await responseError(response, "Current tailored documents could not be prepared.");
+  const payload = await response.json() as Partial<ApplicationDocumentReadinessResponse>;
+  if (payload.ok !== true || typeof payload.fingerprint !== "string" || !Array.isArray(payload.documents)) {
+    throw new DocumentRequestError("Document readiness returned an incomplete response.");
+  }
+  return payload as ApplicationDocumentReadinessResponse;
 }
 
 export async function generateTailoredDocuments(

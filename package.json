@@ -41,6 +41,8 @@
     "test:application-multi-user": "tsx scripts/test-application-multi-user-isolation.ts",
     "test:extension": "tsx scripts/test-extension-package.ts",
     "test:extension-e2e": "tsx scripts/test-extension-e2e.ts",
+    "test:autofill-fixtures": "tsx scripts/test-autofill-fixtures.ts",
+    "test:extension-bundle-e2e": "tsx scripts/test-extension-bundle-e2e.ts",
     "test:regression": "tsx scripts/test-regression-isolated.ts",
     "inspect:lever-real": "tsx scripts/inspect-lever-real.ts",
     "inspect:greenhouse-real": "tsx scripts/inspect-greenhouse-real.ts",

@@ -24,11 +24,16 @@ export const BUNDLE_BRIDGE = {
 export type BundleDocumentKind = "resume" | "cover_letter";
 
 export type BundleDocumentInput = {
+  documentId: string;
+  websiteJobId: string;
   kind: BundleDocumentKind;
   filename: string;
   mimeType: "application/pdf";
   bytes: ArrayBuffer;
   generatedAt: string;
+  documentFingerprint: string;
+  qaStatus: "pass";
+  identityVerified: true;
 };
 
 export type ApplicationBundleInput = {
@@ -37,6 +42,8 @@ export type ApplicationBundleInput = {
   jobTitle: string;
   jobDescription: string;
   officialApplicationUrl: string;
+  documentFingerprint: string;
+  documentsReused?: boolean;
   documents: BundleDocumentInput[];
   /**
    * The contract version of everything below. The extension refuses a version
@@ -50,6 +57,11 @@ export type ApplicationBundleInput = {
   accountPreferences?: unknown;
   /** Facts about this employer. Absent means the user has told us nothing. */
   companyRelationship?: unknown;
+  answerContext?: {
+    approvedFacts?: unknown[];
+    neverClaimFacts?: string[];
+    employerSpecificApprovedAnswers?: unknown[];
+  };
   createdAt?: string;
 };
 
@@ -97,6 +109,7 @@ function waitForMessage<T>(
     }, timeoutMs);
 
     const listener = (event: MessageEvent) => {
+      if (event.origin && event.origin !== target.location.origin) return;
       const data = event.data as Record<string, unknown> | null;
       if (!data || typeof data !== "object") return;
       if (data.channel !== channel || data.requestId !== requestId) return;
@@ -154,19 +167,27 @@ export async function sendApplicationBundle(
     jobTitle: input.jobTitle,
     jobDescription: input.jobDescription,
     officialApplicationUrl: input.officialApplicationUrl,
+    documentFingerprint: input.documentFingerprint,
+    documentsReused: input.documentsReused === true,
     createdAt: input.createdAt ?? new Date().toISOString(),
     ...(typeof input.bundleVersion === "number" ? { bundleVersion: input.bundleVersion } : {}),
     ...(input.profile ? { profile: input.profile } : {}),
     approvedAnswers: input.approvedAnswers ?? [],
     ...(input.accountPreferences ? { accountPreferences: input.accountPreferences } : {}),
     ...(input.companyRelationship ? { companyRelationship: input.companyRelationship } : {}),
+    ...(input.answerContext ? { answerContext: input.answerContext } : {}),
     documents: input.documents.map((document) => ({
+      documentId: document.documentId,
+      websiteJobId: document.websiteJobId,
       kind: document.kind,
       filename: document.filename,
       mimeType: document.mimeType,
       contentBase64: encodeBase64(document.bytes),
       byteLength: document.bytes.byteLength,
       generatedAt: document.generatedAt,
+      documentFingerprint: document.documentFingerprint,
+      qaStatus: document.qaStatus,
+      identityVerified: document.identityVerified,
     })),
   };
 

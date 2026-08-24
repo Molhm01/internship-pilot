@@ -13,6 +13,7 @@ function storedDocument(
     tailoringStatus: "tailored",
     tailoringAudit: null,
     identityVerified: true,
+    documentFingerprint: "a".repeat(64),
     createdAt: "2026-08-01T10:00:00.000Z",
     ...overrides,
   };
@@ -58,16 +59,28 @@ function dependencies(overrides: Parameters<typeof applyWithApplicationAgent>[1]
     storedDocuments: ["resume", "cover_letter"],
     storedAt: "2026-08-02T09:00:00.000Z",
   });
-  const openWindow = vi.fn();
+  const applicationWindow = {
+    opener: null,
+    location: { replace: vi.fn() },
+    close: vi.fn(),
+  } as unknown as Window;
+  const openWindow = vi.fn(() => applicationWindow);
   return {
     sendBundle,
     openWindow,
+    applicationWindow,
     all: {
       fetchPdf: vi.fn(async (id: string) => new Blob([`pdf-bytes-${id}`], { type: "application/pdf" })),
       fetchProfile: vi.fn().mockResolvedValue(PROFILE_PART),
       probeBridge: vi.fn().mockResolvedValue(true),
       sendBundle,
       openWindow,
+      ensureDocuments: vi.fn().mockResolvedValue({
+        ok: true,
+        fingerprint: "a".repeat(64),
+        reused: true,
+        documents: [RESUME, COVER_LETTER],
+      }),
       ...overrides,
     } as Parameters<typeof applyWithApplicationAgent>[1],
   };
@@ -112,25 +125,24 @@ describe("apply eligibility", () => {
     expect(result.ready === false && result.reason).toContain("has not been resolved");
   });
 
-  it("names the missing tailored résumé", () => {
+  it("allows the click to prepare a missing tailored résumé automatically", () => {
     const result = applyEligibility({
       officialApplicationUrl: "https://boards.greenhouse.io/x/jobs/1",
       documents: [],
       coverLetterRequired: false,
       bridgeAvailable: true,
     });
-    expect(result.ready === false && result.reason).toContain("tailored résumé");
+    expect(result).toEqual({ ready: true });
   });
 
-  it("requires a cover letter only when the job asks for one", () => {
+  it("allows required cover letters to be prepared automatically", () => {
     const withoutCover = {
       officialApplicationUrl: "https://boards.greenhouse.io/x/jobs/1",
       documents: [RESUME],
       bridgeAvailable: true,
     };
     expect(applyEligibility({ ...withoutCover, coverLetterRequired: false })).toEqual({ ready: true });
-    const required = applyEligibility({ ...withoutCover, coverLetterRequired: true });
-    expect(required.ready === false && required.reason).toContain("cover letter");
+    expect(applyEligibility({ ...withoutCover, coverLetterRequired: true })).toEqual({ ready: true });
   });
 
   it("names the missing extension", () => {
@@ -172,7 +184,12 @@ describe("applying with the Application Agent", () => {
 
   it("opens the official URL only after the extension acknowledges", async () => {
     const order: string[] = [];
-    const openWindow = vi.fn(() => order.push("open"));
+    const applicationWindow = {
+      opener: null,
+      location: { replace: vi.fn(() => order.push("open")) },
+      close: vi.fn(),
+    } as unknown as Window;
+    const openWindow = vi.fn(() => applicationWindow);
     const sendBundle = vi.fn(async () => {
       order.push("send");
       return { bundleId: "b", storedDocuments: ["resume" as const], storedAt: "2026-08-02T09:00:00.000Z" };
@@ -181,34 +198,38 @@ describe("applying with the Application Agent", () => {
       fetchPdf: vi.fn(async () => new Blob(["pdf"], { type: "application/pdf" })),
       probeBridge: vi.fn().mockResolvedValue(true),
       fetchProfile: vi.fn().mockResolvedValue(PROFILE_PART),
+      ensureDocuments: vi.fn().mockResolvedValue({ ok: true, fingerprint: "a".repeat(64), reused: true, documents: [RESUME, COVER_LETTER] }),
       sendBundle,
       openWindow,
     });
     expect(order).toEqual(["send", "open"]);
-    expect(openWindow).toHaveBeenCalledWith(
+    expect(openWindow).toHaveBeenCalledWith("about:blank", "_blank", "popup");
+    expect(applicationWindow.location.replace).toHaveBeenCalledWith(
       "https://boards.greenhouse.io/northwind/jobs/9911",
-      "_blank",
-      "noopener,noreferrer",
     );
   });
 
   it("does not open the employer page when the extension refuses the bundle", async () => {
-    const openWindow = vi.fn();
+    const applicationWindow = { opener: null, location: { replace: vi.fn() }, close: vi.fn() } as unknown as Window;
+    const openWindow = vi.fn(() => applicationWindow);
     await expect(
       applyWithApplicationAgent(bundleInput(), {
         fetchPdf: vi.fn(async () => new Blob(["pdf"], { type: "application/pdf" })),
         probeBridge: vi.fn().mockResolvedValue(true),
       fetchProfile: vi.fn().mockResolvedValue(PROFILE_PART),
+        ensureDocuments: vi.fn().mockResolvedValue({ ok: true, fingerprint: "a".repeat(64), reused: true, documents: [RESUME, COVER_LETTER] }),
         sendBundle: vi.fn().mockRejectedValue(new Error("storage full")),
         openWindow,
       }),
     ).rejects.toThrow("storage full");
-    expect(openWindow).not.toHaveBeenCalled();
+    expect(applicationWindow.location.replace).not.toHaveBeenCalled();
+    expect(applicationWindow.close).toHaveBeenCalled();
   });
 
   it("refuses to start when the extension is not listening", async () => {
     const sendBundle = vi.fn();
-    const openWindow = vi.fn();
+    const applicationWindow = { opener: null, location: { replace: vi.fn() }, close: vi.fn() } as unknown as Window;
+    const openWindow = vi.fn(() => applicationWindow);
     await expect(
       applyWithApplicationAgent(bundleInput(), {
         fetchPdf: vi.fn(),
@@ -219,7 +240,8 @@ describe("applying with the Application Agent", () => {
       }),
     ).rejects.toThrow(/extension is not responding/);
     expect(sendBundle).not.toHaveBeenCalled();
-    expect(openWindow).not.toHaveBeenCalled();
+    expect(applicationWindow.location.replace).not.toHaveBeenCalled();
+    expect(applicationWindow.close).toHaveBeenCalled();
   });
 
   it("transfers the canonical profile and approved answers alongside the documents", async () => {
@@ -239,9 +261,9 @@ describe("applying with the Application Agent", () => {
   });
 
   it("puts no document content in the opened URL", async () => {
-    const { openWindow, all } = dependencies();
+    const { applicationWindow, all } = dependencies();
     await applyWithApplicationAgent(bundleInput(), all);
-    const opened = String(openWindow.mock.calls[0]![0]);
+    const opened = String((applicationWindow.location.replace as ReturnType<typeof vi.fn>).mock.calls[0]![0]);
     expect(opened).toBe("https://boards.greenhouse.io/northwind/jobs/9911");
     expect(opened).not.toContain("#");
     expect(opened).not.toMatch(/base64|resume|cover/i);

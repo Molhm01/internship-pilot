@@ -49,8 +49,7 @@ describe("Apply with Application Agent UI", () => {
     }
     // The only thing ever appended to the employer URL is nothing at all: the
     // URL is opened exactly as it was resolved.
-    expect(flow).toContain(
-      'openWindow(input.officialApplicationUrl, "_blank", "noopener,noreferrer")',
-    );
+    expect(flow).toContain("applicationWindow.location.replace(input.officialApplicationUrl)");
+    expect(flow).toContain('openWindow("about:blank", "_blank", "popup")');
   });
 });

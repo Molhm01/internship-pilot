@@ -25,6 +25,7 @@
       ],
       "js": [
         "page-reader.js",
+        "autofill-engine.js",
         "content.js"
       ],
       "css": [

@@ -266,6 +266,8 @@ jobs:
         run: npm run extension:build
       - name: Extension package validation
         run: npm run test:extension
+      - name: Deterministic ATS autofill fixtures
+        run: npm run test:autofill-fixtures
       - name: Document layout parity with the master reference
         # Compiles the master resume on this runner and compares it with
         # templates/master_resume_reference.pdf. Fails loudly and early if the
@@ -310,6 +312,9 @@ jobs:
         # one failing must not leave the other unreported. The job still fails.
         if: always()
         run: npm run test:extension-e2e
+      - name: One-bundle multi-page extension E2E
+        if: always()
+        run: npm run test:extension-bundle-e2e
 
   browser-smoke:
     name: Authenticated production-browser gates

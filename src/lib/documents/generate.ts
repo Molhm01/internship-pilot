@@ -262,7 +262,7 @@ function unsupportedClaimFailure(
 export async function generateDocumentsForJob(
   jobId: string,
   userId: string,
-  options: { includeCoverLetter?: boolean } = {},
+  options: { includeCoverLetter?: boolean; documentFingerprint?: string } = {},
 ) {
   // Typst is a native binary invoked with child_process, and it reads and
   // writes real files under the repository root. Neither exists on a
@@ -553,7 +553,7 @@ export async function generateDocumentsForJob(
   // Typst just wrote; with object storage configured it is a durable URL, and
   // the download route resolves either without knowing which it received.
   const resumeStorageKey = await writeStoredObject(resumePdfRel, resumeBytes, { contentType: "application/pdf" });
-  const resumeDoc = await prisma.generatedDocument.create({ data: { userId, jobId, type: "resume", version: resumeVersion, storagePath: resumeStorageKey, typstSourcePath: resumeSourceRel, qaStatus: resumeQaStatus, qaIssues: JSON.stringify(resumeQa.issues), keywordClassification: JSON.stringify(resumeKeywordClassification), tailoringStatus: storedTailoringStatus, tailoringAudit: JSON.stringify(tailoring.audit), identityVerified: resumeIdentityIssues.length === 0, bulletIdsUsed: JSON.stringify(selectedBulletIds), matchResultId: latestMatch?.id ?? null } });
+  const resumeDoc = await prisma.generatedDocument.create({ data: { userId, jobId, type: "resume", version: resumeVersion, storagePath: resumeStorageKey, typstSourcePath: resumeSourceRel, qaStatus: resumeQaStatus, qaIssues: JSON.stringify(resumeQa.issues), keywordClassification: JSON.stringify(resumeKeywordClassification), tailoringStatus: storedTailoringStatus, tailoringAudit: JSON.stringify(tailoring.audit), identityVerified: resumeIdentityIssues.length === 0, bulletIdsUsed: JSON.stringify(selectedBulletIds), matchResultId: latestMatch?.id ?? null, documentFingerprint: options.documentFingerprint ?? null } });
   const result: { resume: GeneratedDocSummary; coverLetter?: GeneratedDocSummary; agentDelivery?: AgentDeliverySummary } = { resume: { id: resumeDoc.id, type: "resume", version: resumeVersion, storagePath: resumeStorageKey, qaStatus: resumeQaStatus, qaIssues: resumeQa.issues } };
   if (resumeQaStatus !== "pass") {
     throw new DocumentGenerationError(`Resume generation failed QA: ${resumeQa.issues.join(" ")}`);
@@ -617,7 +617,7 @@ export async function generateDocumentsForJob(
     progress(jobId, "cover_letter_generated");
     currentStage = "cover_letter_persistence";
     const coverStorageKey = await writeStoredObject(coverPdfRel, coverBytes, { contentType: "application/pdf" });
-    const coverDoc = await prisma.generatedDocument.create({ data: { userId, jobId, type: "coverLetter", version: coverVersion, storagePath: coverStorageKey, typstSourcePath: coverSourceRel, qaStatus: coverQaStatus, qaIssues: JSON.stringify(coverQa.issues), keywordClassification: JSON.stringify(coverKeywordClassification), tailoringStatus: storedTailoringStatus, tailoringAudit: JSON.stringify(tailoring.audit), identityVerified: coverIdentityIssues.length === 0, bulletIdsUsed: JSON.stringify(selectedBulletIds), matchResultId: latestMatch?.id ?? null } });
+    const coverDoc = await prisma.generatedDocument.create({ data: { userId, jobId, type: "coverLetter", version: coverVersion, storagePath: coverStorageKey, typstSourcePath: coverSourceRel, qaStatus: coverQaStatus, qaIssues: JSON.stringify(coverQa.issues), keywordClassification: JSON.stringify(coverKeywordClassification), tailoringStatus: storedTailoringStatus, tailoringAudit: JSON.stringify(tailoring.audit), identityVerified: coverIdentityIssues.length === 0, bulletIdsUsed: JSON.stringify(selectedBulletIds), matchResultId: latestMatch?.id ?? null, documentFingerprint: options.documentFingerprint ?? null } });
     result.coverLetter = { id: coverDoc.id, type: "coverLetter", version: coverVersion, storagePath: coverStorageKey, qaStatus: coverQaStatus, qaIssues: coverQa.issues };
     if (coverQaStatus !== "pass") {
       throw new DocumentGenerationError(`Cover letter generation failed QA: ${coverQa.issues.join(" ")}`);

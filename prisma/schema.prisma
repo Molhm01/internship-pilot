@@ -106,11 +106,13 @@ model GeneratedDocument {
   identityVerified      Boolean  @default(false)
   bulletIdsUsed         String? // JSON array of ResumeBullet ids actually included
   matchResultId         String? // which MatchResult this was generated from
+  documentFingerprint   String? // deterministic job/profile/template/policy freshness fingerprint
   createdAt             DateTime @default(now())
 
   @@index([jobId])
   @@index([userId])
   @@index([userId, jobId])
+  @@index([userId, jobId, documentFingerprint])
 }
 
 // Locked application profile — the one place identity/contact answers live

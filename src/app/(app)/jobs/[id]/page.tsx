@@ -525,6 +525,8 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
         officialApplicationUrl: url,
         documents,
         coverLetterRequired: false,
+        coverLetterDesired: true,
+        neverClaimFacts: parseStrings(job.matchResults[0]?.skillsNeverAdd ?? null),
       });
       setHandoffState("sent");
     } catch (error) {
@@ -753,9 +755,8 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
   const canRunMatch = hasUsableJobDescription(job);
   const tailoring = parseStrings(latestMatch?.tailoringPreview ?? null);
   const { applicationUrl, sourceListingUrl } = selectStoredApplicationLinks(job);
-  // The button is enabled only when there is somewhere to apply, a tailored
-  // résumé exists, and the extension is actually listening. Each "no" carries
-  // the sentence the UI shows instead of a bare disabled control.
+  // Documents are ensured automatically after the click. The only preflight
+  // blockers are a missing official destination or an unavailable extension.
   const agentApply = applyEligibility({
     officialApplicationUrl: applicationUrl,
     documents,
@@ -1029,7 +1030,7 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
                   className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 hover:bg-accent-dark transition-colors disabled:opacity-40 disabled:hover:bg-accent"
                 >
                   {handoffState === "sending"
-                    ? "Sending documents…"
+                    ? "Preparing application…"
                     : "Apply with Application Agent"}
                 </button>
                 <button

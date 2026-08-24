@@ -16,6 +16,12 @@
 
   const EXTENSION_VERSION = "1.2.0";
   const PROTOCOL_VERSION = 2;
+  const BUNDLE_BRIDGE = {
+    probe: "internship-agent:bridge-probe",
+    probeAck: "internship-agent:bridge-available",
+    offer: "internship-agent:bundle-offer",
+    result: "internship-agent:bundle-result",
+  };
 
   function clean(value) {
     return String(value || "").replace(/\s+/g, " ").trim();
@@ -60,6 +66,52 @@
         resolve({ ok: false, error: String(error && error.message ? error.message : error) });
       }
     });
+  }
+
+  // Website -> extension handoff. postMessage crosses the page/isolated-world
+  // boundary; only a message from this exact window and origin is accepted.
+  window.addEventListener("message", (event) => {
+    // Chrome wraps WindowProxy separately in the page and isolated worlds, so
+    // object identity is not stable here. Exact origin + private channel +
+    // request id are the enforceable boundary.
+    if (event.origin !== location.origin) return;
+    const data = event.data;
+    if (!data || typeof data !== "object" || typeof data.requestId !== "string") return;
+    if (data.channel === BUNDLE_BRIDGE.probe) {
+      window.postMessage({ channel: BUNDLE_BRIDGE.probeAck, requestId: data.requestId }, location.origin);
+      return;
+    }
+    if (data.channel !== BUNDLE_BRIDGE.offer) return;
+    void sendMessageWithTimeout({ kind: "store-application-bundle", bundle: data.bundle }, 30000).then((result) => {
+      window.postMessage({
+        channel: BUNDLE_BRIDGE.result,
+        requestId: data.requestId,
+        result: result?.ok
+          ? {
+              ok: true,
+              bundleId: result.bundleId,
+              storedDocuments: result.storedDocuments,
+              storedAt: result.storedAt,
+            }
+          : { ok: false, reason: result?.reason || result?.error || "The extension refused the application bundle." },
+      }, location.origin);
+    });
+  });
+
+  async function bundleForThisPage() {
+    const result = await sendMessageWithTimeout({ kind: "application-bundle-for-page", pageUrl: location.href }, 5000);
+    return result?.ok ? result.bundle : null;
+  }
+
+  async function transitionBundle(envelope, state, reason, metadata = {}) {
+    await sendMessageWithTimeout({
+      kind: "application-bundle-transition",
+      bundleId: envelope.bundleId,
+      state,
+      reason,
+      pageUrl: location.href,
+      metadata,
+    }, 5000);
   }
 
   function escapeSelector(value) {
@@ -340,6 +392,149 @@
     });
   }
 
+  async function runBundledAutofill(envelope) {
+    const engine = globalThis.InternshipPilotAutofillEngine;
+    const bundle = envelope.bundle;
+    const pageNumber = Math.max(1, Number(envelope.pageNumber) || 1);
+    if (!engine || !bundle) throw new Error("The deterministic autofill engine or application bundle is unavailable.");
+    if (pageNumber > 10) {
+      const message = "The application exceeded the ten-page safety limit.";
+      await transitionBundle(envelope, "BLOCKED", message, { pageNumber, errorCode: "PAGE_LIMIT_REACHED" });
+      markCompletion("blocked", { message, blockers: [{ kind: "page_limit", detail: message }] });
+      return;
+    }
+
+    await transitionBundle(envelope, "SCANNING", "Scanning visible DOM and accessibility controls.", { pageNumber });
+    const blockers = engine.blockers();
+    if (blockers.length) {
+      await transitionBundle(envelope, "AWAITING_USER", blockers[0].code, { pageNumber, errorCode: blockers[0].kind });
+      const detail = { message: blockers[0].detail, blockers, pageUrl: location.href, pageNumber };
+      setStage(blockers[0].detail, "warn", detail);
+      markCompletion("needs_user", detail);
+      return;
+    }
+
+    const fields = engine.scanFields(pageNumber);
+    if (!fields.length) {
+      const detail = { message: "No visible application fields were found on this step.", pageUrl: location.href, pageNumber };
+      await transitionBundle(envelope, "AWAITING_USER", detail.message, { pageNumber, requiredEmptyCount: 0 });
+      setStage(detail.message, "warn", detail);
+      markCompletion("no_form", detail);
+      return;
+    }
+
+    await transitionBundle(envelope, "FILLING", `Filling ${fields.length} discovered controls from approved data.`, { pageNumber });
+    const results = [];
+    for (const field of fields) {
+      const result = await engine.fillField(field, bundle);
+      results.push({ index: field.index, label: field.accessibleName || field.questionText, required: field.required, type: field.type, ...result });
+      field.element.setAttribute("data-ip-result", result.ok ? "filled" : result.reason === "RADIO_OPTION_NOT_MATCHED" ? "skipped" : "needs-user");
+    }
+
+    const questionCategories = [...new Set(fields.map((field) => engine.classifyField(field)))];
+    const uploadedCount = results.filter((result) => result.ok && ["RESUME", "COVER_LETTER"].includes(result.concept)).length;
+    await transitionBundle(envelope, "VALIDATING", "Verifying retained values, required fields, and employer validation.", { pageNumber, uploadedCount, questionCategories });
+    const audit = engine.requiredAudit(fields, results);
+    const requiredEmpty = audit.filter((entry) => entry.status !== "FILLED");
+    const validationErrors = engine.validationErrors();
+    const filledCount = results.filter((result) => result.ok && !result.unchanged).length;
+    const failedCount = results.filter((result) => !result.ok && result.reason !== "RADIO_OPTION_NOT_MATCHED" && result.reason !== "NO_APPROVED_ANSWER").length;
+    const unresolved = results.filter((result) => !result.ok && result.reason !== "RADIO_OPTION_NOT_MATCHED");
+    const needsUserByIndex = new Map(requiredEmpty.map((entry) => {
+      const field = fields.find((candidate) => candidate.index === entry.index);
+      return [entry.index, {
+        label: field?.questionText || field?.accessibleName || field?.label || "(Label unavailable)",
+        reason: entry.reason || entry.status,
+        required: true,
+        type: field?.type || "unknown",
+        options: field?.options || [],
+        ariaLabel: field?.accessibleName || "",
+        placeholder: field?.placeholder || "",
+        nearbyText: field?.nearbyText || "",
+        status: entry.status,
+      }];
+    }));
+    for (const result of unresolved) {
+      if (needsUserByIndex.has(result.index)) continue;
+      const field = fields.find((candidate) => candidate.index === result.index);
+      needsUserByIndex.set(result.index, {
+        label: field?.questionText || field?.accessibleName || field?.label || "(Label unavailable)",
+        reason: result.reason || "NEEDS_USER",
+        required: false,
+        type: field?.type || "unknown",
+        options: field?.options || [],
+        ariaLabel: field?.accessibleName || "",
+        placeholder: field?.placeholder || "",
+        nearbyText: field?.nearbyText || "",
+        status: result.reason === "UNSUPPORTED_CONTROL" ? "UNSUPPORTED" : "NEEDS_USER",
+      });
+    }
+    const needsUser = [...needsUserByIndex.values()];
+    const diagnostics = {
+      pageNumber,
+      fieldCount: fields.length,
+      filledCount,
+      unchangedCount: results.filter((result) => result.unchanged).length,
+      failedCount,
+      needsUserCount: needsUser.length,
+      requiredEmptyCount: requiredEmpty.length,
+      validationErrorCount: validationErrors.length,
+      fields: fields.map((field) => ({
+        index: field.index,
+        category: engine.classifyField(field),
+        label: field.accessibleName || field.questionText,
+        required: field.required,
+        result: audit.find((entry) => entry.index === field.index)?.status || (results.find((entry) => entry.index === field.index)?.ok ? "FILLED" : "UNANSWERED_OPTIONAL"),
+      })),
+    };
+
+    if (needsUser.length || validationErrors.length) {
+      const message = requiredEmpty.length
+        ? `${requiredEmpty.length} required field(s) need your review before navigation.`
+        : needsUser.length
+          ? `${needsUser.length} visible field(s) need your review before navigation.`
+        : "The employer form reported validation errors that need review.";
+      await transitionBundle(envelope, "AWAITING_USER", message, { pageNumber, filledCount, failedCount, requiredEmptyCount: requiredEmpty.length, uploadedCount, questionCategories, unresolvedCategories: unresolved.map((entry) => entry.concept) });
+      setStage(message, "warn", diagnostics);
+      markCompletion("needs_user", { message, needsUser, blockers: [], ...diagnostics });
+      return;
+    }
+
+    const final = engine.finalAction();
+    if (final) {
+      const message = "Application is ready for your review. Final submission was not clicked.";
+      await transitionBundle(envelope, "REVIEW_READY", message, { pageNumber, filledCount, failedCount, requiredEmptyCount: 0, uploadedCount, questionCategories, unresolvedCategories: [] });
+      setStage(message, "ok", diagnostics);
+      markCompletion("filled", { message, needsUser: [], blockers: [], ...diagnostics });
+      return;
+    }
+
+    const next = engine.nextAction();
+    if (next) {
+      const message = `Page ${pageNumber} verified; continuing to the next application step.`;
+      await transitionBundle(envelope, "NAVIGATING", message, { pageNumber: pageNumber + 1, filledCount, failedCount, requiredEmptyCount: 0, uploadedCount, questionCategories, unresolvedCategories: [] });
+      setStage(message, "info", diagnostics);
+      markCompletion("navigating", { message, ...diagnostics });
+      next.click();
+      // SPA applications keep the same content-script instance. A full page
+      // navigation gets a fresh instance and recovers the stored bundle.
+      setTimeout(async () => {
+        const current = await bundleForThisPage();
+        if (current) {
+          const button = document.getElementById(BUTTON_ID);
+          if (button) button.dataset.ipState = "ready";
+          void runAutofill();
+        }
+      }, 700);
+      return;
+    }
+
+    const message = "Visible fields are filled. Review this page; no safe Continue action was found.";
+    await transitionBundle(envelope, "REVIEW_READY", message, { pageNumber, filledCount, failedCount, requiredEmptyCount: 0, uploadedCount, questionCategories, unresolvedCategories: [] });
+    setStage(message, "ok", diagnostics);
+    markCompletion("filled", { message, needsUser: [], blockers: [], ...diagnostics });
+  }
+
   async function runAutofill() {
     const button = document.getElementById(BUTTON_ID);
     if (!button || button.dataset.ipState === "running") return;
@@ -348,6 +543,21 @@
     button.dataset.ipDetail = "";
 
     setStage("Extension initialized", "info");
+
+    const pendingBundle = await bundleForThisPage();
+    if (pendingBundle) {
+      try {
+        await runBundledAutofill(pendingBundle);
+      } catch (error) {
+        const message = String(error && error.message ? error.message : error);
+        await transitionBundle(pendingBundle, "FAILED", message, { errorCode: "AUTOFILL_ENGINE_FAILURE" });
+        setStage(`Autofill failed: ${message}`, "error", { errorCode: "AUTOFILL_ENGINE_FAILURE" });
+        markCompletion("error", { message });
+      } finally {
+        button.disabled = false;
+      }
+      return;
+    }
 
     let fields = [];
     let blockers = [];
@@ -544,10 +754,10 @@
     return hasIdentity && (hasUpload || hasApplicationAction);
   }
 
-  function inject() {
+  function inject(force = false) {
     if (document.getElementById(BUTTON_ID)) return;
     const fields = visibleFields();
-    if (!looksLikeApplication(fields)) return;
+    if (!force && !looksLikeApplication(fields)) return;
 
     const panel = document.createElement("aside");
     panel.id = PANEL_ID;
@@ -588,6 +798,11 @@
   }, true);
 
   inject();
+  void bundleForThisPage().then((bundle) => {
+    if (!bundle) return;
+    inject(true);
+    setTimeout(() => void runAutofill(), 200);
+  });
   const observer = new MutationObserver(() => inject());
   observer.observe(document.documentElement, { childList: true, subtree: true });
 })();
