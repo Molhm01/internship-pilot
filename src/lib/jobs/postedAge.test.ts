@@ -42,15 +42,20 @@ describe("the UI shows source age derived from sourcePostedAt", () => {
     expect(stored).toBe(ago(38 * MINUTE));
   });
 
-  it("falls back to the legacy postingDate for pre-backfill rows", () => {
-    expect(postedLabel({ sourcePostedAt: null, postingDate: ago(2 * HOUR) }, NOW).text)
+  it("falls back to the legacy postingDate only when sourcePostedAt is absent", () => {
+    expect(postedLabel({ postingDate: ago(2 * HOUR) }, NOW).text)
       .toBe("Posted 2 hours ago");
+  });
+
+  it("does not promote a local date when the source date is explicitly unknown", () => {
+    expect(postedLabel({ sourcePostedAt: null, postingDate: ago(2 * HOUR) }, NOW).text)
+      .toBe("Posting date unavailable");
   });
 
   it("labels an unknown date clearly rather than pretending the job is new", () => {
     const label = postedLabel({ sourcePostedAt: null, postingDate: null }, NOW);
     expect(label.unknown).toBe(true);
-    expect(label.text).toBe("Posting date unknown");
+    expect(label.text).toBe("Posting date unavailable");
     expect(label.text).not.toMatch(/today|just now|minute/i);
   });
 

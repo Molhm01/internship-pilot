@@ -159,13 +159,22 @@ describe("GET /api/jobs", () => {
     expect(findMany).not.toHaveBeenCalled();
   });
 
-  it("defaults to a 50-row seven-day Fresh page and keeps All Active explicit", async () => {
+  it("defaults to a 50-row Fresh page with recent posted and bounded unknown-date jobs", async () => {
     await GET(new Request("http://localhost/api/jobs"), {});
-    expect(findMany).toHaveBeenLastCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ activeFeed: true, sourcePostedAt: { gte: expect.any(Date) } }),
+    const freshArgs = findMany.mock.calls.at(-1)?.[0] as { where: { activeFeed: boolean; AND: unknown[] } };
+    expect(freshArgs).toMatchObject({
+      where: {
+        activeFeed: true,
+        AND: [{
+          OR: [
+            { sourcePostedAt: { gte: expect.any(Date), lte: expect.any(Date) } },
+            { sourcePostedAt: null, firstSeenAt: { gte: expect.any(Date), lte: expect.any(Date) } },
+          ],
+        }],
+      },
       skip: 0,
       take: 50,
-    }));
+    });
 
     await GET(new Request("http://localhost/api/jobs?view=all"), {});
     const args = findMany.mock.calls.at(-1)?.[0] as { where: Record<string, unknown> };
@@ -199,8 +208,8 @@ describe("GET /api/jobs", () => {
       // Newest SOURCE posting first — never newest row-insert first.
       orderBy: [
         { sourcePostedAt: { sort: "desc", nulls: "last" } },
-        { sourceRowIndex: "asc" },
         { firstSeenAt: "desc" },
+        { sourceRowIndex: "asc" },
         { id: "desc" },
       ],
       include: {

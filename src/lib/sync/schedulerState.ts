@@ -112,6 +112,24 @@ export async function recordSchedulerHeartbeat(startedAt: string): Promise<void>
   });
 }
 
+export const DISCOVERY_QUALITY_COHORT_KEY = "discoveryQuality:cohortStartedAt";
+
+/** Preserve the first instrumentation instant; restarts must not reset SLO data. */
+export async function ensureDiscoveryQualityCohortStarted(at: Date = new Date()): Promise<Date> {
+  const existing = await prisma.appSetting.findUnique({ where: { key: DISCOVERY_QUALITY_COHORT_KEY } });
+  if (existing) return new Date(JSON.parse(existing.value) as string);
+  try {
+    await prisma.appSetting.create({
+      data: { key: DISCOVERY_QUALITY_COHORT_KEY, value: JSON.stringify(at.toISOString()) },
+    });
+    return at;
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "P2002")) throw error;
+    const raced = await prisma.appSetting.findUniqueOrThrow({ where: { key: DISCOVERY_QUALITY_COHORT_KEY } });
+    return new Date(JSON.parse(raced.value) as string);
+  }
+}
+
 export type TickInfo = {
   label: string;
   intervalMs: number;

@@ -63,6 +63,9 @@ async function main() {
       && now.getTime() - job.sourcePostedAt.getTime() > 30 * DAY_MS).length,
     unknown: jobs.filter((job) => !job.sourcePostedAt).length,
   };
+  const newlyDiscoveredUnknownDate = jobs.filter((job) =>
+    !job.sourcePostedAt && within(job.firstSeenAt, now, 3),
+  ).length;
 
   const providers = [
     "Workday", "SuccessFactors", "Greenhouse", "Lever", "Ashby", "iCIMS", "Custom/API", "Other",
@@ -104,7 +107,11 @@ async function main() {
     generatedAt: now.toISOString(),
     active: jobs.length,
     posted,
-    defaultDiscoverCount: posted.within7d,
+    defaultDiscoverCount: posted.within7d + newlyDiscoveredUnknownDate,
+    defaultDiscoverComponents: {
+      knownRecent: posted.within7d,
+      newlyDiscoveredUnknownDate,
+    },
     allActiveCount: jobs.length,
     eligibleUserCount: eligibleUsers.length,
     scoreCoverage,

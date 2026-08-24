@@ -17,13 +17,28 @@ type WorkdaySearch = { jobPostings?: WorkdayPosting[]; total?: number };
 type WorkdayDetail = {
   jobPostingInfo?: {
     jobDescription?: string;
+    description?: string;
+    jobDescriptionText?: string;
     location?: string;
     additionalLocations?: string[];
     jobReqId?: string;
     externalUrl?: string;
     postedOn?: string;
+    datePosted?: string | number;
+    postedDate?: string | number;
+    postingDate?: string | number;
     startDate?: string;
   };
+};
+
+export type WorkdayJobDetail = {
+  description: string;
+  location: string | null;
+  requisitionId: string | null;
+  applyUrl: string | null;
+  /** Explicit posting evidence only. `startDate` is deliberately excluded. */
+  postedAt: Date | null;
+  postedAtText: string | null;
 };
 
 export type WorkdayConfiguration = {
@@ -132,6 +147,34 @@ async function getDetail(url: string, timeoutMs = 10_000): Promise<WorkdayDetail
   }
 }
 
+function normalizedWorkdayDetail(detail: WorkdayDetail | null): WorkdayJobDetail {
+  const info = detail?.jobPostingInfo;
+  const description = info?.jobDescription ?? info?.description ?? info?.jobDescriptionText ?? "";
+  const explicitPostingValue = info?.datePosted ?? info?.postedDate ?? info?.postingDate ?? info?.postedOn;
+  return {
+    description: description ? stripHtml(description) : "",
+    location: info?.location ?? null,
+    requisitionId: info?.jobReqId ?? null,
+    applyUrl: info?.externalUrl ?? null,
+    postedAt: null,
+    postedAtText: explicitPostingValue === undefined || explicitPostingValue === null
+      ? null
+      : String(explicitPostingValue),
+  };
+}
+
+/** Fetch one public CXS detail record without interpreting job start dates. */
+export async function fetchWorkdayJobDetail(
+  atsIdentifier: string,
+  careersUrl: string | null | undefined,
+  externalPath: string,
+): Promise<WorkdayJobDetail | null> {
+  const configuration = parseWorkdayConfiguration(atsIdentifier, careersUrl);
+  if (!configuration || !externalPath.startsWith("/")) return null;
+  const detail = await getDetail(`${configuration.baseUrl}${externalPath}`);
+  return detail ? normalizedWorkdayDetail(detail) : null;
+}
+
 function searchBody(searchText: string, offset: number) {
   return { appliedFacets: {}, limit: WORKDAY_PAGE_SIZE, offset, searchText };
 }
@@ -177,20 +220,20 @@ export async function probeWorkdayJobs(
   const jobs: AtsJob[] = [];
   for (const posting of candidates.slice(0, 40)) {
     const detail = await getDetail(`${configuration.baseUrl}${posting.externalPath}`);
-    const info = detail?.jobPostingInfo;
+    const normalized = normalizedWorkdayDetail(detail);
     jobs.push({
       sourceJobId: posting.externalPath,
-      requisitionId: info?.jobReqId ?? posting.bulletFields?.[0] ?? null,
+      requisitionId: normalized.requisitionId ?? posting.bulletFields?.[0] ?? null,
       title: posting.title,
       company: companyName,
-      location: info?.location ?? null,
-      workplaceType: /remote/i.test(info?.location ?? "") ? "Remote" : null,
-      applyUrl: info?.externalUrl ?? `https://${configuration.host}/${configuration.site}${posting.externalPath}`,
-      description: info?.jobDescription ? stripHtml(info.jobDescription) : "",
-      // startDate is an authoritative calendar date when present. Workday's
-      // postedOn wording is retained as relative/date-only evidence otherwise.
-      postedAt: info?.startDate ? new Date(info.startDate) : null,
-      postedAtText: info?.postedOn ?? posting.postedOn ?? null,
+      location: normalized.location,
+      workplaceType: /remote/i.test(normalized.location ?? "") ? "Remote" : null,
+      applyUrl: normalized.applyUrl ?? `https://${configuration.host}/${configuration.site}${posting.externalPath}`,
+      description: normalized.description,
+      // `startDate` is when employment begins, not when the employer posted
+      // the requisition. Only explicit posting fields are allowed here.
+      postedAt: normalized.postedAt,
+      postedAtText: normalized.postedAtText ?? posting.postedOn ?? null,
     });
     // Detail hydration is intentionally serial with a small cooldown. The
     // board search is cheap; dozens of detail reads should not become a burst.

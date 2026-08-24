@@ -263,7 +263,7 @@ function JobsPageContent() {
     <PageBody>
       <PageHeader
         title="Discover"
-        description="Fresh internships from the last 7 days, newest first. Every job gets an immediate baseline match; AI refinement runs in the background."
+        description="Recent official postings plus newly discovered jobs whose posting date is unavailable. Every job gets an immediate baseline match."
         meta={
           counts && (
             <>
@@ -333,7 +333,7 @@ function JobsPageContent() {
       <div className="mb-4 flex flex-wrap items-center gap-2 border-y border-hairline py-2">
         <div className="flex items-center gap-1" aria-label="Discover view">
           {([
-            ["fresh", "Fresh · 7 days"],
+            ["fresh", "Fresh"],
             ["all", "All Active"],
             ["older", "Older · 8–30 days"],
           ] as const).map(([value, label]) => (

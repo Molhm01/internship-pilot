@@ -43,6 +43,7 @@ import {
   normalizeCompanyKey,
   type FreshSignalReason,
 } from "@/lib/sync/freshSignalReasons";
+import { boardCacheKey } from "@/lib/sync/jobrightFreshDiscovery";
 import { inferResolvedSource } from "@/lib/sync/discoveryResolution";
 import {
   isAggregatorUrl,
@@ -279,7 +280,15 @@ async function readBoard(config: BoardConfig, companyName: string): Promise<AtsJ
 }
 
 function boardJobsFor(config: BoardConfig, companyName: string): Promise<AtsJob[] | null> {
-  const key = `${config.atsType}:${config.atsIdentifier}`;
+  // SuccessFactors and other shared-host providers do not have an
+  // employer-scoped identifier. Match the live pipeline's cache identity so
+  // one company's postings can never be served to another benchmark row.
+  const key = boardCacheKey({
+    atsType: config.atsType,
+    atsIdentifier: config.atsIdentifier,
+    careersUrl: config.careersUrl,
+    name: companyName,
+  });
   let pending = boardJobsCache.get(key);
   if (!pending) {
     pending = readBoard(config, companyName);
@@ -449,6 +458,8 @@ async function main() {
   let alreadyFoundOfficially = 0;
   let resolvedAfterPriorityTrigger = 0;
   let officialExistsButMatchFailed = 0;
+  let supportedReachableDenominator = 0;
+  let supportedReachableCanonical = 0;
   const datasetRows: Array<Record<string, unknown>> = [];
 
   let cursor = 0;
@@ -462,6 +473,8 @@ async function main() {
       if (existing?.accepted) {
         alreadyFoundOfficially += 1;
         resolved += 1;
+        supportedReachableDenominator += 1;
+        supportedReachableCanonical += 1;
         urls.add(existing.job.applyUrl);
         if (existing.job.description.trim().length > 200) withJd += 1;
         datasetRows.push({
@@ -488,6 +501,8 @@ async function main() {
       }
       if (result.state === "RESOLVED") {
         resolved += 1;
+        supportedReachableDenominator += 1;
+        supportedReachableCanonical += 1;
         resolvedAfterPriorityTrigger += 1;
         times.push(result.ms);
         urls.add(result.url);
@@ -517,6 +532,13 @@ async function main() {
           ? "OFFICIAL_JOB_EXISTS_BUT_MATCH_FAILED"
           : "UNRESOLVED";
         if (classification === "OFFICIAL_JOB_EXISTS_BUT_MATCH_FAILED") officialExistsButMatchFailed += 1;
+        const supportedReachable = ![
+          "NO_ATS_CONFIG",
+          "UNKNOWN_COMPANY",
+          "BOT_WALL_BLOCKED",
+          "PROVIDER_ACCESS_BLOCKED",
+        ].includes(result.reason);
+        if (supportedReachable) supportedReachableDenominator += 1;
         datasetRows.push({
           sourceJobId: signal.sourceJobId,
           company: signal.company,
@@ -550,6 +572,11 @@ async function main() {
     officialJobExistsButMatchFailed: officialExistsButMatchFailed,
     unresolved: sample.length - resolved - closed - officialExistsButMatchFailed,
     trueRecallPercent: sample.length ? Number(((resolved / sample.length) * 100).toFixed(2)) : 0,
+    supportedReachableDenominator,
+    supportedReachableCanonical,
+    supportedReachableRecallPercent: supportedReachableDenominator
+      ? Number((supportedReachableCanonical / supportedReachableDenominator * 100).toFixed(2))
+      : 0,
     resolvedWithFullJd: withJd,
     rows: datasetRows,
   }, null, 2));
@@ -562,6 +589,7 @@ async function main() {
   console.log("\n" + "=".repeat(60));
   console.log(`examined            ${sample.length}`);
   console.log(`officially resolved ${resolved} (${pct(resolved, sample.length)})`);
+  console.log(`supported/reachable ${supportedReachableCanonical}/${supportedReachableDenominator} (${pct(supportedReachableCanonical, supportedReachableDenominator)})`);
   console.log(`  ALREADY_FOUND_OFFICIALLY          ${alreadyFoundOfficially}`);
   console.log(`  RESOLVED_AFTER_PRIORITY_TRIGGER   ${resolvedAfterPriorityTrigger}`);
   console.log(`  OFFICIAL_JOB_EXISTS_MATCH_FAILED  ${officialExistsButMatchFailed}`);

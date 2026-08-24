@@ -4,6 +4,7 @@ import { runCompanyDiscoveryBatch } from "@/lib/sync/companyDiscovery";
 import { runNearbyFirmSearch } from "@/lib/sync/nearbyDiscovery";
 import {
   isSchedulerPaused,
+  ensureDiscoveryQualityCohortStarted,
   recordSchedulerHeartbeat,
   recordTickResult,
   scheduleNextTick,
@@ -44,6 +45,7 @@ const SCHEDULES = {
   csvSync: { label: "CSV allowlist sync", intervalMs: 30 * MINUTE },
   queue: { label: "Verification queue", intervalMs: 2 * MINUTE },
   companyDiscovery: { label: "Company Watchlist poll", intervalMs: 5 * MINUTE },
+  qualityHydration: { label: "Official job quality hydration", intervalMs: 2 * MINUTE },
   scoring: { label: "ATS scoring maintenance", intervalMs: 2 * MINUTE },
   nearbyWeekly: { label: "Nearby-firm discovery", intervalMs: WEEK },
   gmail: { label: "Gmail application tracking", intervalMs: 5 * MINUTE },
@@ -52,6 +54,7 @@ const SCHEDULES = {
 declare global {
   var __internshipPilotSchedulerStarted: boolean | undefined;
   var __internshipPilotScoringMaintenanceRunning: boolean | undefined;
+  var __internshipPilotQualityHydrationRunning: boolean | undefined;
   var __internshipPilotBroadRadarRunning: boolean | undefined;
 }
 
@@ -99,6 +102,9 @@ export function startScheduler(options: { scoringEnabled?: boolean } = {}) {
   log("starting persistent scheduler (all state is durable in Postgres)");
 
   const schedulerStartedAt = new Date().toISOString();
+  void ensureDiscoveryQualityCohortStarted(new Date(schedulerStartedAt)).catch((error) =>
+    log(`quality cohort instrumentation failed: ${error instanceof Error ? error.message : String(error)}`),
+  );
   void recordSchedulerHeartbeat(schedulerStartedAt).catch((error) =>
     log(`health heartbeat failed: ${error instanceof Error ? error.message : String(error)}`),
   );
@@ -215,7 +221,6 @@ export function startScheduler(options: { scoringEnabled?: boolean } = {}) {
         if (globalThis.__internshipPilotScoringMaintenanceRunning) {
           return {
             skipped: true as const,
-            descriptions: { considered: 0, attempted: 0, hydrated: 0, failed: 0, skippedCooldown: 0 },
             recovered: { considered: 0, requeued: 0 },
             queues: { users: 0, initialQueued: 0, refreshQueued: 0 },
           };
@@ -223,26 +228,19 @@ export function startScheduler(options: { scoringEnabled?: boolean } = {}) {
 
         globalThis.__internshipPilotScoringMaintenanceRunning = true;
         try {
-          // 1) Jobs that arrived from a radar with only title/location cannot be
-          // honestly ATS-scored yet. Pull the real employer/ATS description.
-          const descriptions = await hydrateMissingDescriptionsForScoring({
-            maxItems: 24,
-            concurrency: 4,
-          });
-
-          // 2) A transient model/network failure must not permanently strand an
+          // 1) A transient model/network failure must not permanently strand an
           // otherwise valid active job.
           const recovered = await requeueStaleFailedScores({ maxItems: 20 });
 
-          // 3) Catch EVERY active job for EVERY user with an approved resume
+          // 2) Catch EVERY active job for EVERY user with an approved resume
           // profile. This is the local equivalent of the hosted cron backstop.
           const queues = await prepareAutomaticScoringQueues();
 
-          // 4) Start the local model drain immediately instead of waiting for
+          // 3) Start the local model drain immediately instead of waiting for
           // the 30-second heartbeat above.
           triggerInitialAiMatchWorker();
 
-          return { skipped: false as const, descriptions, recovered, queues };
+          return { skipped: false as const, recovered, queues };
         } finally {
           globalThis.__internshipPilotScoringMaintenanceRunning = false;
         }
@@ -250,9 +248,29 @@ export function startScheduler(options: { scoringEnabled?: boolean } = {}) {
       (r) => ({
         summary: r.skipped
           ? "already running"
-          : `descriptions=${r.descriptions.hydrated}/${r.descriptions.attempted}, queued=${r.queues.initialQueued + r.queues.refreshQueued}, recovered=${r.recovered.requeued}, users=${r.queues.users}`,
-        errors: r.skipped ? 0 : r.descriptions.failed,
+          : `queued=${r.queues.initialQueued + r.queues.refreshQueued}, recovered=${r.recovered.requeued}, users=${r.queues.users}`,
+        errors: 0,
       }),
+    );
+
+  const runQualityHydration = () =>
+    runIfNotPaused(
+      "qualityHydration",
+      async () => {
+        if (globalThis.__internshipPilotQualityHydrationRunning) return null;
+        globalThis.__internshipPilotQualityHydrationRunning = true;
+        try {
+          return await hydrateMissingDescriptionsForScoring({ maxItems: 24, concurrency: 3 });
+        } finally {
+          globalThis.__internshipPilotQualityHydrationRunning = false;
+        }
+      },
+      (result) => result
+        ? {
+            summary: `descriptions=${result.hydrated}/${result.attempted}, dates=${result.datesHydrated}, failed=${result.failed}`,
+            errors: result.failed,
+          }
+        : { summary: "already running" },
     );
 
   const runNearby = () =>
@@ -285,6 +303,7 @@ export function startScheduler(options: { scoringEnabled?: boolean } = {}) {
   setInterval(runCsvSync, SCHEDULES.csvSync.intervalMs);
   setInterval(runVerificationQueue, SCHEDULES.queue.intervalMs);
   setInterval(runCompanyDiscovery, SCHEDULES.companyDiscovery.intervalMs);
+  setInterval(runQualityHydration, SCHEDULES.qualityHydration.intervalMs);
   if (scoringEnabled) setInterval(runScoringMaintenance, SCHEDULES.scoring.intervalMs);
   setInterval(runNearby, SCHEDULES.nearbyWeekly.intervalMs);
   setInterval(runGmail, SCHEDULES.gmail.intervalMs);
@@ -301,6 +320,7 @@ export function startScheduler(options: { scoringEnabled?: boolean } = {}) {
     await runInternList();
     await runCompanyDiscovery();
     await runVerificationQueue();
+    await runQualityHydration();
     if (scoringEnabled) await runScoringMaintenance();
     if (isGmailConfigured()) await runGmail();
   })();

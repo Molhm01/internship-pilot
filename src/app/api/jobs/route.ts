@@ -14,6 +14,11 @@ import { jobsQueryErrorDevDetail, jobsQueryErrorLog } from "@/lib/jobs/jobsQuery
 import { parseSourcePostedAt } from "@/lib/sync/sourceDate";
 import { manualEntryVerification } from "@/lib/jobs/manualEntry";
 import {
+  discoverFreshnessLabel,
+  KNOWN_POSTED_FRESH_WINDOW_MS,
+  UNKNOWN_DATE_DISCOVERED_WINDOW_MS,
+} from "@/lib/jobs/freshness";
+import {
   baselineStateData,
   calculateBaselineScore,
   loadApprovedBaselineProfile,
@@ -24,15 +29,6 @@ import {
 const DEFAULT_JOBS_PAGE_SIZE = 50;
 const MAX_JOBS_PAGE_SIZE = 100;
 const PROFILE_NOT_READY_MESSAGE = "Complete your profile to activate job matching.";
-
-function freshnessLabel(sourcePostedAt: Date | string | null | undefined, now = Date.now()) {
-  if (!sourcePostedAt) return null;
-  const ageMs = now - new Date(sourcePostedAt).getTime();
-  if (!Number.isFinite(ageMs) || ageMs < 0) return null;
-  if (ageMs < 24 * 60 * 60 * 1000) return "NEW" as const;
-  if (ageMs <= 7 * 24 * 60 * 60 * 1000) return "RECENT" as const;
-  return null;
-}
 
 function parseListParam(value: string | null): string[] {
   return value ? value.split(",").map((v) => v.trim()).filter(Boolean) : [];
@@ -203,7 +199,15 @@ async function getJobsResponse(req: Request, userId: string) {
   if (feed === "active") {
     const now = Date.now();
     if (view === "fresh") {
-      where.sourcePostedAt = { gte: new Date(now - 7 * 24 * 60 * 60 * 1000) };
+      andFilters.push({
+        OR: [
+          { sourcePostedAt: { gte: new Date(now - KNOWN_POSTED_FRESH_WINDOW_MS), lte: new Date(now) } },
+          {
+            sourcePostedAt: null,
+            firstSeenAt: { gte: new Date(now - UNKNOWN_DATE_DISCOVERED_WINDOW_MS), lte: new Date(now) },
+          },
+        ],
+      });
     } else if (view === "older") {
       where.sourcePostedAt = {
         gt: new Date(now - 30 * 24 * 60 * 60 * 1000),
@@ -328,7 +332,7 @@ async function getJobsResponse(req: Request, userId: string) {
   }
   jobs = jobs.map((job) => ({
     ...job,
-    freshnessLabel: freshnessLabel(job.sourcePostedAt),
+    freshnessLabel: discoverFreshnessLabel(job),
   }));
 
   const total = await prisma.job.count({ where });

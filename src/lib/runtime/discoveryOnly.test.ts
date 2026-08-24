@@ -23,5 +23,7 @@ describe("discovery-only local operations", () => {
     expect(worker).toContain("startScheduler({ scoringEnabled })");
     expect(scheduler).toContain("if (scoringEnabled) {");
     expect(scheduler).toContain("if (scoringEnabled) setInterval(runScoringMaintenance");
+    expect(scheduler).toContain("setInterval(runQualityHydration");
+    expect(scheduler).toContain("await runQualityHydration()");
   });
 });

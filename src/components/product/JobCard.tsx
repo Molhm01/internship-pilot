@@ -45,7 +45,7 @@ export type JobCardData = {
   matchScore?: number | null;
   eligibilityStatus?: string | null;
   scoreSource?: "BASELINE" | "AI_REFINED" | string | null;
-  freshnessLabel?: "NEW" | "RECENT" | null;
+  freshnessLabel?: "NEW" | "RECENT" | "NEWLY_DISCOVERED" | null;
   // Historical MatchResults may still be present in the API payload for audit
   // and job-detail use. The card deliberately ignores them: current display
   // state lives in UserJobState and is atomically replaced by a current-input
@@ -141,7 +141,14 @@ export function JobCard({ job, className }: { job: JobCardData; className?: stri
         </dl>
 
         <div className="mt-2.5 flex flex-wrap items-center gap-1">
-          {freshnessBadge && <Badge tone={freshnessBadge === "NEW" ? "accent" : "info"}>{freshnessBadge}</Badge>}
+          {freshnessBadge && (
+            <Badge
+              tone={freshnessBadge === "NEW" ? "accent" : "info"}
+              title={freshnessBadge === "NEWLY_DISCOVERED" ? "Posting date unavailable" : undefined}
+            >
+              {freshnessBadge === "NEWLY_DISCOVERED" ? "Newly discovered" : freshnessBadge}
+            </Badge>
+          )}
           <TrackerStatusBadge status={job.status} />
           {job.verificationStatus && <AvailabilityBadge status={job.verificationStatus} />}
         </div>

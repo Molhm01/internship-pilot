@@ -59,6 +59,20 @@ export function nextCheckTimeFor(priority: string, consecutiveFailures: number, 
   return new Date(Date.now() + minutes * 60 * 1000);
 }
 
+export function nextCheckTimeForFailure(
+  priority: string,
+  consecutiveFailures: number,
+  provider: string | null | undefined,
+  failureCode: string,
+  now: Date = new Date(),
+): Date {
+  if (failureCode === "ATS_BOT_WALL") {
+    const hours = Math.min(7 * 24, 12 * 2 ** Math.max(0, consecutiveFailures - 1));
+    return new Date(now.getTime() + hours * 60 * 60 * 1000);
+  }
+  return nextCheckTimeFor(priority, consecutiveFailures, provider);
+}
+
 export function pollingTierFor(input: {
   priority: string;
   provider: string | null;
@@ -286,13 +300,20 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
       where: { id: companyId },
       data: {
         lastCheckedAt: new Date(),
-        nextCheckAt: nextCheckTimeFor(effectivePriority(company, atsType), consecutiveFailures, atsType),
+        nextCheckAt: nextCheckTimeForFailure(effectivePriority(company, atsType), consecutiveFailures, atsType, failureCode),
         lastCheckStatus: "error",
         lastCheckError: message,
         consecutiveFailures,
         atsConfigState: configState,
         atsConfigCheckedAt: new Date(),
         atsConfigErrorCode: failureCode,
+        ...(failureCode === "ATS_BOT_WALL" ? {
+          atsConfigEvidence: JSON.stringify({
+            access: "BOT_WALL",
+            observedAt: new Date().toISOString(),
+            action: "STOP_AND_BACKOFF",
+          }),
+        } : {}),
       },
     });
     const durationMs = Date.now() - startedAt.getTime();

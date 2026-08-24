@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { listWorkdayJobs, parseWorkdayConfiguration, probeWorkdayJobs } from "@/lib/ats/workday";
+import { fetchWorkdayJobDetail, listWorkdayJobs, parseWorkdayConfiguration, probeWorkdayJobs } from "@/lib/ats/workday";
 
 type Call = { url: string; body: unknown };
 
@@ -127,6 +127,38 @@ describe("Workday board listing", () => {
     const probe = await probeWorkdayJobs("micron.wd1/External", null, "Micron", (title) => /intern/i.test(title));
     expect(probe.totalAvailableJobs).toBe(2718);
     expect(probe.paginationVerified).toBe(true);
-    expect(probe.jobs[0]?.postedAt?.toISOString()).toBe("2026-08-22T00:00:00.000Z");
+    expect(probe.jobs[0]?.postedAt).toBeNull();
+    expect(probe.jobs[0]?.postedAtText).toBe("Posted Yesterday");
+  });
+
+  it("never treats Workday startDate as posting evidence", async () => {
+    const calls: Call[] = [];
+    vi.stubGlobal("fetch", bigTenantFetch(calls));
+    const detail = await fetchWorkdayJobDetail(
+      "micron.wd1/External",
+      null,
+      "/job/Boise/Intern-Yield_JR109076",
+    );
+    expect(detail).toMatchObject({
+      description: "Real employer job description.",
+      postedAt: null,
+      postedAtText: "Posted Yesterday",
+    });
+  });
+
+  it("preserves an explicit Workday posting timestamp and full JD", async () => {
+    vi.stubGlobal("fetch", (async () => jsonResponse({
+      jobPostingInfo: {
+        jobDescription: "<p>Responsibilities and qualifications from the official detail.</p>",
+        datePosted: "2026-08-23T14:25:00-04:00",
+        startDate: "2027-06-01",
+      },
+    })) as unknown as typeof fetch);
+    const detail = await fetchWorkdayJobDetail("acme.wd5/Students", null, "/job/intern-1");
+    expect(detail).toMatchObject({
+      description: "Responsibilities and qualifications from the official detail.",
+      postedAt: null,
+      postedAtText: "2026-08-23T14:25:00-04:00",
+    });
   });
 });

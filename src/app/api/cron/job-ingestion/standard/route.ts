@@ -15,6 +15,7 @@ import { runTieredDuePoll } from "@/lib/sync/companyDiscovery";
 import { runExpandedPublicDirectFeedDiscovery } from "@/lib/sync/publicDirectFeedsExpanded";
 import { runInternListOriginalSourceDiscovery } from "@/lib/sync/discoveryResolution";
 import { runFreshnessVerificationBatch } from "@/lib/sync/freshness";
+import { hydrateMissingDescriptionsForScoring } from "@/lib/matching/jobDescriptionHydration";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -90,6 +91,16 @@ async function run() {
       runFreshnessVerificationBatch(boundedEnv("CRON_STANDARD_VERIFY_LIMIT", 30, 1, 50)),
     );
 
+    // Quality hydration is public HTTP only and deliberately independent of
+    // the model-scoring cron. A deployment with no model key still recovers
+    // official dates and descriptions.
+    const qualityHydration = await runLaneStep(budget, 15_000, () =>
+      hydrateMissingDescriptionsForScoring({
+        maxItems: boundedEnv("CRON_STANDARD_HYDRATION_LIMIT", 12, 1, 30),
+        concurrency: 4,
+      }),
+    );
+
     const newJobs =
       sum(tierB.value?.results, "newCount") +
       (publicDirect.value?.newCount ?? 0) +
@@ -104,6 +115,7 @@ async function run() {
       publicDirectFeeds: summarize(publicDirect),
       internListResolution: summarize(internList),
       freshnessVerification: summarize(freshness),
+      qualityHydration: summarize(qualityHydration),
     };
     const outcome = laneOutcome(steps);
 
@@ -126,6 +138,7 @@ async function run() {
             }
           : null,
         freshness: freshness.value ?? null,
+        qualityHydration: qualityHydration.value ?? null,
       },
       { headers: { "cache-control": "no-store" } },
     );

@@ -241,7 +241,9 @@ describe("Gates 12 & 13 — closed vs merely unreachable", () => {
     // and spends budget a recoverable employer could have used.
     const ONE_DAY = 24 * 60 * 60 * 1000;
     for (const reason of FRESH_SIGNAL_REASONS) {
-      const ceiling = isPermanentLikeReason(reason) ? 14 * ONE_DAY : ONE_DAY;
+      const ceiling = isPermanentLikeReason(reason)
+        ? 14 * ONE_DAY
+        : reason === "BOT_WALL_BLOCKED" ? 7 * ONE_DAY : ONE_DAY;
       expect(nextAttemptDelayMs(reason, 50), `${reason} must stay bounded`).toBeLessThanOrEqual(ceiling);
       expect(nextAttemptDelayMs(reason, 1), `${reason} must always retry`).toBeGreaterThan(0);
     }
@@ -433,6 +435,13 @@ describe("Gate 10 (observability) — unresolved is never one generic bucket", (
 });
 
 describe("a verified public-access block is its own retry class", () => {
+  it("gives a bot wall long backoff instead of hammering it every fresh tick", () => {
+    expect(nextAttemptDelayMs("BOT_WALL_BLOCKED", 1)).toBe(12 * 60 * 60 * 1000);
+    expect(nextAttemptDelayMs("BOT_WALL_BLOCKED", 5)).toBeGreaterThan(
+      nextAttemptDelayMs("BOT_WALL_BLOCKED", 1),
+    );
+  });
+
   it("backs off for days, not minutes — and never abandons the employer", () => {
     // A provider confirmed inaccessible in a real browser should not consume
     // the fresh lane every hour; retrying today cannot change that answer.

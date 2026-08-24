@@ -21,7 +21,6 @@ import { prisma } from "@/lib/db";
 import { listJobsForCompany, searchJobsForCompany } from "@/lib/ats";
 import { fetchEightfoldJobDescription } from "@/lib/ats/eightfold";
 import { fetchPhenomJobDescription } from "@/lib/ats/phenom";
-import { resolveWithHeadlessBrowser } from "@/lib/ats/headlessResolver";
 import { listEmployerPageJobs } from "@/lib/ats/employerPageLinks";
 import type { AtsJob } from "@/lib/ats/types";
 import {
@@ -490,8 +489,6 @@ async function loadOfficialCatalogIndex(): Promise<OfficialCatalogIndex> {
  * public listing. An empty result from one of these is a blocked read, not an
  * employer with no openings, and it is worth one bounded rendered page.
  */
-const BOT_WALLED_VENDORS = new Set(["icims", "taleo", "custom", "spa", "employer-page"]);
-
 /**
  * The identity of ONE employer's board read, for the per-tick cache.
  *
@@ -560,8 +557,11 @@ export async function boardJobsFor(
     result = listed.supported
       ? { jobs: listed.jobs, fetchFailed: false, botWalled: false }
       : { jobs: [], fetchFailed: true, botWalled: false };
-  } catch {
-    result = { jobs: [], fetchFailed: true, botWalled: false };
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error
+      ? String((error as { code?: unknown }).code)
+      : "";
+    result = { jobs: [], fetchFailed: true, botWalled: code === "ATS_BOT_WALL" };
   }
 
   // Before spending a browser: the employer's OWN careers page often links
@@ -571,26 +571,6 @@ export async function boardJobsFor(
   if (result.jobs.length === 0 && config.careersUrl) {
     const linked = await listEmployerPageJobs(config.careersUrl, companyName);
     if (linked.length > 0) result = { jobs: linked, fetchFailed: false, botWalled: false };
-  }
-
-  // Bounded headless fallback. Reached ONLY after the HTTP/API path produced
-  // nothing, only for vendors known to gate automated reads, and only through
-  // ordinary public navigation. resolveWithHeadlessBrowser owns the process
-  // limits: one browser at a time, closed at the end of the batch.
-  if (result.jobs.length === 0 && BOT_WALLED_VENDORS.has(config.atsType ?? "")) {
-    const renderUrl = headlessListingUrlFor(config);
-    if (renderUrl) {
-      const [outcome] = await resolveWithHeadlessBrowser([
-        { tenantKey: key, url: renderUrl, companyName },
-      ]);
-      if (outcome && outcome.jobs.length > 0) {
-        result = { jobs: outcome.jobs, fetchFailed: false, botWalled: false };
-      } else {
-        result = { jobs: [], fetchFailed: true, botWalled: true };
-      }
-    } else {
-      result = { ...result, botWalled: true };
-    }
   }
 
   cache.set(key, result);
@@ -626,14 +606,6 @@ async function withEmployerDescription(
   } catch {
     return job;
   }
-}
-
-/** The public listing page worth rendering for a vendor that blocked us. */
-function headlessListingUrlFor(config: EmployerBoardConfig): string | null {
-  if (config.atsType === "icims" && config.atsIdentifier) {
-    return `https://${config.atsIdentifier}.icims.com/jobs/search?ss=1&searchKeyword=intern`;
-  }
-  return config.careersUrl ?? null;
 }
 
 async function resolveOneSignal(
@@ -888,7 +860,6 @@ async function recordSignalOutcome(args: {
     title: signal.title,
     location: signal.location,
     sourcePostedAt: signal.sourcePostedAt,
-    sourceCapturedAt: now,
     attempts,
     lastAttemptAt: now,
   };
@@ -940,6 +911,7 @@ async function recordSignalOutcome(args: {
     create: {
       signalSource: FRESH_SIGNAL_SOURCE,
       signalJobId: signal.sourceJobId,
+      sourceCapturedAt: now,
       ...identity,
       ...specific,
     },

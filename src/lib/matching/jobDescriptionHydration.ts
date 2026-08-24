@@ -2,6 +2,15 @@ import { createHash } from "node:crypto";
 import { prisma } from "@/lib/db";
 import { isAggregatorUrl } from "@/lib/applications/officialDestination";
 import { hasUsableJobDescription } from "@/lib/matchWorkflow";
+import { fetchWorkdayJobDetail } from "@/lib/ats/workday";
+import { parseStructuredJobPage } from "@/lib/ats/structuredCareer";
+import {
+  employerAtsProvenance,
+  parseFirstSourceDate,
+  shouldReplaceCanonicalSourceDate,
+  type ParsedSourceDate,
+  type SourceDateProvenance,
+} from "@/lib/sync/sourceDate";
 
 const FETCH_TIMEOUT_MS = 12_000;
 const MAX_HTML_BYTES = 2_000_000;
@@ -16,11 +25,12 @@ export type DescriptionHydrationResult = {
   considered: number;
   attempted: number;
   hydrated: number;
+  datesHydrated: number;
   failed: number;
   skippedCooldown: number;
 };
 
-type HydrationJob = {
+export type HydrationJob = {
   id: string;
   title: string;
   company: string;
@@ -39,6 +49,17 @@ type HydrationJob = {
   sourceJobId: string | null;
   scoringError: string | null;
   scoringQueuedAt: Date | null;
+  sourcePostedAt: Date | null;
+  sourcePostedText: string | null;
+  sourceDateConfidence: string | null;
+  sourceDateProvenance: string | null;
+  firstSeenAt: Date | null;
+};
+
+export type OfficialHydrationEvidence = {
+  description: string | null;
+  sourceDate: ParsedSourceDate;
+  sourceDateProvenance: SourceDateProvenance;
 };
 
 function decodeHtml(value: string): string {
@@ -113,7 +134,7 @@ function looksLikeJobPosting(text: string, job: Pick<HydrationJob, "title" | "co
     && lower.includes(job.company.toLowerCase().split(/\s+/)[0] ?? "");
 }
 
-async function fetchText(url: string): Promise<string | null> {
+async function fetchPage(url: string): Promise<{ raw: string; text: string } | null> {
   const response = await fetch(url, {
     headers: {
       accept: "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
@@ -129,12 +150,13 @@ async function fetchText(url: string): Promise<string | null> {
   if (/json/i.test(contentType)) {
     try {
       const parsed = JSON.parse(raw) as unknown;
-      return JSON.stringify(parsed);
+      const text = JSON.stringify(parsed);
+      return { raw, text };
     } catch {
-      return raw;
+      return { raw, text: raw };
     }
   }
-  return visibleText(raw);
+  return { raw, text: visibleText(raw) };
 }
 
 async function greenhouseDescription(job: HydrationJob): Promise<string | null> {
@@ -160,7 +182,7 @@ function leverParts(rawUrl: string): { tenant: string; postingId: string } | nul
   }
 }
 
-async function leverDescription(rawUrl: string): Promise<string | null> {
+async function leverEvidence(rawUrl: string, capturedAt: Date): Promise<OfficialHydrationEvidence | null> {
   const parts = leverParts(rawUrl);
   if (!parts) return null;
   const response = await fetch(
@@ -174,29 +196,38 @@ async function leverDescription(rawUrl: string): Promise<string | null> {
     descriptionBodyPlain?: string;
     additionalPlain?: string;
     lists?: Array<{ text?: string; content?: string }>;
+    createdAt?: number | string;
   };
-  return [
+  const description = [
     posting.openingPlain,
     posting.descriptionPlain,
     posting.descriptionBodyPlain,
     ...(posting.lists ?? []).map((section) => `${section.text ?? ""}\n${visibleText(section.content ?? "")}`),
     posting.additionalPlain,
   ].filter(Boolean).join("\n\n").trim() || null;
+  const sourceDate = parseFirstSourceDate([posting.createdAt], capturedAt);
+  return { description, sourceDate, sourceDateProvenance: employerAtsProvenance(sourceDate) };
 }
 
-async function ashbyDescription(job: HydrationJob): Promise<string | null> {
+async function ashbyEvidence(job: HydrationJob, capturedAt: Date): Promise<OfficialHydrationEvidence | null> {
   if (!job.atsTenant || !job.sourceJobId) return null;
   const response = await fetch(
     `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(job.atsTenant)}`,
     { headers: { accept: "application/json", "user-agent": USER_AGENT }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: "no-store" },
   );
   if (!response.ok) return null;
-  const data = await response.json() as { jobs?: Array<{ id?: string; descriptionPlain?: string }> };
+  const data = await response.json() as { jobs?: Array<{ id?: string; descriptionPlain?: string; publishedAt?: string }> };
   const posting = data.jobs?.find((item) => item.id === job.sourceJobId);
-  return posting?.descriptionPlain?.trim() || null;
+  if (!posting) return null;
+  const sourceDate = parseFirstSourceDate([posting.publishedAt], capturedAt);
+  return {
+    description: posting.descriptionPlain?.trim() || null,
+    sourceDate,
+    sourceDateProvenance: employerAtsProvenance(sourceDate),
+  };
 }
 
-async function smartRecruitersDescription(job: HydrationJob): Promise<string | null> {
+async function smartRecruitersEvidence(job: HydrationJob, capturedAt: Date): Promise<OfficialHydrationEvidence | null> {
   if (!job.atsTenant || !job.sourceJobId) return null;
   const response = await fetch(
     `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(job.atsTenant)}/postings/${encodeURIComponent(job.sourceJobId)}`,
@@ -205,26 +236,67 @@ async function smartRecruitersDescription(job: HydrationJob): Promise<string | n
   if (!response.ok) return null;
   const data = await response.json() as {
     jobAd?: { sections?: Record<string, { title?: string; text?: string }> };
+    releasedDate?: string;
   };
   const sections = Object.values(data.jobAd?.sections ?? {});
-  return sections
+  const description = sections
     .map((section) => `${section.title ?? ""}\n${visibleText(section.text ?? "")}`.trim())
     .filter(Boolean)
     .join("\n\n") || null;
+  const sourceDate = parseFirstSourceDate([data.releasedDate], capturedAt);
+  return { description, sourceDate, sourceDateProvenance: employerAtsProvenance(sourceDate) };
 }
 
-async function fetchBestDescription(job: HydrationJob, officialUrl: string): Promise<string | null> {
-  const ats = job.atsType?.toLowerCase() ?? "";
-  const specific =
-    ats === "greenhouse" ? await greenhouseDescription(job)
-      : ats === "lever" ? await leverDescription(officialUrl)
-        : ats === "ashby" ? await ashbyDescription(job)
-          : ats === "smartrecruiters" ? await smartRecruitersDescription(job)
-            : await leverDescription(officialUrl);
+function noSourceDate(): ParsedSourceDate {
+  return { sourcePostedAt: null, sourcePostedText: null, sourceDateConfidence: "UNKNOWN" };
+}
 
-  if (specific && looksLikeJobPosting(specific, job)) return specific;
-  const generic = await fetchText(officialUrl);
-  return generic && looksLikeJobPosting(generic, job) ? generic : null;
+async function fetchBestEvidence(
+  job: HydrationJob,
+  officialUrl: string,
+  capturedAt: Date,
+): Promise<OfficialHydrationEvidence> {
+  const ats = job.atsType?.toLowerCase() ?? "";
+  let specific: OfficialHydrationEvidence | null = null;
+  if (ats === "workday" && job.atsTenant && job.sourceJobId) {
+    const detail = await fetchWorkdayJobDetail(job.atsTenant, officialUrl, job.sourceJobId);
+    if (detail) {
+      const sourceDate = parseFirstSourceDate([detail.postedAt, detail.postedAtText], capturedAt);
+      specific = {
+        description: detail.description || null,
+        sourceDate,
+        sourceDateProvenance: employerAtsProvenance(sourceDate),
+      };
+    }
+  } else if (ats === "greenhouse") {
+    specific = { description: await greenhouseDescription(job), sourceDate: noSourceDate(), sourceDateProvenance: "UNKNOWN" };
+  } else if (ats === "lever") {
+    specific = await leverEvidence(officialUrl, capturedAt);
+  } else if (ats === "ashby") {
+    specific = await ashbyEvidence(job, capturedAt);
+  } else if (ats === "smartrecruiters") {
+    specific = await smartRecruitersEvidence(job, capturedAt);
+  } else {
+    specific = await leverEvidence(officialUrl, capturedAt);
+  }
+
+  if (specific && ((specific.description && looksLikeJobPosting(specific.description, job)) || specific.sourceDate.sourcePostedAt)) {
+    if (specific.description && !looksLikeJobPosting(specific.description, job)) specific.description = null;
+    return specific;
+  }
+
+  const page = await fetchPage(officialUrl);
+  if (!page) return { description: null, sourceDate: noSourceDate(), sourceDateProvenance: "UNKNOWN" };
+  const structured = parseStructuredJobPage(page.raw, officialUrl, job.company, job.title);
+  const description = structured?.description && looksLikeJobPosting(structured.description, job)
+    ? structured.description
+    : looksLikeJobPosting(page.text, job) ? page.text : null;
+  const sourceDate = parseFirstSourceDate([structured?.postedAt], capturedAt);
+  return {
+    description,
+    sourceDate,
+    sourceDateProvenance: sourceDate.sourcePostedAt ? "EMPLOYER_JSON_LD" : "UNKNOWN",
+  };
 }
 
 function recentlyFailed(job: HydrationJob, now: Date): boolean {
@@ -235,7 +307,75 @@ function recentlyFailed(job: HydrationJob, now: Date): boolean {
   );
 }
 
-async function hydrateOne(job: HydrationJob, now: Date): Promise<boolean> {
+type HydrationOutcome = { descriptionHydrated: boolean; dateHydrated: boolean; failed: boolean };
+
+export function hydrationPriority(job: Pick<HydrationJob, "description" | "jobResponsibilities" | "jobQualifications" | "sourcePostedAt" | "firstSeenAt">, now: Date): number {
+  const missingDescription = !hasUsableJobDescription(job);
+  const postedAge = job.sourcePostedAt ? now.getTime() - job.sourcePostedAt.getTime() : null;
+  const discoveredAge = job.firstSeenAt ? now.getTime() - job.firstSeenAt.getTime() : null;
+  const knownFresh = postedAge !== null && postedAge >= 0 && postedAge <= 7 * 24 * 60 * 60 * 1000;
+  const unknownNew = !job.sourcePostedAt && discoveredAge !== null && discoveredAge >= 0 && discoveredAge <= 72 * 60 * 60 * 1000;
+  if (missingDescription && knownFresh) return 0;
+  if (missingDescription && unknownNew) return 1;
+  if (unknownNew) return 2;
+  if (missingDescription) return 3;
+  if (!job.sourcePostedAt) return 4;
+  return 5;
+}
+
+export async function applyOfficialHydrationEvidence(
+  job: HydrationJob,
+  officialUrl: string,
+  evidence: OfficialHydrationEvidence,
+  now: Date,
+): Promise<HydrationOutcome> {
+  const description = evidence.description;
+  const descriptionHydrated = Boolean(
+    description
+    && hasUsableJobDescription(description)
+    && description.trim() !== job.description.trim(),
+  );
+  const dateHydrated = shouldReplaceCanonicalSourceDate(
+    job,
+    evidence.sourceDate,
+    evidence.sourceDateProvenance,
+  );
+  if (!descriptionHydrated && !dateHydrated) {
+    return { descriptionHydrated: false, dateHydrated: false, failed: true };
+  }
+
+  await prisma.job.update({
+    where: { id: job.id },
+    data: {
+      ...(descriptionHydrated && description ? {
+        description,
+        jobDescriptionSourceUrl: officialUrl,
+        jobDescriptionCapturedAt: now,
+        jobDescriptionHash: createHash("sha256").update(description).digest("hex"),
+        scoringState: "NOT_SCORED",
+        scoringError: null,
+        scoringQueuedAt: null,
+      } : {}),
+      ...(dateHydrated ? {
+        sourcePostedAt: evidence.sourceDate.sourcePostedAt,
+        postingDate: evidence.sourceDate.sourcePostedAt,
+        sourcePostedText: evidence.sourceDate.sourcePostedText,
+        sourceDateConfidence: evidence.sourceDate.sourceDateConfidence,
+        sourceDateProvenance: evidence.sourceDateProvenance,
+      } : {}),
+    },
+  });
+
+  if (descriptionHydrated) {
+    const { baselineScoreJobForAllEligibleUsers } = await import("@/lib/matching/baselineScoring");
+    const { scheduleInitialAiMatchForAllUsers } = await import("@/lib/matching/initialAiMatchQueue");
+    await baselineScoreJobForAllEligibleUsers(job.id);
+    await scheduleInitialAiMatchForAllUsers(job.id, { startWorker: false });
+  }
+  return { descriptionHydrated, dateHydrated, failed: false };
+}
+
+async function hydrateOne(job: HydrationJob, now: Date): Promise<HydrationOutcome> {
   const officialUrl = [
     job.officialJobUrl,
     job.originalJobPostUrl,
@@ -245,60 +385,57 @@ async function hydrateOne(job: HydrationJob, now: Date): Promise<boolean> {
   ].map(usableOfficialUrl).find(Boolean) ?? null;
 
   if (!officialUrl || (job.resolutionStatus !== "RESOLVED" && job.verificationStatus !== "VERIFIED_OFFICIAL_AT_LAST_CHECK")) {
-    await prisma.job.update({
-      where: { id: job.id },
-      data: {
-        scoringState: "DESCRIPTION_PENDING",
-        scoringError: "DESCRIPTION_OFFICIAL_URL_UNAVAILABLE",
-        scoringQueuedAt: now,
-      },
-    });
-    return false;
-  }
-
-  try {
-    const description = await fetchBestDescription(job, officialUrl);
-    if (!description || !hasUsableJobDescription(description)) {
+    if (!hasUsableJobDescription(job)) {
       await prisma.job.update({
         where: { id: job.id },
         data: {
           scoringState: "DESCRIPTION_PENDING",
-          scoringError: "DESCRIPTION_FETCH_INSUFFICIENT",
+          scoringError: "DESCRIPTION_OFFICIAL_URL_UNAVAILABLE",
           scoringQueuedAt: now,
         },
       });
-      return false;
+    }
+    return { descriptionHydrated: false, dateHydrated: false, failed: true };
+  }
+
+  try {
+    const evidence = await fetchBestEvidence(job, officialUrl, now);
+    const outcome = await applyOfficialHydrationEvidence(job, officialUrl, evidence, now);
+
+    if (outcome.failed) {
+      if (!hasUsableJobDescription(job)) {
+        await prisma.job.update({
+          where: { id: job.id },
+          data: {
+            scoringState: "DESCRIPTION_PENDING",
+            scoringError: "DESCRIPTION_FETCH_INSUFFICIENT",
+            scoringQueuedAt: now,
+          },
+        });
+      }
+      return { descriptionHydrated: false, dateHydrated: false, failed: true };
     }
 
-    await prisma.job.update({
-      where: { id: job.id },
-      data: {
-        description,
-        jobDescriptionSourceUrl: officialUrl,
-        jobDescriptionCapturedAt: now,
-        jobDescriptionHash: createHash("sha256").update(description).digest("hex"),
-        scoringState: "NOT_SCORED",
-        scoringError: null,
-        scoringQueuedAt: null,
-      },
-    });
-    return true;
+    return outcome;
   } catch (error) {
     console.warn("[description-hydration] official job description fetch failed", {
       jobId: job.id,
       errorCode: error && typeof error === "object" && "code" in error
         ? String((error as { code: unknown }).code)
         : error instanceof Error ? error.name : "DESCRIPTION_FETCH_FAILED",
+      error: error instanceof Error ? error.message.slice(0, 300) : "DESCRIPTION_FETCH_FAILED",
     });
-    await prisma.job.update({
-      where: { id: job.id },
-      data: {
-        scoringState: "DESCRIPTION_PENDING",
-        scoringError: "DESCRIPTION_FETCH_FAILED",
-        scoringQueuedAt: now,
-      },
-    }).catch(() => undefined);
-    return false;
+    if (!hasUsableJobDescription(job)) {
+      await prisma.job.update({
+        where: { id: job.id },
+        data: {
+          scoringState: "DESCRIPTION_PENDING",
+          scoringError: "DESCRIPTION_FETCH_FAILED",
+          scoringQueuedAt: now,
+        },
+      }).catch(() => undefined);
+    }
+    return { descriptionHydrated: false, dateHydrated: false, failed: true };
   }
 }
 
@@ -318,7 +455,7 @@ export async function hydrateMissingDescriptionsForScoring(options: {
 
   const active = await prisma.job.findMany({
     where: { activeFeed: true },
-    orderBy: [{ sourcePostedAt: "desc" }, { createdAt: "desc" }],
+    orderBy: [{ firstSeenAt: "desc" }, { id: "desc" }],
     select: {
       id: true,
       title: true,
@@ -338,10 +475,19 @@ export async function hydrateMissingDescriptionsForScoring(options: {
       sourceJobId: true,
       scoringError: true,
       scoringQueuedAt: true,
+      sourcePostedAt: true,
+      sourcePostedText: true,
+      sourceDateConfidence: true,
+      sourceDateProvenance: true,
+      firstSeenAt: true,
     },
   });
 
-  const missing = active.filter((job) => !hasUsableJobDescription(job));
+  const missing = active
+    .filter((job) => !hasUsableJobDescription(job) || !job.sourcePostedAt)
+    .sort((a, b) => hydrationPriority(a, now) - hydrationPriority(b, now)
+      || (b.firstSeenAt?.getTime() ?? 0) - (a.firstSeenAt?.getTime() ?? 0)
+      || b.id.localeCompare(a.id));
   let skippedCooldown = 0;
   const candidates: HydrationJob[] = [];
   for (const job of missing) {
@@ -355,14 +501,16 @@ export async function hydrateMissingDescriptionsForScoring(options: {
 
   let nextIndex = 0;
   let hydrated = 0;
+  let datesHydrated = 0;
   let failed = 0;
   const worker = async () => {
     while (nextIndex < candidates.length) {
       const index = nextIndex;
       nextIndex += 1;
-      const ok = await hydrateOne(candidates[index], now);
-      if (ok) hydrated += 1;
-      else failed += 1;
+      const outcome = await hydrateOne(candidates[index], now);
+      if (outcome.descriptionHydrated) hydrated += 1;
+      if (outcome.dateHydrated) datesHydrated += 1;
+      if (outcome.failed) failed += 1;
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, candidates.length || 1) }, () => worker()));
@@ -371,6 +519,7 @@ export async function hydrateMissingDescriptionsForScoring(options: {
     considered: missing.length,
     attempted: candidates.length,
     hydrated,
+    datesHydrated,
     failed,
     skippedCooldown,
   };

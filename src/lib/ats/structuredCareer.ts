@@ -450,7 +450,7 @@ export async function probeStructuredPortalJobs(options: {
 
   if (readableListPages === 0 && options.throwOnFetchError) {
     throw Object.assign(new Error("The configured official careers portal returned no readable page."), {
-      code: "ATS_BOARD_UNREACHABLE",
+      code: botWallBlocked ? "ATS_BOT_WALL" : "ATS_BOARD_UNREACHABLE",
     });
   }
 
