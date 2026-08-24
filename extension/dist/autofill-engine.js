@@ -138,7 +138,10 @@
     if (/first|given/.test(text) && /name/.test(text)) return "FIRST_NAME";
     if (/last|family|surname/.test(text) && /name/.test(text)) return "LAST_NAME";
     if (/full name|legal name|candidate name|your name/.test(text)) return "FULL_NAME";
+    if (/\bname\b/.test(text) && !/company|preferred|first|last|family|surname/.test(text)) return "FULL_NAME";
     if (exact(/\bemail\b/)) return "EMAIL";
+    const directText = normalized([field.accessibleName, field.questionText, field.label, field.name].join(" "));
+    if (/\bcountry\b/.test(directText) && !/country code|calling code|dial code|phone prefix/.test(directText)) return "COUNTRY";
     if (/country code|calling code|dial code|phone prefix/.test(text)) return "COUNTRY_CODE";
     if (/\b(phone|telephone|mobile)\b/.test(text)) return "PHONE";
     if (/address line 2|address 2|apt|suite/.test(text)) return "ADDRESS_2";
@@ -149,7 +152,7 @@
     if (/\bcountry\b/.test(text)) return "COUNTRY";
     if (/linkedin/.test(text)) return "LINKEDIN";
     if (/github/.test(text)) return "GITHUB";
-    if (/portfolio/.test(text)) return "PORTFOLIO";
+    if (/portfolio|\bwebsite\b/.test(text)) return "PORTFOLIO";
     if (/school|university|college|institution/.test(text)) return "SCHOOL";
     if (/major|field of study|discipline/.test(text)) return "MAJOR";
     if (/degree|education level/.test(text)) return "DEGREE";
@@ -161,7 +164,7 @@
     if (/sponsor|visa support/.test(text)) return "SPONSORSHIP_REQUIRED";
     if (/18 years|age of 18|minimum age/.test(text)) return "AGE_18";
     if (/relocat/.test(text)) return "RELOCATION";
-    if (/start date|available to start|earliest start/.test(text)) return "START_DATE";
+    if (/start date|available to start|earliest start|available.*intern|internship.*available|availability/.test(text)) return "START_DATE";
     if (/gender|\bsex\b/.test(text)) return "GENDER";
     if (/race|ethnic/.test(text)) return "RACE";
     if (/veteran/.test(text)) return "VETERAN";
@@ -169,7 +172,7 @@
     if (/previously|before|prior|ever/.test(text) && /work|employ/.test(text)) return "PREVIOUS_EMPLOYMENT";
     if (/previously|before|prior|ever/.test(text) && /appl/.test(text)) return "PREVIOUS_APPLICATION";
     if (/relative|family member/.test(text) && /work|employ/.test(text)) return "EMPLOYEE_RELATIONSHIP";
-    if (/referr|how did you hear/.test(text)) return "REFERRAL";
+    if (/\b(?:referral|referred|refer|recruiter|how did you hear)\b/.test(text)) return "REFERRAL";
     if (field.type === "textarea" && /why|describe|experience|good fit|interest|additional information|tell us/.test(text)) return "CUSTOM_FREE_RESPONSE";
     return "UNKNOWN";
   }
@@ -471,6 +474,7 @@
       .some((element) => visible(element) && pattern.test(clean(element.textContent || element.getAttribute("aria-label"))));
     if (hasVisible("iframe[src*='recaptcha'],iframe[src*='hcaptcha'],iframe[src*='challenges.cloudflare.com'],[class*='captcha' i],[id*='captcha' i]")) return [{ kind: "captcha", code: "USER_INTERVENTION_REQUIRED", detail: "Complete the CAPTCHA, then resume." }];
     if (hasVisible("input[autocomplete='one-time-code'],input[name*='otp' i],input[id*='otp' i],input[aria-label*='verification code' i]") || /\b(mfa|otp|multi.factor|two.factor|security code|verification code|authenticator code)\b/i.test(body)) return [{ kind: "mfa", code: "USER_INTERVENTION_REQUIRED", detail: "Complete MFA or verification, then resume." }];
+    if (/\bcareers at\b/i.test(body) && hasVisibleAction(/^sign in$/i) && !document.querySelector("input:not([type='hidden']), textarea, select, [role='combobox']")) return [{ kind: "authentication", code: "AUTHENTICATION_REQUIRED", detail: "Workday requires employer sign-in or account creation before the application form is available." }];
     if (/\bstart your application\b/i.test(body) && hasVisibleAction(/^sign in$/i)) return [{ kind: "account_creation", code: "ACCOUNT_CREATION_REQUIRED", detail: "Start or sign in to the employer account yourself, then resume." }];
     if (hasVisible("input[type='password']") && /\b(create|register|set up).*\b(account|password)\b/i.test(body)) return [{ kind: "account_creation", code: "ACCOUNT_CREATION_REQUIRED", detail: "Create and verify the employer account yourself, then resume." }];
     if (hasVisible("input[type='password']")) return [{ kind: "login", code: "USER_INTERVENTION_REQUIRED", detail: "Sign in yourself, then resume." }];

@@ -43,6 +43,7 @@
     "test:extension-e2e": "tsx scripts/test-extension-e2e.ts",
     "test:autofill-fixtures": "tsx scripts/test-autofill-fixtures.ts",
     "test:extension-bundle-e2e": "tsx scripts/test-extension-bundle-e2e.ts",
+    "test:real-ats-phase2": "tsx scripts/test-real-ats-phase2.ts",
     "test:regression": "tsx scripts/test-regression-isolated.ts",
     "inspect:lever-real": "tsx scripts/inspect-lever-real.ts",
     "inspect:greenhouse-real": "tsx scripts/inspect-greenhouse-real.ts",

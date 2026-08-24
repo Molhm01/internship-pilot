@@ -177,6 +177,19 @@ async function main() {
       const result = await fill(page);
       check(result.audit.every((entry) => entry.status === "FILLED"), `${name} fixture recognized and filled`);
     }
+    await load(page, `<form><section><h2>Phone</h2><label for="countryInPhone">Country*</label><input id="countryInPhone" name="country" required></section></form>`);
+    const countryInPhoneSection = await page.evaluate(() => {
+      const engine = (globalThis as unknown as { InternshipPilotAutofillEngine: { scanFields: () => Array<unknown>; classifyField: (field: unknown) => string } }).InternshipPilotAutofillEngine;
+      const field = engine.scanFields()[0];
+      return engine.classifyField(field);
+    });
+    check(countryInPhoneSection === "COUNTRY", "Country fields are not misclassified from a surrounding Phone section");
+    await load(page, `<form><label for="posting">Which location are you closest to?</label><input id="posting" name="preferredPostingLocation"><label for="site">Website</label><input id="site" name="Website"></form>`);
+    const ashbyLabels = await page.evaluate(() => {
+      const engine = (globalThis as unknown as { InternshipPilotAutofillEngine: { scanFields: () => Array<unknown>; classifyField: (field: unknown) => string } }).InternshipPilotAutofillEngine;
+      return engine.scanFields().map((field) => engine.classifyField(field));
+    });
+    check(ashbyLabels[0] === "UNKNOWN" && ashbyLabels[1] === "PORTFOLIO", "Ashby posting location is not mistaken for referral and Website maps to portfolio");
 
     console.log("\n4) Employer-scoped answers, legal pauses, validation rejection, and value reversion");
     await load(page, `<form>
@@ -226,6 +239,9 @@ async function main() {
       const blockers = await page.evaluate(() => (globalThis as unknown as { InternshipPilotAutofillEngine: { blockers: () => Array<{ kind: string }> } }).InternshipPilotAutofillEngine.blockers());
       check(blockers[0]?.kind === kind, `${name} pauses for user intervention`);
     }
+    await load(page, `<h1>CAREERS AT NVIDIA</h1><button>Sign In</button>`);
+    const workdayBoundary = await page.evaluate(() => (globalThis as unknown as { InternshipPilotAutofillEngine: { blockers: () => Array<{ kind: string; code: string }> } }).InternshipPilotAutofillEngine.blockers());
+    check(workdayBoundary[0]?.kind === "authentication" && workdayBoundary[0]?.code === "AUTHENTICATION_REQUIRED", "Workday sign-in-only application boundary pauses without retrying");
   } finally {
     await browser.close();
   }
