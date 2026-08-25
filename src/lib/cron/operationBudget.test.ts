@@ -491,3 +491,162 @@ describe.skipIf(!DATABASE_AVAILABLE)("MEASURED fixed-cost floors (pass #4, item 
     expect(ops).toBe(0);
   }, 15_000);
 });
+
+/**
+ * Pass #5, item 1: user-website route costs — measured per-call, real code
+ * path (the actual route handler), real database. 8-hour tab-session totals
+ * in the final report are FORMULA-DERIVED from these measured per-call
+ * numbers and the known poll cadences (SyncStatusPanel: 5-minute, visibility
+ * -gated, pass #1/#2; bulkScoreClient: event-driven only while idle, pass
+ * #5 item 2) — not separately re-measured with a simulated 8-hour clock,
+ * which would require a browser-driven or React-rendering harness this pass
+ * did not build. That distinction is called out explicitly in the report.
+ */
+describe.skipIf(!DATABASE_AVAILABLE)("USER-WEBSITE route costs (pass #5, item 1)", () => {
+  let resetPrismaOperationCounter: typeof import("@/lib/db").resetPrismaOperationCounter;
+  let getPrismaOperationCount: typeof import("@/lib/db").getPrismaOperationCount;
+
+  beforeAll(async () => {
+    const db = await import("@/lib/db");
+    db.resetPrismaClientForTests();
+    ({ resetPrismaOperationCounter, getPrismaOperationCount } = db);
+    process.env.BETTER_AUTH_SECRET ??= "operation-budget-test-secret-thats-long-enough";
+  });
+
+  beforeEach(() => resetPrismaOperationCounter());
+
+  async function callGet(routeModule: string, url: string): Promise<{ status: number; ops: number }> {
+    const mod = (await import(routeModule)) as { GET: (req: Request) => Promise<Response> };
+    resetPrismaOperationCounter();
+    const response = await mod.GET(new Request(url));
+    return { status: response.status, ops: getPrismaOperationCount() };
+  }
+
+  it("GET /api/sync/status: measured Prisma operations, no session", async () => {
+    // Unauthenticated in this harness (no session cookie, no cookie-signing
+    // infra configured) — guardSession rejects before touching the catalog-
+    // health path either way (401 with real session infra, 503 here since
+    // this harness has no Better Auth session store configured) — the
+    // operation count is what matters: rejected before any DB read.
+    const { status, ops } = await callGet("@/app/api/sync/status/route", "https://example.test/api/sync/status");
+    console.log("[MEASURED] GET /api/sync/status (no session):", ops, "ops, status", status);
+    expect([401, 503]).toContain(status);
+    expect(ops).toBe(0);
+  }, 15_000);
+
+  it("getCachedCatalogHealth (the query /api/sync/status and /api/health/catalog share): cold then warm", async () => {
+    const { getCachedCatalogHealth } = await import("@/lib/sync/liveDiscoveryHealthCache");
+    resetPrismaOperationCounter();
+    const cold = await getCachedCatalogHealth({ force: true });
+    const coldOps = getPrismaOperationCount();
+    resetPrismaOperationCounter();
+    const warm = await getCachedCatalogHealth();
+    const warmOps = getPrismaOperationCount();
+    console.log("[MEASURED] shared catalog-health computation: cold", coldOps, "ops, warm", warmOps, "ops");
+    expect(cold.fresh).toBe(true);
+    expect(warm.fresh).toBe(false);
+    expect(warmOps).toBe(0);
+  }, 15_000);
+});
+
+/**
+ * Pass #5, item 6: ATS content-driven marginal cost, measured with seeded
+ * companies and a mocked (but realistic-shaped) ATS response — not assumed.
+ * Reuses the FIXED_WAVE_OPS finding from pass #3/#4 (already measured at
+ * 1/10/25/50 due companies with zero changed jobs, all = 4 ops) and adds the
+ * missing half: cost per ACTUALLY CHANGED job.
+ */
+describe.skipIf(!DATABASE_AVAILABLE)("ATS marginal cost — due companies vs changed jobs (pass #5, item 6)", () => {
+  let prisma: typeof import("@/lib/db").prisma;
+  let resetPrismaOperationCounter: typeof import("@/lib/db").resetPrismaOperationCounter;
+  let getPrismaOperationCount: typeof import("@/lib/db").getPrismaOperationCount;
+  let runCompanyCheckWave: typeof import("@/lib/sync/companyDiscovery").runCompanyCheckWave;
+  let listJobsForCompanyMock: ReturnType<typeof vi.fn>;
+  const seededCompanyIds: string[] = [];
+  const CHEAP_PROVIDERS = ["greenhouse", "lever", "ashby", "smartrecruiters", "workday"] as const;
+
+  beforeAll(async () => {
+    const db = await import("@/lib/db");
+    db.resetPrismaClientForTests();
+    ({ prisma, resetPrismaOperationCounter, getPrismaOperationCount } = db);
+    ({ runCompanyCheckWave } = await import("@/lib/sync/companyDiscovery"));
+    const ats = await import("@/lib/ats");
+    listJobsForCompanyMock = ats.listJobsForCompany as ReturnType<typeof vi.fn>;
+  });
+
+  afterEach(async () => {
+    if (seededCompanyIds.length === 0) return;
+    await prisma.company.deleteMany({ where: { id: { in: seededCompanyIds.splice(0) } } });
+  });
+
+  async function seedCompanies(n: number, prefix: string) {
+    const companies = [];
+    for (let index = 0; index < n; index += 1) {
+      const name = `${prefix}-${index}`;
+      const atsType = CHEAP_PROVIDERS[index % CHEAP_PROVIDERS.length];
+      const company = await prisma.company.create({
+        data: {
+          name, atsType, atsIdentifier: name, careersUrl: `https://example.test/${name}`,
+          monitoringStatus: "active", allowlisted: true, priority: "standard",
+        },
+      });
+      await prisma.approvedAtsTenant.create({
+        data: { companyId: company.id, atsType, atsIdentifier: name, discoveredFromCareersUrl: company.careersUrl! },
+      });
+      seededCompanyIds.push(company.id);
+      companies.push(company);
+    }
+    return companies;
+  }
+
+  it("0 / 1 / 10 / 40 due companies, 0 changed jobs each: marginal cost per due company", async () => {
+    listJobsForCompanyMock.mockResolvedValue({ jobs: [], supported: true, notModified: false, totalAvailableJobs: 0 });
+    const results: Record<number, number> = {};
+    for (const n of [0, 1, 10, 40]) {
+      const companies = n > 0 ? await seedCompanies(n, `budget-due-${Date.now()}-${n}`) : [];
+      resetPrismaOperationCounter();
+      await runCompanyCheckWave(companies);
+      results[n] = getPrismaOperationCount();
+      await prisma.company.deleteMany({ where: { id: { in: seededCompanyIds.splice(0) } } });
+    }
+    console.log("[MEASURED] ops by due-company count (0 changed jobs):", JSON.stringify(results));
+    // Fixed-cost architecture (pass #3/#4): must NOT scale with N.
+    expect(results[1]).toBe(results[10]);
+    expect(results[10]).toBe(results[40]);
+  }, 60_000);
+
+  it("1 / 10 / 100 changed jobs (one company each, N relevant postings returned): marginal cost per changed job", async () => {
+    const results: Record<number, number> = {};
+    for (const n of [1, 10, 100]) {
+      const companies = await seedCompanies(1, `budget-changed-${Date.now()}-${n}`);
+      listJobsForCompanyMock.mockResolvedValue({
+        jobs: Array.from({ length: n }, (_, i) => ({
+          sourceJobId: `job-${n}-${i}`,
+          requisitionId: null,
+          title: "Software Engineering Intern",
+          company: companies[0]!.name,
+          location: "Remote",
+          workplaceType: "Remote",
+          applyUrl: `https://example.test/${companies[0]!.name}/jobs/${i}`,
+          description: "Responsibilities: build things. Qualifications: CS degree in progress.",
+          postedAt: new Date(),
+          postedAtText: null,
+        })),
+        supported: true,
+        notModified: false,
+        totalAvailableJobs: n,
+      });
+      resetPrismaOperationCounter();
+      await runCompanyCheckWave(companies);
+      results[n] = getPrismaOperationCount();
+      await prisma.company.deleteMany({ where: { id: { in: seededCompanyIds.splice(0) } } });
+      // New jobs this test created must not leak into other tests/measurements.
+      await prisma.job.deleteMany({ where: { company: companies[0]!.name } });
+    }
+    console.log("[MEASURED] ops by changed-job count (1 due company):", JSON.stringify(results));
+    // Monotonically increasing with more changed jobs — the real, expected,
+    // content-proportional cost this pass does NOT try to eliminate.
+    expect(results[10]!).toBeGreaterThan(results[1]!);
+    expect(results[100]!).toBeGreaterThan(results[10]!);
+  }, 120_000);
+});

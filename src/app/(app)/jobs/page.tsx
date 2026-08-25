@@ -198,37 +198,35 @@ function JobsPageContent() {
     if (changed) void Promise.all([loadJobs(), loadCounts()]);
   }, [loadCounts, loadJobs]);
 
-  const refreshBulkStatus = useCallback(async () => {
-    const status = await fetchBulkScoreStatus();
-    applyBulkStatus(status);
-    return status;
-  }, [applyBulkStatus]);
-
   useEffect(() => {
     void loadJobs();
     void loadCounts();
   }, [loadJobs, loadCounts]);
 
-  useEffect(() => {
-    // Queue telemetry is supplemental. A temporary status-count failure should
-    // never become a red page-level error while scoring continues server-side.
-    void refreshBulkStatus().catch(() => undefined);
-  }, [refreshBulkStatus]);
-
   // Automatic scoring can start on the server after this page was already
-  // opened. Keep a cheap status watch alive while the tab is visible so a new
-  // queue is noticed without a manual reload; cards/counts are re-fetched only
-  // when work actually settles. Polls every 15s only while something is
-  // actually queued/running; idle (the common case — nothing to score) drops
-  // to every 2 minutes instead of continuing at 15s forever (database-usage
-  // audit, pass #3: this status check is six count() queries).
-  useEffect(() => startBulkScoreStatusPolling({
-    fetchStatus: fetchBulkScoreStatus,
-    onStatus: applyBulkStatus,
-    intervalMs: 15_000,
-    idleIntervalMs: 120_000,
-    keepWatchingWhenIdle: true,
-  }), [applyBulkStatus]);
+  // opened, so a status watch is worth keeping — but idle (nothing queued or
+  // running, the common case) now schedules NOTHING: zero timers, zero
+  // recurring requests, until something below calls `recheck()` (database-
+  // usage repair, pass #5 — a fixed idle-poll interval, even a slow one, was
+  // still a database cost paid indefinitely to "maybe" discover work that
+  // usually doesn't exist). This single effect replaces what used to be two
+  // separate ones (a one-shot mount fetch AND a polling watch, each firing
+  // its own initial request — a duplicate fetch this pass also removed).
+  // Active scoring (queued/running > 0) still polls every 15s until it
+  // drains on its own.
+  const bulkWatchRef = useRef<ReturnType<typeof startBulkScoreStatusPolling> | null>(null);
+  useEffect(() => {
+    const watch = startBulkScoreStatusPolling({
+      fetchStatus: fetchBulkScoreStatus,
+      onStatus: applyBulkStatus,
+      intervalMs: 15_000,
+    });
+    bulkWatchRef.current = watch;
+    return () => {
+      bulkWatchRef.current = null;
+      watch.stop();
+    };
+  }, [applyBulkStatus]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -248,6 +246,10 @@ function JobsPageContent() {
       setForm(emptyForm);
       setShowForm(false);
       await Promise.all([loadJobs(), loadCounts()]);
+      // A newly-added job is exactly the kind of state-changing action that
+      // should re-check scoring progress once, rather than the watch having
+      // to already be polling to notice it.
+      void bulkWatchRef.current?.recheck();
     } finally {
       setSubmitting(false);
     }
@@ -436,7 +438,14 @@ function JobsPageContent() {
       )}
 
       <div className="mb-4 space-y-3">
-        <SyncStatusPanel onSynced={loadJobs} />
+        <SyncStatusPanel
+          onSynced={() => {
+            void loadJobs();
+            // A completed sync can have queued new scoring work — another
+            // state-changing action worth one recheck.
+            void bulkWatchRef.current?.recheck();
+          }}
+        />
         <SchedulerHealthPanel />
       </div>
 

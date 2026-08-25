@@ -102,6 +102,15 @@ type DiscoveryCandidate = {
   originalJobPostUrl: string | null;
   internshipTerm: string | null;
   compensation: string | null;
+  /**
+   * The stored job's resolution state as of the read that produced this
+   * candidate — null for a live (never-stored) candidate. Used to skip
+   * re-writing "still unresolved" bookkeeping when nothing about the
+   * outcome actually changed (database-usage repair, pass #5, item 4).
+   */
+  priorResolutionStatus: string | null;
+  priorResolutionMethod: string | null;
+  priorResolutionError: string | null;
 };
 
 function formatInternshipTerm(hireTime: string | null): string | null {
@@ -127,6 +136,9 @@ function liveCandidate(raw: RawInternListJob): DiscoveryCandidate {
     originalJobPostUrl: raw.originalJobPostUrl ?? null,
     internshipTerm: formatInternshipTerm(raw.hireTime),
     compensation: raw.salary && raw.salary.toUpperCase() !== "N/A" ? raw.salary : null,
+    priorResolutionStatus: null,
+    priorResolutionMethod: null,
+    priorResolutionError: null,
   };
 }
 
@@ -350,7 +362,19 @@ async function processCandidate(
       );
 
   if (destination.resolutionStatus !== "RESOLVED" || !destination.officialApplicationUrl) {
-    if (candidate.storedJobId) {
+    // Do not write "still unresolved" bookkeeping when the outcome is
+    // identical to what is already stored (database-usage repair, pass #5,
+    // item 4) — the previous unconditional write cost one operation per
+    // unresolved backlog candidate on EVERY run, even when literally nothing
+    // changed. `resolvedAt` deliberately does not factor into this
+    // comparison: it exists to record "when did we last check", which is
+    // not user-visible or decision-relevant state, only the outcome fields
+    // (status/method/error) are.
+    const unchanged =
+      candidate.priorResolutionStatus === destination.resolutionStatus
+      && candidate.priorResolutionMethod === (destination.resolutionMethod ?? null)
+      && candidate.priorResolutionError === (destination.resolutionError ?? null);
+    if (candidate.storedJobId && !unchanged) {
       await prisma.job.update({
         where: { id: candidate.storedJobId },
         data: destinationPersistenceData(destination),
@@ -558,6 +582,9 @@ export async function runInternListOriginalSourceDiscovery(
       originalJobPostUrl: true,
       internshipTerm: true,
       compensation: true,
+      resolutionStatus: true,
+      resolutionMethod: true,
+      resolutionError: true,
     },
   });
   const backlogCandidates: DiscoveryCandidate[] = backlogRows
@@ -578,6 +605,9 @@ export async function runInternListOriginalSourceDiscovery(
       originalJobPostUrl: job.originalJobPostUrl,
       internshipTerm: job.internshipTerm,
       compensation: job.compensation,
+      priorResolutionStatus: job.resolutionStatus,
+      priorResolutionMethod: job.resolutionMethod,
+      priorResolutionError: job.resolutionError,
     }));
 
   const pool = uniqueCandidates([...liveCandidates, ...backlogCandidates]);

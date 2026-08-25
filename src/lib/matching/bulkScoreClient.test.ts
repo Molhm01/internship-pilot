@@ -84,78 +84,108 @@ describe("bulk score client", () => {
     expect(onError).toHaveBeenCalledWith("Unscored jobs could not be queued. Please try again.");
   });
 
-  it("polls only while work is active and never overlaps status requests", async () => {
+  it("checks once immediately, then polls only while work is active", async () => {
     vi.useFakeTimers();
     const visibility = new TestVisibility();
     let resolveFirst!: (value: typeof activeStatus) => void;
     const fetchStatus = vi.fn()
       .mockImplementationOnce(() => new Promise<typeof activeStatus>((resolve) => { resolveFirst = resolve; }))
       .mockResolvedValueOnce(idleStatus);
-    const cleanup = startBulkScoreStatusPolling({
+    const watch = startBulkScoreStatusPolling({
       fetchStatus,
       onStatus: vi.fn(),
       visibility,
     });
 
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(fetchStatus).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(20_000);
+    // The very first check fires immediately on setup — no wasted "wait one
+    // interval before the first request" delay, and no separate one-shot
+    // effect needed on top of this watch (pass #5 removed exactly that
+    // duplicate fetch from the Jobs page).
+    await Promise.resolve();
     expect(fetchStatus).toHaveBeenCalledOnce();
     resolveFirst(activeStatus);
     await Promise.resolve();
+
+    // Active (queued/running > 0): keeps polling at the active interval.
     await vi.advanceTimersByTimeAsync(5_000);
     expect(fetchStatus).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(20_000);
+    // That second call resolved idle — no further timer should be scheduled.
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(fetchStatus).toHaveBeenCalledTimes(2);
-    cleanup();
+    watch.stop();
   });
 
-  it("drops to the idle interval when nothing is queued/running, instead of continuing at the active cadence forever", async () => {
-    // Database-usage audit (pass #3): keepWatchingWhenIdle used to mean
-    // "keep polling at the SAME fast cadence forever" — six count() queries
-    // every 15s indefinitely for an empty queue. It must now mean "keep
-    // watching, but much less often" once idle.
+  it("idle schedules NOTHING — zero recurring requests until recheck() or visibility fires (pass #5)", async () => {
+    // Pass #3 slowed idle polling from 15s to 2 minutes; pass #5 removes
+    // idle polling entirely. An open tab with nothing to score must cost
+    // zero database traffic on its own — not "less traffic", zero — until
+    // something the caller considers a meaningful event calls recheck().
     vi.useFakeTimers();
     const visibility = new TestVisibility();
     const fetchStatus = vi.fn().mockResolvedValue(idleStatus);
-    const cleanup = startBulkScoreStatusPolling({
+    const watch = startBulkScoreStatusPolling({
       fetchStatus,
       onStatus: vi.fn(),
       visibility,
       intervalMs: 15_000,
-      idleIntervalMs: 120_000,
-      keepWatchingWhenIdle: true,
     });
 
-    await vi.advanceTimersByTimeAsync(15_000);
+    await Promise.resolve();
     expect(fetchStatus).toHaveBeenCalledOnce();
-    // The active interval elapsing again must NOT trigger another poll —
-    // idle work uses the slower idle interval, not the active one.
-    await vi.advanceTimersByTimeAsync(15_000);
+    // No timer was scheduled after an idle result — advancing any amount of
+    // time must never produce another request on its own.
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
     expect(fetchStatus).toHaveBeenCalledOnce();
-    // Advancing the rest of the way to the idle interval does poll again.
-    await vi.advanceTimersByTimeAsync(120_000 - 15_000);
+
+    // An explicit recheck() (the caller's job to wire into real "meaningful
+    // events" — a sync completing, a job being added, ...) does one more
+    // check, and — since still idle — schedules nothing further either.
+    await watch.recheck();
     expect(fetchStatus).toHaveBeenCalledTimes(2);
-    cleanup();
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+    expect(fetchStatus).toHaveBeenCalledTimes(2);
+    watch.stop();
   });
 
-  it("stops polling in hidden tabs and cleans up on unmount", async () => {
+  it("the tab becoming visible again triggers exactly one recheck, not a resumed poll loop", async () => {
+    vi.useFakeTimers();
+    const visibility = new TestVisibility();
+    const fetchStatus = vi.fn().mockResolvedValue(idleStatus);
+    const watch = startBulkScoreStatusPolling({
+      fetchStatus,
+      onStatus: vi.fn(),
+      visibility,
+    });
+    await Promise.resolve();
+    expect(fetchStatus).toHaveBeenCalledOnce();
+
+    visibility.setHidden(true);
+    visibility.setHidden(false);
+    await Promise.resolve();
+    expect(fetchStatus).toHaveBeenCalledTimes(2);
+    // Still idle after the visibility-triggered check — no timer left running.
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    expect(fetchStatus).toHaveBeenCalledTimes(2);
+    watch.stop();
+  });
+
+  it("stops checking in hidden tabs and cleans up on unmount", async () => {
     vi.useFakeTimers();
     const visibility = new TestVisibility();
     const fetchStatus = vi.fn().mockResolvedValue(activeStatus);
-    const cleanup = startBulkScoreStatusPolling({
+    visibility.setHidden(true);
+    const watch = startBulkScoreStatusPolling({
       fetchStatus,
       onStatus: vi.fn(),
       visibility,
     });
 
-    visibility.setHidden(true);
     await vi.advanceTimersByTimeAsync(15_000);
     expect(fetchStatus).not.toHaveBeenCalled();
     visibility.setHidden(false);
     await Promise.resolve();
     expect(fetchStatus).toHaveBeenCalledOnce();
-    cleanup();
+    watch.stop();
     await vi.advanceTimersByTimeAsync(15_000);
     expect(fetchStatus).toHaveBeenCalledOnce();
   });

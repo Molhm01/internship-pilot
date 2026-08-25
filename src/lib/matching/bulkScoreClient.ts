@@ -80,29 +80,48 @@ type VisibilitySource = {
   removeEventListener(type: "visibilitychange", listener: () => void): void;
 };
 
+export type BulkScoreStatusWatch = {
+  /** Stops the watch entirely (component unmount). */
+  stop: () => void;
+  /**
+   * Triggers one immediate status check outside the normal poll cycle.
+   * This is the mechanism for every "meaningful event" the watch should
+   * react to while idle — the caller decides what counts as one (a sync
+   * completing, a job being added, an explicit user refresh, ...); the
+   * watch itself only reacts automatically to the tab becoming visible.
+   */
+  recheck: () => Promise<void>;
+};
+
+/**
+ * Watches bulk AI-match scoring progress with ZERO recurring database cost
+ * while idle (database-usage repair, pass #5 — idle is IDLE, not "polling
+ * slowly forever").
+ *
+ * Previous shapes (passes #1-#3) polled continuously even with nothing
+ * queued or running, at cadences from 15s down to 2 minutes — each poll is
+ * six `count()` queries against Prisma Postgres (see
+ * src/app/api/jobs/score-unscored/status/route.ts). A tab left open all day
+ * with nothing to score was paying for that discovery indefinitely.
+ *
+ * The new contract:
+ *   ACTIVE (queued > 0 || running > 0): keep polling at `intervalMs` — a
+ *     bounded, self-terminating cost that stops the moment the queue drains.
+ *   IDLE: schedule NOTHING. Zero timers, zero future requests, until
+ *     something calls `recheck()` — the tab becoming visible again is the
+ *     one trigger this module wires up itself; every other "meaningful
+ *     event" (a sync completing, an add-job submit, an explicit refresh
+ *     action, navigating back to this page) is the CALLER's job to route
+ *     into `recheck()`, since only the caller knows when those happen.
+ */
 export function startBulkScoreStatusPolling(options: {
   fetchStatus: () => Promise<BulkInitialMatchStatus>;
   onStatus: (status: BulkInitialMatchStatus) => void;
   onError?: (message: string) => void;
   intervalMs?: number;
-  /**
-   * Poll cadence while idle (nothing queued or running), if
-   * `keepWatchingWhenIdle` is set — a server-started queue still gets
-   * noticed without a manual reload, just less eagerly than while work is
-   * actually in flight. Defaults to 6x the active interval.
-   *
-   * Database-usage audit (pass #3): this endpoint runs six `count()`
-   * queries. At the previous fixed 15s cadence with `keepWatchingWhenIdle`,
-   * one open Jobs tab with nothing to score cost 6 ops every 15s — 1,440
-   * ops/hour — indefinitely, for a queue that was empty the whole time.
-   */
-  idleIntervalMs?: number;
   visibility?: VisibilitySource;
-  /** Keep checking for a server-started queue even when the previous poll was idle. */
-  keepWatchingWhenIdle?: boolean;
-}): () => void {
+}): BulkScoreStatusWatch {
   const intervalMs = Math.max(5_000, options.intervalMs ?? 5_000);
-  const idleIntervalMs = Math.max(intervalMs, options.idleIntervalMs ?? intervalMs * 6);
   const visibility = options.visibility ?? document;
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -113,13 +132,6 @@ export function startBulkScoreStatusPolling(options: {
     timer = null;
   };
 
-  const scheduleNext = (delayMs: number) => {
-    clearTimer();
-    if (!stopped && visibility.visibilityState !== "hidden") {
-      timer = setTimeout(() => void tick(), delayMs);
-    }
-  };
-
   const tick = async () => {
     if (stopped || inFlight || visibility.visibilityState === "hidden") return;
     inFlight = true;
@@ -128,15 +140,19 @@ export function startBulkScoreStatusPolling(options: {
       if (stopped) return;
       options.onStatus(status);
       const active = status.queued > 0 || status.running > 0;
-      if (active) {
-        scheduleNext(intervalMs);
-      } else if (options.keepWatchingWhenIdle) {
-        scheduleNext(idleIntervalMs);
+      clearTimer();
+      // IDLE schedules nothing — the whole point of this rewrite. ACTIVE
+      // keeps polling until the queue drains on its own.
+      if (active && !stopped && visibility.visibilityState !== "hidden") {
+        timer = setTimeout(() => void tick(), intervalMs);
       }
     } catch (error) {
       if (!stopped) {
         options.onError?.(error instanceof Error ? error.message : "Scoring progress is unavailable.");
-        scheduleNext(idleIntervalMs);
+        // Treated the same as IDLE, not retried automatically: a transient
+        // error must not turn into a permanent poll loop either. The same
+        // recheck() triggers (visibility, caller-routed events) recover it.
+        clearTimer();
       }
     } finally {
       inFlight = false;
@@ -144,15 +160,18 @@ export function startBulkScoreStatusPolling(options: {
   };
 
   const onVisibilityChange = () => {
-    clearTimer();
     if (!stopped && visibility.visibilityState !== "hidden") void tick();
   };
 
   visibility.addEventListener("visibilitychange", onVisibilityChange);
-  scheduleNext(intervalMs);
-  return () => {
-    stopped = true;
-    clearTimer();
-    visibility.removeEventListener("visibilitychange", onVisibilityChange);
+  void tick();
+
+  return {
+    stop: () => {
+      stopped = true;
+      clearTimer();
+      visibility.removeEventListener("visibilitychange", onVisibilityChange);
+    },
+    recheck: () => tick(),
   };
 }
