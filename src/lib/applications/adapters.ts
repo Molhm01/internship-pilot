@@ -7,11 +7,18 @@ import { fillWithInternshipPilotExtension } from "./extensionFiller";
 // wizards (Next/Continue buttons across pages), rather than depending on
 // any one platform's exact DOM. All 8 named ATS platforms are wired through
 // it and tested against local mock fixtures shaped like that platform's
-// typical flow (see scripts/test-application-agent.ts and
-// public/mock-ats/*.html) — Greenhouse/Lever/Ashby as single-page guest-
-// apply forms, Workday/iCIMS as multi-step wizards, SmartRecruiters/
-// SuccessFactors/Taleo covering relocation/salary/availability fields and
-// the terms-checkbox stop condition.
+// typical flow: Greenhouse/Lever/Ashby as single-page guest-apply forms
+// (scripts/test-application-agent.ts, scripts/test-autofill-fixtures.ts),
+// Workday/iCIMS as multi-step wizards, and SmartRecruiters/SuccessFactors/
+// Taleo covering relocation/sponsorship/availability fields and the
+// terms-checkbox stop condition (all five: scripts/test-autofill-fixtures.ts
+// sections 7-8, against the real public/mock-ats/*.html files over a plain
+// HTTP fixture server — no database dependency, so this coverage stays
+// reliable even when the local Prisma Dev instance is down).
+//
+// FIXTURE_TESTED means exactly that: the mock passes today. It is not a
+// production-support claim — see productionFillEnabled below, which is
+// deliberately narrower.
 //
 // Important honesty note: these mocks model TYPICAL field patterns for each
 // platform, not a specific real employer's live instance — a real Workday

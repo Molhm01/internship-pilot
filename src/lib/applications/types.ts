@@ -146,6 +146,9 @@ export function classifyErrorCode(errorText: string | null | undefined): { error
   const text = String(errorText || "");
   if (!text) return { errorCode: "UNKNOWN" };
 
+  if (/diagnostic_external_navigation_blocked/i.test(text)) {
+    return { errorCode: "diagnostic_external_navigation_blocked" };
+  }
   if (/FORM_DESCRIPTION_VERSION_MISMATCH/i.test(text) || /Version mismatch/i.test(text)) {
     return { errorCode: "FORM_DESCRIPTION_VERSION_MISMATCH" };
   }

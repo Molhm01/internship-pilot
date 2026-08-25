@@ -1,5 +1,6 @@
 import path from "node:path";
 import { chromium, type Page } from "playwright";
+import { startMockAtsServer } from "./lib/mockAtsServer";
 
 let failures = 0;
 function check(condition: unknown, message: string) {
@@ -45,6 +46,23 @@ async function load(page: Page, html: string) {
   await page.addScriptTag({ path: path.resolve("extension/dist/autofill-engine.js") });
 }
 
+/**
+ * Same as load(), but navigates to a real URL instead of injecting a string
+ * via setContent — required for the mock-ats/*.html fixtures on disk, which
+ * reference each other by relative path (multi-step "Continue" navigation)
+ * and are otherwise never actually loaded by any script in this repo.
+ */
+async function loadUrl(page: Page, url: string) {
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  await page.addScriptTag({ path: path.resolve("extension/dist/autofill-engine.js") });
+}
+
+function requiredCompletionPercent(audit: Array<{ status: string }>): number {
+  if (audit.length === 0) return 100;
+  const filled = audit.filter((entry) => entry.status === "FILLED").length;
+  return Math.round((filled / audit.length) * 100);
+}
+
 async function fill(page: Page) {
   return page.evaluate(async (applicationBundle) => {
     const engine = (globalThis as unknown as { InternshipPilotAutofillEngine: {
@@ -67,6 +85,7 @@ async function fill(page: Page) {
 async function main() {
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
+  const mockAts = await startMockAtsServer(31541);
   try {
     console.log("\n1) Generic HTML: profile, semantic selects, radio/checkbox, files, free response, required audit");
     await load(page, `<!doctype html><form>
@@ -242,8 +261,118 @@ async function main() {
     await load(page, `<h1>CAREERS AT NVIDIA</h1><button>Sign In</button>`);
     const workdayBoundary = await page.evaluate(() => (globalThis as unknown as { InternshipPilotAutofillEngine: { blockers: () => Array<{ kind: string; code: string }> } }).InternshipPilotAutofillEngine.blockers());
     check(workdayBoundary[0]?.kind === "authentication" && workdayBoundary[0]?.code === "AUTHENTICATION_REQUIRED", "Workday sign-in-only application boundary pauses without retrying");
+
+    // Sections 7-8 load the real public/mock-ats/*.html fixture files (not
+    // reconstructed HTML strings) over an actual HTTP origin, the same way
+    // scripts/test-application-agent.ts does. Found during the local
+    // publish-readiness diagnostic: SuccessFactors, SmartRecruiters, Taleo,
+    // and the two multi-step (iCIMS, Workday) fixtures existed on disk but
+    // were referenced by zero test scripts — ATS_CAPABILITIES in
+    // src/lib/applications/adapters.ts labeled them "FIXTURE_TESTED" with no
+    // fixture actually exercising them. This is that coverage, run without
+    // any database dependency (mockAtsServer is a plain static file server),
+    // so it stays reliable even when the local Prisma Dev/pglite instance is
+    // unavailable or unstable.
+    console.log("\n7) SmartRecruiters, SuccessFactors, and Taleo (single-page mock fixtures)");
+    for (const [name, file, checks] of [
+      [
+        "SmartRecruiters",
+        "smartrecruiters-fillonly.html",
+        async () => {
+          const result = await fill(page);
+          const values = await page.evaluate(() => ({
+            name: (document.querySelector("#name") as HTMLInputElement).value,
+            email: (document.querySelector("#email") as HTMLInputElement).value,
+            resume: (document.querySelector("#resume") as HTMLInputElement).files?.[0]?.name,
+            relocate: (document.querySelector("#relocate") as HTMLSelectElement).value,
+            confirmationVisible: (document.querySelector("#confirmation") as HTMLElement).style.display === "block",
+          }));
+          check(values.name === "Riley Fixture" && values.email === bundle.profile.personal.email, "SmartRecruiters text fields fill");
+          check(values.relocate === "yes", "SmartRecruiters dropdown fills from approved eligibility answer");
+          check(values.resume === "Resume-Northwind.pdf", "SmartRecruiters file upload attaches the correct résumé");
+          check(requiredCompletionPercent(result.audit) === 100, "SmartRecruiters required-field completion is 100%");
+          check(values.confirmationVisible === false, "SmartRecruiters: fill never triggers the real Submit handler");
+        },
+      ],
+      [
+        "SuccessFactors",
+        "successfactors-fillonly.html",
+        async () => {
+          const result = await fill(page);
+          const values = await page.evaluate(() => ({
+            name: (document.querySelector("#name") as HTMLInputElement).value,
+            email: (document.querySelector("#email") as HTMLInputElement).value,
+            resume: (document.querySelector("#resume") as HTMLInputElement).files?.[0]?.name,
+            availability: (document.querySelector("#availability") as HTMLInputElement).value,
+          }));
+          check(values.name === "Riley Fixture" && values.email === bundle.profile.personal.email, "SuccessFactors text fields fill");
+          check(values.resume === "Resume-Northwind.pdf", "SuccessFactors file upload attaches the correct résumé");
+          check(requiredCompletionPercent(result.audit) === 100, "SuccessFactors required-field completion is 100%");
+          // "Availability" is optional in this fixture and has no approved-fact
+          // equivalent in the bundle — confirms it is left blank, not guessed.
+          check(values.availability === "", "SuccessFactors optional field with no approved answer is never guessed");
+        },
+      ],
+      [
+        "Taleo",
+        "taleo-terms-stop.html",
+        async () => {
+          const result = await fill(page);
+          const values = await page.evaluate(() => ({
+            name: (document.querySelector("#name") as HTMLInputElement).value,
+            resume: (document.querySelector("#resume") as HTMLInputElement).files?.[0]?.name,
+            terms: (document.querySelector("#terms") as HTMLInputElement).checked,
+          }));
+          check(values.name === "Riley Fixture", "Taleo text fields fill");
+          check(values.resume === "Resume-Northwind.pdf", "Taleo file upload attaches the correct résumé");
+          check(requiredCompletionPercent(result.audit) === 100, "Taleo required-field completion is 100%");
+          check(values.terms === false, "Taleo legal-attestation checkbox is never auto-checked, even though it is not marked required");
+        },
+      ],
+    ] as const) {
+      await loadUrl(page, `${mockAts.baseUrl}/${file}`);
+      await checks();
+      console.log(`  (${name} fixture: recognition, fields, dropdowns/checkbox, required completion, file upload, and safe-stop all checked above)`);
+    }
+
+    console.log("\n8) Workday and iCIMS multi-step mock fixtures (Continue -> step 2)");
+    await loadUrl(page, `${mockAts.baseUrl}/workday-multistep.html`);
+    await fill(page);
+    const workdayStep1 = await page.evaluate(() => ({
+      name: (document.querySelector("#name") as HTMLInputElement).value,
+      email: (document.querySelector("#email") as HTMLInputElement).value,
+      resume: (document.querySelector("#resume") as HTMLInputElement).files?.[0]?.name,
+    }));
+    check(workdayStep1.name === "Riley Fixture" && workdayStep1.email === bundle.profile.personal.email, "Workday multi-step step 1 fields fill");
+    check(workdayStep1.resume === "Resume-Northwind.pdf", "Workday multi-step step 1 résumé upload attaches the correct file");
+    const workdayNext = await page.evaluate(() => (globalThis as unknown as { InternshipPilotAutofillEngine: { nextAction: () => Element | null } }).InternshipPilotAutofillEngine.nextAction()?.textContent);
+    check(workdayNext === "Save and Continue", "Workday multi-step step 1 Continue is recognized, not treated as final Submit");
+    await page.click("#next-btn");
+    await page.waitForURL(/workday-multistep-step2\.html/);
+    await page.addScriptTag({ path: path.resolve("extension/dist/autofill-engine.js") });
+    const workdayStep2Result = await fill(page);
+    const workdaySponsorship = await page.evaluate(() => (document.querySelector("#sponsorship") as HTMLSelectElement).value);
+    check(workdaySponsorship === "no", "Workday multi-step step 2 dropdown fills from approved sponsorship answer");
+    check(workdayStep2Result.audit.every((entry) => entry.status === "FILLED"), "Workday multi-step step 2 required-field completion is 100%");
+    const workdayFinal = await page.evaluate(() => (globalThis as unknown as { InternshipPilotAutofillEngine: { finalAction: () => Element | null } }).InternshipPilotAutofillEngine.finalAction()?.textContent);
+    check(workdayFinal === "Submit Application", "Workday multi-step step 2 Submit is recognized as the final action (and is never clicked by this suite)");
+
+    await loadUrl(page, `${mockAts.baseUrl}/icims-multistep.html`);
+    await fill(page);
+    const icimsStep1 = await page.evaluate(() => ({
+      name: (document.querySelector("#name") as HTMLInputElement).value,
+      resume: (document.querySelector("#resume") as HTMLInputElement).files?.[0]?.name,
+    }));
+    check(icimsStep1.name === "Riley Fixture" && icimsStep1.resume === "Resume-Northwind.pdf", "iCIMS multi-step step 1 fields and résumé upload fill");
+    await page.click("#next-btn");
+    await page.waitForURL(/icims-multistep-step2\.html/);
+    await page.addScriptTag({ path: path.resolve("extension/dist/autofill-engine.js") });
+    await fill(page);
+    const icimsVeteran = await page.evaluate(() => (document.querySelector("#veteran") as HTMLSelectElement).value);
+    check(icimsVeteran !== "veteran" && icimsVeteran !== "not-veteran", "iCIMS multi-step step 2 voluntary veteran status is never guessed one way or the other");
   } finally {
     await browser.close();
+    await mockAts.close();
   }
   console.log(failures === 0 ? "\nAll autofill fixtures PASSED." : `\n${failures} autofill fixture(s) FAILED.`);
   process.exitCode = failures === 0 ? 0 : 1;
