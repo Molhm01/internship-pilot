@@ -15,6 +15,13 @@ import {
 const FETCH_TIMEOUT_MS = 12_000;
 const MAX_HTML_BYTES = 2_000_000;
 const RETRY_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+// A job with a usable description AND a known source-posted date needs no
+// further hydration, ever — but "never again" isn't expressible as NULL
+// (NULL means "never evaluated, due now" — see the schema comment on
+// Job.descriptionHydrationNextAttemptAt). A date far beyond any real posting
+// window is the sentinel instead, so the WHERE clause's `<= now` never
+// matches it without needing a third NULL-vs-"done" state to track.
+const HYDRATION_DONE_SENTINEL = new Date("9999-01-01T00:00:00.000Z");
 const USER_AGENT =
   "Mozilla/5.0 (compatible; InternshipPilot/1.0; +https://github.com/Molhm01/internship-pilot)";
 
@@ -316,13 +323,9 @@ async function fetchBestEvidence(
   };
 }
 
-function recentlyFailed(job: HydrationJob, now: Date): boolean {
-  return Boolean(
-    job.scoringError?.startsWith("DESCRIPTION_")
-    && job.scoringQueuedAt
-    && now.getTime() - job.scoringQueuedAt.getTime() < RETRY_COOLDOWN_MS,
-  );
-}
+// The old scoringError-based cooldown check (recentlyFailed) is superseded
+// by descriptionHydrationNextAttemptAt, which the bounded query in
+// hydrateMissingDescriptionsForScoring now filters on directly.
 
 type HydrationOutcome = { descriptionHydrated: boolean; dateHydrated: boolean; failed: boolean };
 
@@ -358,8 +361,26 @@ export async function applyOfficialHydrationEvidence(
     evidence.sourceDateProvenance,
   );
   if (!descriptionHydrated && !dateHydrated) {
+    // Nothing usable came back — record backoff so this job doesn't stay
+    // "due now" and re-enter the bounded candidate query on every future
+    // run until something actually changes at the source.
+    await prisma.job.update({
+      where: { id: job.id },
+      data: { descriptionHydrationNextAttemptAt: new Date(now.getTime() + RETRY_COOLDOWN_MS) },
+    }).catch(() => undefined);
     return { descriptionHydrated: false, dateHydrated: false, failed: true };
   }
+
+  // Whether this job will still need another hydration pass after this
+  // write: done once it has BOTH a usable description and a known
+  // source-posted date. Computed from the post-write state, not just what
+  // this call changed, so a job that already had one of the two before this
+  // call correctly resolves to "done" rather than lingering forever.
+  const willHaveDescription = descriptionHydrated || hasUsableJobDescription(job);
+  const willHaveDate = dateHydrated ? Boolean(evidence.sourceDate.sourcePostedAt) : Boolean(job.sourcePostedAt);
+  const nextAttempt = willHaveDescription && willHaveDate
+    ? HYDRATION_DONE_SENTINEL
+    : new Date(now.getTime() + RETRY_COOLDOWN_MS);
 
   await prisma.job.update({
     where: { id: job.id },
@@ -380,6 +401,7 @@ export async function applyOfficialHydrationEvidence(
         sourceDateConfidence: evidence.sourceDate.sourceDateConfidence,
         sourceDateProvenance: evidence.sourceDateProvenance,
       } : {}),
+      descriptionHydrationNextAttemptAt: nextAttempt,
     },
   });
 
@@ -401,17 +423,25 @@ async function hydrateOne(job: HydrationJob, now: Date): Promise<HydrationOutcom
     job.url,
   ].map(usableOfficialUrl).find(Boolean) ?? null;
 
+  // Backoff is recorded regardless of whether this job already has a usable
+  // description — a job with a description but no source-posted date (or no
+  // resolvable official URL yet) must not stay "due now" forever under the
+  // new bounded query, or it would re-enter every hydration run without ever
+  // being able to make progress.
+  const backoffAt = new Date(now.getTime() + RETRY_COOLDOWN_MS);
+
   if (!officialUrl || (job.resolutionStatus !== "RESOLVED" && job.verificationStatus !== "VERIFIED_OFFICIAL_AT_LAST_CHECK")) {
-    if (!hasUsableJobDescription(job)) {
-      await prisma.job.update({
-        where: { id: job.id },
-        data: {
+    await prisma.job.update({
+      where: { id: job.id },
+      data: {
+        ...(!hasUsableJobDescription(job) ? {
           scoringState: "DESCRIPTION_PENDING",
           scoringError: "DESCRIPTION_OFFICIAL_URL_UNAVAILABLE",
           scoringQueuedAt: now,
-        },
-      });
-    }
+        } : {}),
+        descriptionHydrationNextAttemptAt: backoffAt,
+      },
+    }).catch(() => undefined);
     return { descriptionHydrated: false, dateHydrated: false, failed: true };
   }
 
@@ -420,6 +450,10 @@ async function hydrateOne(job: HydrationJob, now: Date): Promise<HydrationOutcom
     const outcome = await applyOfficialHydrationEvidence(job, officialUrl, evidence, now);
 
     if (outcome.failed) {
+      // applyOfficialHydrationEvidence already recorded backoff on this
+      // exact failure path (see its own `if (!descriptionHydrated &&
+      // !dateHydrated)` branch) — only the scoringState bookkeeping below is
+      // still this function's responsibility.
       if (!hasUsableJobDescription(job)) {
         await prisma.job.update({
           where: { id: job.id },
@@ -428,7 +462,7 @@ async function hydrateOne(job: HydrationJob, now: Date): Promise<HydrationOutcom
             scoringError: "DESCRIPTION_FETCH_INSUFFICIENT",
             scoringQueuedAt: now,
           },
-        });
+        }).catch(() => undefined);
       }
       return { descriptionHydrated: false, dateHydrated: false, failed: true };
     }
@@ -442,16 +476,17 @@ async function hydrateOne(job: HydrationJob, now: Date): Promise<HydrationOutcom
         : error instanceof Error ? error.name : "DESCRIPTION_FETCH_FAILED",
       error: error instanceof Error ? error.message.slice(0, 300) : "DESCRIPTION_FETCH_FAILED",
     });
-    if (!hasUsableJobDescription(job)) {
-      await prisma.job.update({
-        where: { id: job.id },
-        data: {
+    await prisma.job.update({
+      where: { id: job.id },
+      data: {
+        descriptionHydrationNextAttemptAt: backoffAt,
+        ...(!hasUsableJobDescription(job) ? {
           scoringState: "DESCRIPTION_PENDING",
           scoringError: "DESCRIPTION_FETCH_FAILED",
           scoringQueuedAt: now,
-        },
-      }).catch(() => undefined);
-    }
+        } : {}),
+      },
+    }).catch(() => undefined);
     return { descriptionHydrated: false, dateHydrated: false, failed: true };
   }
 }
@@ -470,9 +505,29 @@ export async function hydrateMissingDescriptionsForScoring(options: {
   const concurrency = Math.max(1, Math.min(6, Math.trunc(options.concurrency ?? 4)));
   const now = new Date();
 
+  // Bounded, indexed candidate query (database-usage repair, pass #4) — this
+  // used to read every activeFeed job and filter in JS. Every job's
+  // eligibility is now tracked explicitly in
+  // descriptionHydrationNextAttemptAt (NULL = never evaluated, due now; a
+  // past/present timestamp = due again after backoff; a far-future sentinel
+  // = already has a usable description and a known date, done). The WHERE
+  // clause does the filtering an in-memory `.filter()` used to, against a
+  // small `take`, not the whole table. `recentlyFailed`'s old scoringError-
+  // based cooldown check is superseded by this field and no longer needed —
+  // a row this query returns is, by construction, actually due.
   const active = await prisma.job.findMany({
-    where: { activeFeed: true },
+    where: {
+      activeFeed: true,
+      OR: [
+        { descriptionHydrationNextAttemptAt: null },
+        { descriptionHydrationNextAttemptAt: { lte: now } },
+      ],
+    },
     orderBy: [{ firstSeenAt: "desc" }, { id: "desc" }],
+    // A few times maxItems, not just maxItems: hydrationPriority still needs
+    // a small pool to pick the best candidates from (freshest/most-missing
+    // first), not merely the first N rows in firstSeenAt order.
+    take: maxItems * 5,
     select: {
       id: true,
       title: true,
@@ -500,21 +555,18 @@ export async function hydrateMissingDescriptionsForScoring(options: {
     },
   });
 
+  // Defensive double-check, not a full-table scan: `active` is already
+  // bounded by the query above. This only matters for a NULL (never
+  // evaluated) row that turns out to already be complete — a state a
+  // properly-maintained field should never produce, but a cheap in-memory
+  // check against an already-small set costs nothing to keep as a guard.
   const missing = active
     .filter((job) => !hasUsableJobDescription(job) || !job.sourcePostedAt)
     .sort((a, b) => hydrationPriority(a, now) - hydrationPriority(b, now)
       || (b.firstSeenAt?.getTime() ?? 0) - (a.firstSeenAt?.getTime() ?? 0)
       || b.id.localeCompare(a.id));
-  let skippedCooldown = 0;
-  const candidates: HydrationJob[] = [];
-  for (const job of missing) {
-    if (recentlyFailed(job, now)) {
-      skippedCooldown += 1;
-      continue;
-    }
-    candidates.push(job);
-    if (candidates.length >= maxItems) break;
-  }
+  const candidates = missing.slice(0, maxItems);
+  const skippedCooldown = 0;
 
   let nextIndex = 0;
   let hydrated = 0;

@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { PAUSE_KEY, PAUSE_METADATA_KEY, pauseIsActive, type SchedulerPauseMetadata } from "@/lib/sync/schedulerState";
 
 /**
  * Per-source "is this actually due" gate for recurring cron steps.
@@ -68,4 +69,55 @@ export async function markRan(name: string, now: Date = new Date()): Promise<voi
 /** Uniform "skipped, not due yet" shape matching runLaneStep's step-result shape. */
 export function notDueStep<T>(): { ran: false; skipped: "not_due"; value: T | null; ms: number } {
   return { ran: false, skipped: "not_due", value: null, ms: 0 };
+}
+
+// ---------------------------------------------------------------------------
+// Combined pause + due-gate read (database-usage repair, pass #4).
+//
+// A fresh/standard lane tick used to spend one query checking scheduler
+// pause state (previously two — see PAUSE_KEY/PAUSE_METADATA_KEY in
+// schedulerState.ts, now folded into this same read) and a SEPARATE query
+// per gated step. `checkPausedAndDue` reads every one of those AppSetting
+// rows in ONE query, since they are all small rows in the same table keyed
+// by string — there is no reason a tick that turns out to be paused, or
+// where nothing gated is due, should cost more than one round trip to find
+// that out.
+// ---------------------------------------------------------------------------
+
+export type PausedAndDue = {
+  paused: boolean;
+  pauseMetadata: SchedulerPauseMetadata | null;
+  due: Record<string, boolean>;
+};
+
+export async function checkPausedAndDue(
+  steps: readonly DueSpec[],
+  now: Date = new Date(),
+): Promise<PausedAndDue> {
+  const keys = [PAUSE_KEY, PAUSE_METADATA_KEY, ...steps.map((step) => settingKey(step.name))];
+  const rows = await prisma.appSetting.findMany({
+    where: { key: { in: keys } },
+    select: { key: true, value: true },
+  });
+  const byKey = new Map(rows.map((row) => [row.key, row.value]));
+
+  let pauseMetadata: SchedulerPauseMetadata | null = null;
+  const rawMetadata = byKey.get(PAUSE_METADATA_KEY);
+  if (rawMetadata) {
+    try {
+      pauseMetadata = JSON.parse(rawMetadata) as SchedulerPauseMetadata;
+    } catch {
+      pauseMetadata = null;
+    }
+  }
+  const paused = pauseIsActive(byKey.get(PAUSE_KEY), pauseMetadata, now);
+
+  const due: Record<string, boolean> = {};
+  for (const step of steps) {
+    const raw = byKey.get(settingKey(step.name));
+    const lastRunAt = raw ? Date.parse(raw) : Number.NaN;
+    due[step.name] = !Number.isFinite(lastRunAt) || now.getTime() - lastRunAt >= step.intervalMs;
+  }
+
+  return { paused, pauseMetadata, due };
 }

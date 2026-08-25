@@ -230,10 +230,37 @@ export async function runMassTechnicalFeedDiscovery(limit = 1500): Promise<{
 }> {
   const boundedLimit = Math.max(1, Math.min(limit, 2000));
   const source = await fetchMassTechnicalCandidates();
-  const activeRows = await prisma.job.findMany({
-    where: { activeFeed: true },
-    select: { officialApplicationUrl: true, sourceUrl: true, url: true },
-  });
+
+  // Bounded, targeted existing-record lookup (database-usage repair, pass
+  // #4 — same fix applied to runExpandedPublicDirectFeedDiscovery in pass
+  // #3): this used to load officialApplicationUrl/sourceUrl/url for EVERY
+  // active job just to build an in-memory membership set. Only the URLs the
+  // current feed batch actually offers can possibly match, so this queries
+  // for exactly those — scaling with candidate count (bounded to 2000), not
+  // catalog size. Both raw and canonicalized forms of each candidate URL are
+  // included since the stored columns aren't guaranteed to already be in
+  // canonical form; a rare miss here costs a harmless idempotent re-upsert,
+  // not a duplicate or lost job.
+  const candidateUrlVariants = new Set<string>();
+  for (const candidate of source.candidates) {
+    candidateUrlVariants.add(candidate.officialUrl);
+    const canonical = canonicalizeJobUrl(candidate.officialUrl);
+    if (canonical) candidateUrlVariants.add(canonical);
+  }
+  const urlList = [...candidateUrlVariants];
+  const activeRows = urlList.length > 0
+    ? await prisma.job.findMany({
+        where: {
+          activeFeed: true,
+          OR: [
+            { officialApplicationUrl: { in: urlList } },
+            { sourceUrl: { in: urlList } },
+            { url: { in: urlList } },
+          ],
+        },
+        select: { officialApplicationUrl: true, sourceUrl: true, url: true },
+      })
+    : [];
   const activeUrls = new Set(
     activeRows
       .flatMap((row) => [row.officialApplicationUrl, row.sourceUrl, row.url])

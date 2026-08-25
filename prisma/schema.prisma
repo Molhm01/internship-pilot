@@ -628,6 +628,20 @@ model Job {
   scoringFinishedAt  DateTime?
   scoringHeartbeatAt DateTime?
 
+  // --- Description-hydration eligibility (database-usage repair, pass #4) ---
+  // NULL = never evaluated, eligible now (default; matches prior behavior for
+  // every pre-existing row once this migration is applied). A timestamp in
+  // the past or present = due for another attempt (backoff). A timestamp far
+  // in the future (see HYDRATION_DONE_SENTINEL in
+  // src/lib/matching/jobDescriptionHydration.ts) = has a usable description
+  // AND a known source-posted date; no further hydration needed. This lets
+  // hydrateMissingDescriptionsForScoring query
+  // `WHERE activeFeed AND (descriptionHydrationNextAttemptAt IS NULL OR <= now)`
+  // with a bounded LIMIT instead of reading every active job and filtering in
+  // JS. NOT APPLIED to production by this migration — see
+  // prisma/migrations/20260825000000_description_hydration_eligibility.
+  descriptionHydrationNextAttemptAt DateTime?
+
   // --- Canonical internship classification (src/lib/sync/internshipClassifier.ts) ---
   // QUALIFYING_INTERNSHIP | NOT_AN_INTERNSHIP | UNCERTAIN_CLASSIFICATION |
   // CONFIRMED_CLOSED | PARSE_FAILED. Null on rows ingested before the
@@ -650,6 +664,7 @@ model Job {
   @@index([activeFeed])
   @@index([scoringState])
   @@index([classification])
+  @@index([activeFeed, descriptionHydrationNextAttemptAt])
 }
 
 // One row per ATS ingestion run. Gives every sync an auditable record of what

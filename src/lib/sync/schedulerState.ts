@@ -1,7 +1,11 @@
 import { prisma } from "@/lib/db";
 
-const PAUSE_KEY = "scheduler:paused";
-const PAUSE_METADATA_KEY = "scheduler:pause:metadata";
+// Exported (rather than module-private) so src/lib/cron/tickGate.ts can read
+// these AppSetting rows in the SAME query as its own due-gate keys — see the
+// DATABASE EFFICIENCY PASS #4 report for why a combined read matters for the
+// fresh/standard lane's fixed per-tick cost.
+export const PAUSE_KEY = "scheduler:paused";
+export const PAUSE_METADATA_KEY = "scheduler:pause:metadata";
 const HEARTBEAT_KEY = "scheduler:worker:heartbeat";
 const TICK_KEY_PREFIX = "scheduler:tick:";
 

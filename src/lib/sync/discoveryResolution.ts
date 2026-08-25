@@ -157,6 +157,130 @@ function findCompanyConfig(
   );
 }
 
+const COMPANY_RESOLUTION_CACHE_PREFIX = "internListCompanyResolution:";
+// Re-validated periodically rather than cached forever: a company can be
+// renamed, reconfigured (new ATS), or removed from the allowlist, and a
+// "no match" result should eventually get another real attempt in case the
+// company was added since.
+const COMPANY_RESOLUTION_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+type CompanyResolutionCacheEntry = { companyName: string | null; cachedAt: string };
+
+function companyResolutionCacheKey(normalizedKey: string): string {
+  return `${COMPANY_RESOLUTION_CACHE_PREFIX}${normalizedKey}`;
+}
+
+const COMPANY_FOR_LISTING_SELECT = {
+  name: true,
+  atsType: true,
+  atsIdentifier: true,
+  careersUrl: true,
+  lastETag: true,
+  lastModified: true,
+  contentHash: true,
+} as const;
+
+/**
+ * Resolves every candidate's company name to a `CompanyForListing`, using a
+ * persisted cache to avoid re-fuzzy-matching against the whole company table
+ * every run. See the cost-formula comment where this is called.
+ */
+async function resolveCandidateCompanies(candidates: DiscoveryCandidate[]): Promise<{
+  resolve: (companyName: string) => CompanyForListing | null;
+  persistNewResolutions: () => Promise<void>;
+}> {
+  const candidateKeys = [...new Set(candidates.map((c) => companyKey(c.company)).filter((k) => k.length > 0))];
+
+  const cacheRows = candidateKeys.length > 0
+    ? await prisma.appSetting.findMany({
+        where: { key: { in: candidateKeys.map(companyResolutionCacheKey) } },
+        select: { key: true, value: true },
+      })
+    : [];
+  const cacheByKey = new Map(cacheRows.map((row) => [row.key, row.value]));
+
+  const now = Date.now();
+  const resolvedNamesNeeded = new Set<string>();
+  const cacheHitFor = new Map<string, string | null>();
+  const cacheMissKeys: string[] = [];
+  for (const key of candidateKeys) {
+    const raw = cacheByKey.get(companyResolutionCacheKey(key));
+    let hit = false;
+    if (raw) {
+      try {
+        const entry = JSON.parse(raw) as CompanyResolutionCacheEntry;
+        if (now - Date.parse(entry.cachedAt) < COMPANY_RESOLUTION_CACHE_TTL_MS) {
+          cacheHitFor.set(key, entry.companyName);
+          if (entry.companyName) resolvedNamesNeeded.add(entry.companyName);
+          hit = true;
+        }
+      } catch {
+        hit = false;
+      }
+    }
+    if (!hit) cacheMissKeys.push(key);
+  }
+
+  // Cache miss on ANY candidate still needs the fuzzy fallback, which can
+  // only be evaluated against the full eligible-company list — but a
+  // fully-warm cache (the common case once Intern List's largely-repeating
+  // employer pool has cycled through once) skips that read entirely and
+  // does only the bounded, exact `name IN (...)` lookup for names the cache
+  // already resolved.
+  const companies: CompanyForListing[] = cacheMissKeys.length > 0
+    ? await prisma.company.findMany({
+        where: { allowlisted: true, monitoringStatus: "active" },
+        select: COMPANY_FOR_LISTING_SELECT,
+      })
+    : resolvedNamesNeeded.size > 0
+      ? await prisma.company.findMany({
+          where: { name: { in: [...resolvedNamesNeeded] } },
+          select: COMPANY_FOR_LISTING_SELECT,
+        })
+      : [];
+
+  const companyMap = new Map<string, CompanyForListing>();
+  for (const company of companies) {
+    const key = companyKey(company.name);
+    if (key && !companyMap.has(key)) companyMap.set(key, company);
+  }
+
+  const newResolutions = new Map<string, string | null>();
+
+  function resolve(companyName: string): CompanyForListing | null {
+    const key = companyKey(companyName);
+    if (cacheHitFor.has(key)) {
+      const cachedName = cacheHitFor.get(key);
+      if (!cachedName) return null;
+      const exact = companyMap.get(companyKey(cachedName));
+      if (exact) return exact;
+      // The cached company no longer resolves by name (renamed/removed) —
+      // fall through to a fresh fuzzy attempt rather than trusting a stale
+      // mapping, and let persistNewResolutions overwrite the cache entry.
+    }
+    const resolved = findCompanyConfig(companyName, companies, companyMap);
+    newResolutions.set(key, resolved?.name ?? null);
+    return resolved;
+  }
+
+  async function persistNewResolutions(): Promise<void> {
+    if (newResolutions.size === 0) return;
+    const nowIso = new Date().toISOString();
+    await Promise.all(
+      [...newResolutions.entries()].map(([key, companyName]) => {
+        const value = JSON.stringify({ companyName, cachedAt: nowIso } satisfies CompanyResolutionCacheEntry);
+        return prisma.appSetting.upsert({
+          where: { key: companyResolutionCacheKey(key) },
+          create: { key: companyResolutionCacheKey(key), value },
+          update: { value },
+        });
+      }),
+    );
+  }
+
+  return { resolve, persistNewResolutions };
+}
+
 async function findCanonicalJobId(company: string, officialUrl: string): Promise<string | null> {
   const canonical = canonicalizeJobUrl(officialUrl);
   if (!canonical) return null;
@@ -459,23 +583,17 @@ export async function runInternListOriginalSourceDiscovery(
   const pool = uniqueCandidates([...liveCandidates, ...backlogCandidates]);
   const candidates = selectCandidatesForRun(pool, boundedLimit);
 
-  const companies: CompanyForListing[] = await prisma.company.findMany({
-    where: { allowlisted: true, monitoringStatus: "active" },
-    select: {
-      name: true,
-      atsType: true,
-      atsIdentifier: true,
-      careersUrl: true,
-      lastETag: true,
-      lastModified: true,
-      contentHash: true,
-    },
-  });
-  const companyMap = new Map<string, CompanyForListing>();
-  for (const company of companies) {
-    const key = companyKey(company.name);
-    if (key && !companyMap.has(key)) companyMap.set(key, company);
-  }
+  // Persisted source-company -> internal-company resolution (database-usage
+  // repair, pass #4): this used to load the ENTIRE allowlisted/active
+  // company table every run just to fuzzy-match against a handful of
+  // candidate company names. Intern List's candidate pool is largely the
+  // same employers cycle to cycle, so once a name has been fuzzy-resolved
+  // once, the next run can look it up directly instead of repeating the
+  // fuzzy search — collapsing the common case to one bounded, exact
+  // `name IN (...)` lookup. The full table is only read on an actual cache
+  // miss (a genuinely new/unrecognized company name), which is rare in
+  // steady state and shrinks in frequency as the cache fills.
+  const companyResolution = await resolveCandidateCompanies(candidates);
 
   const outcomes: Array<Awaited<ReturnType<typeof processCandidate>>> = [];
   let cursor = 0;
@@ -483,11 +601,12 @@ export async function runInternListOriginalSourceDiscovery(
     while (cursor < candidates.length) {
       const index = cursor++;
       const candidate = candidates[index]!;
-      const company = findCompanyConfig(candidate.company, companies, companyMap);
+      const company = companyResolution.resolve(candidate.company);
       outcomes[index] = await processCandidate(candidate, company);
     }
   });
   await Promise.all(workers);
+  await companyResolution.persistNewResolutions();
 
   return {
     sourceFetched: liveJobs.length,

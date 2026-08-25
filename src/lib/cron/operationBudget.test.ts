@@ -303,3 +303,191 @@ describe.skipIf(!DATABASE_AVAILABLE)("ATS company-check wave operation budget", 
     }
   }, 10_000);
 });
+
+/**
+ * Pass #4, item 13: MEASURED (not estimated) fixed-cost floors.
+ *
+ * All external network calls are stubbed to fail cleanly (every fetcher in
+ * this codebase already treats a failed/non-OK fetch as "no signals" and
+ * returns an empty result — see e.g. fetchJobrightFreshSignals,
+ * fetchExpandedDirectCandidates, fetchMassTechnicalCandidates), which
+ * deterministically exercises the exact "nothing new" / "no signal arrived"
+ * path real production hits on a quiet tick, without depending on whatever
+ * these public feeds actually contain right now.
+ */
+describe.skipIf(!DATABASE_AVAILABLE)("MEASURED fixed-cost floors (pass #4, item 13)", () => {
+  let prisma: typeof import("@/lib/db").prisma;
+  let resetPrismaOperationCounter: typeof import("@/lib/db").resetPrismaOperationCounter;
+  let getPrismaOperationCount: typeof import("@/lib/db").getPrismaOperationCount;
+  const originalFetch = global.fetch;
+
+  beforeAll(async () => {
+    const db = await import("@/lib/db");
+    db.resetPrismaClientForTests();
+    ({ prisma, resetPrismaOperationCounter, getPrismaOperationCount } = db);
+    process.env.CRON_SECRET = "operation-budget-test-secret";
+  });
+
+  beforeEach(async () => {
+    // Every external feed this pass measures fails cleanly to 404 — the
+    // deterministic "no signal" case every fetcher already handles.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("not found", { status: 404 })));
+    resetPrismaOperationCounter();
+    // "Empty tick" means steady state: every gated step already ran
+    // recently and none of them are due again yet — NOT every gate cleared
+    // (which would make every step due simultaneously on the very first
+    // call, the opposite of what an idle production tick looks like).
+    // Clear scheduler pause explicitly, then mark every known gate as just
+    // having run, far enough in the future that none of them come due
+    // again during this test.
+    await prisma.appSetting.deleteMany({
+      where: { OR: [{ key: "scheduler:paused" }, { key: "scheduler:pause:metadata" }] },
+    });
+    const { markRan } = await import("@/lib/cron/dueGate");
+    await Promise.all([
+      "fresh:freshnessVerification",
+      "standard:publicDirectFeeds",
+      "standard:internList",
+      "standard:qualityHydration",
+      "standard:freshnessVerification",
+    ].map((name) => markRan(name)));
+    resetPrismaOperationCounter();
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  async function callRoute(routeModule: string, request: Request): Promise<{ status: number; body: unknown; ops: number }> {
+    const mod = (await import(routeModule)) as { GET: (req: Request) => Promise<Response> };
+    resetPrismaOperationCounter();
+    const response = await mod.GET(request);
+    const ops = getPrismaOperationCount();
+    const body = await response.json().catch(() => null);
+    return { status: response.status, body, ops };
+  }
+
+  function cronRequest(): Request {
+    return new Request("https://example.test/api/cron/job-ingestion/fresh", {
+      headers: { authorization: `Bearer ${process.env.CRON_SECRET}` },
+    });
+  }
+
+  it("EMPTY FRESH TICK: measured Prisma operations", async () => {
+    const { status, body, ops } = await callRoute("@/app/api/cron/job-ingestion/fresh/route", cronRequest());
+    expect(status).toBe(200);
+    console.log("[MEASURED] empty fresh tick:", ops, "ops —", JSON.stringify((body as { steps?: unknown }).steps));
+    // Regression guard: the pre-pass-4 shape (pause 1-2 + lease acquire 1 +
+    // lease release 2 + tierA due 1 + freshness due 1) cost 6-7 operations
+    // on an empty tick. This must now be well under that.
+    expect(ops).toBeLessThanOrEqual(4);
+  }, 30_000);
+
+  it("EMPTY STANDARD TICK: measured Prisma operations", async () => {
+    const { status, ops } = await callRoute(
+      "@/app/api/cron/job-ingestion/standard/route",
+      new Request("https://example.test/api/cron/job-ingestion/standard", {
+        headers: { authorization: `Bearer ${process.env.CRON_SECRET}` },
+      }),
+    );
+    expect(status).toBe(200);
+    console.log("[MEASURED] empty standard tick:", ops, "ops");
+    expect(ops).toBeLessThanOrEqual(4);
+  }, 30_000);
+
+  it("NO-CHANGE TIER A RUN: measured Prisma operations", async () => {
+    const { runTieredDuePoll } = await import("@/lib/sync/companyDiscovery");
+    resetPrismaOperationCounter();
+    await runTieredDuePoll({ tiers: ["A"], limit: 40, maxRuntimeMs: 10_000 });
+    const ops = getPrismaOperationCount();
+    console.log("[MEASURED] no-change Tier A run:", ops, "ops");
+    expect(ops).toBeLessThanOrEqual(2);
+  }, 15_000);
+
+  it("NO-CHANGE TIER B RUN: measured Prisma operations", async () => {
+    const { runTieredDuePoll } = await import("@/lib/sync/companyDiscovery");
+    resetPrismaOperationCounter();
+    await runTieredDuePoll({ tiers: ["B"], limit: 120, maxRuntimeMs: 10_000 });
+    const ops = getPrismaOperationCount();
+    console.log("[MEASURED] no-change Tier B run:", ops, "ops");
+    expect(ops).toBeLessThanOrEqual(2);
+  }, 15_000);
+
+  it("NO-CHANGE INTERN LIST RUN: measured Prisma operations (cold cache, then warm cache)", async () => {
+    const { runInternListOriginalSourceDiscovery } = await import("@/lib/sync/discoveryResolution");
+    // First call: cold company-resolution cache — every candidate's company
+    // name is a cache miss, so this pays the full-table fuzzy-match fallback
+    // plus one cache-write per distinct company name resolved.
+    resetPrismaOperationCounter();
+    const cold = await runInternListOriginalSourceDiscovery(25);
+    const coldOps = getPrismaOperationCount();
+    console.log("[MEASURED] Intern List run, COLD cache:", coldOps, "ops —", JSON.stringify(cold));
+
+    // Second call with the same (deterministic, network-stubbed) candidate
+    // pool: every company name this run needs was just cached, so this
+    // measures the real steady-state cost — the number that actually
+    // recurs every two hours in production, not the one-time warm-up cost.
+    resetPrismaOperationCounter();
+    const warm = await runInternListOriginalSourceDiscovery(25);
+    const warmOps = getPrismaOperationCount();
+    console.log("[MEASURED] Intern List run, WARM cache:", warmOps, "ops —", JSON.stringify(warm));
+    expect(warmOps).toBeLessThan(coldOps);
+  }, 20_000);
+
+  it("NO-CHANGE PUBLIC FEED RUN: measured Prisma operations", async () => {
+    const { runExpandedPublicDirectFeedDiscovery } = await import("@/lib/sync/publicDirectFeedsExpanded");
+    resetPrismaOperationCounter();
+    const result = await runExpandedPublicDirectFeedDiscovery(300);
+    const ops = getPrismaOperationCount();
+    console.log("[MEASURED] no-change public-feed run:", ops, "ops —", JSON.stringify(result));
+    // No candidates fetched (fetch is stubbed to 404) => nothing to look up.
+    expect(ops).toBe(0);
+  }, 15_000);
+
+  it("NO-CHANGE MASS TECHNICAL FEED RUN: measured Prisma operations", async () => {
+    const { runMassTechnicalFeedDiscovery } = await import("@/lib/sync/massTechnicalFeeds");
+    resetPrismaOperationCounter();
+    const result = await runMassTechnicalFeedDiscovery(1500);
+    const ops = getPrismaOperationCount();
+    console.log("[MEASURED] no-change mass-technical-feed run:", ops, "ops —", JSON.stringify(result));
+    expect(ops).toBe(0);
+  }, 15_000);
+
+  it("NO-DUE HYDRATION RUN: measured Prisma operations", async () => {
+    const { hydrateMissingDescriptionsForScoring } = await import("@/lib/matching/jobDescriptionHydration");
+    resetPrismaOperationCounter();
+    const result = await hydrateMissingDescriptionsForScoring({ maxItems: 12 });
+    const ops = getPrismaOperationCount();
+    console.log("[MEASURED] no-due hydration run:", ops, "ops —", JSON.stringify(result));
+  }, 15_000);
+
+  it("NO-DUE FRESHNESS RUN: measured Prisma operations", async () => {
+    const { runFreshnessVerificationBatch } = await import("@/lib/sync/freshness");
+    resetPrismaOperationCounter();
+    const result = await runFreshnessVerificationBatch(8);
+    const ops = getPrismaOperationCount();
+    console.log("[MEASURED] no-due freshness run:", ops, "ops —", JSON.stringify(result));
+    // One bounded query; only pays additional ops for jobs it actually finds due.
+    expect(ops).toBeGreaterThanOrEqual(1);
+  }, 15_000);
+
+  it("WARM HEALTH REQUEST: measured Prisma operations", async () => {
+    const { getCachedCatalogHealth } = await import("@/lib/sync/liveDiscoveryHealthCache");
+    await getCachedCatalogHealth({ force: true });
+    resetPrismaOperationCounter();
+    await getCachedCatalogHealth();
+    const ops = getPrismaOperationCount();
+    console.log("[MEASURED] warm health request:", ops, "ops");
+    expect(ops).toBe(0);
+  }, 15_000);
+
+  it("WARM SCHEDULER STATUS: measured Prisma operations", async () => {
+    const { getCachedSchedulerHealth } = await import("@/lib/sync/schedulerState");
+    await getCachedSchedulerHealth({ force: true });
+    resetPrismaOperationCounter();
+    await getCachedSchedulerHealth();
+    const ops = getPrismaOperationCount();
+    console.log("[MEASURED] warm scheduler status:", ops, "ops");
+    expect(ops).toBe(0);
+  }, 15_000);
+});

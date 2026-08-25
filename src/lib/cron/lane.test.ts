@@ -203,14 +203,42 @@ describe("the lanes are actually wired up", () => {
     return readFile(path.join(process.cwd(), relative), "utf8");
   }
 
-  it("ships a route file for every declared lane", async () => {
+  it("ships a route file for every declared lane, authenticated and pause-aware", async () => {
     for (const lane of CRON_LANES) {
       const source = await repoFile(`src/app/api/cron/job-ingestion/${lane}/route.ts`);
       expect(source, `${lane} lane must authenticate`).toContain("isAuthorizedCronRequest");
-      expect(source, `${lane} lane must take a lease`).toContain("acquireLane");
-      expect(source, `${lane} lane must release its lease`).toContain("releaseLane");
-      expect(source, `${lane} lane must honour the paused switch`).toContain("isSchedulerPaused");
+      // Every lane must honour the paused switch — fresh/standard via the
+      // combined checkPausedAndDue read (pass #4), maintenance via the
+      // original isSchedulerPaused (it still takes a DB lease, so a separate
+      // pause query costs nothing extra relative to its once-a-day cadence).
+      const honoursPause = source.includes("isSchedulerPaused") || source.includes("checkPausedAndDue");
+      expect(honoursPause, `${lane} lane must honour the paused switch`).toBe(true);
     }
+  });
+
+  it("maintenance keeps a DB-backed lease; fresh/standard rely on GitHub Actions concurrency instead", async () => {
+    // Database-usage repair, pass #4: fresh and standard fire every 10/60
+    // minutes, so an acquire+release lease cost real, recurring operations —
+    // removed once GitHub Actions' own `concurrency` groups (see
+    // .github/workflows/live-job-ingestion.yml) started serializing each
+    // lane's invocations, which is what the lease existed to protect against
+    // after Vercel's cron trigger was removed in pass #1. Maintenance runs
+    // once a day, where the same lease costs nothing worth optimizing, and
+    // guards a longer-running, more disruptive-to-overlap job.
+    const maintenance = await repoFile("src/app/api/cron/job-ingestion/maintenance/route.ts");
+    expect(maintenance, "maintenance lane must take a lease").toContain("acquireLane");
+    expect(maintenance, "maintenance lane must release its lease").toContain("releaseLane");
+
+    for (const lane of ["fresh", "standard"] as const) {
+      const source = await repoFile(`src/app/api/cron/job-ingestion/${lane}/route.ts`);
+      expect(source, `${lane} lane must not take a DB-backed lease`).not.toContain("acquireLane");
+      expect(source, `${lane} lane must not release a DB-backed lease`).not.toContain("releaseLane");
+    }
+
+    const workflow = await repoFile(".github/workflows/live-job-ingestion.yml");
+    expect(workflow).toContain("group: ingestion-lane-fresh");
+    expect(workflow).toContain("group: ingestion-lane-standard");
+    expect(workflow).toContain("cancel-in-progress: false");
   });
 
   /** Comments explain what a lane avoids; only executable code is evidence. */
