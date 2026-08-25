@@ -10,6 +10,7 @@ import { captureAndSaveOfficialJobDescription } from "@/lib/jobs/captureDescript
 import { generateDocumentsForJob } from "@/lib/documents/generate";
 import { extractPdfText } from "@/lib/pdf";
 import { validateDocumentIdentity } from "@/lib/documents/identityGuard";
+import { computeDocumentFingerprint } from "@/lib/documents/documentFingerprint";
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
@@ -181,11 +182,27 @@ async function makeJob(title: string, fixture: string, resumePath: string) {
       factsUsed: "[]",
     },
   });
+  // This fixture's job description ("Safe local mock application...") is
+  // deliberately short and generic — it names no real employer content and is
+  // well under hasUsableJobDescription's 120-char floor — so live tailored
+  // generation is not something these worker/extension fixtures exercise or
+  // need; that is scenario 0 below, which captures a real description first.
+  // Since enqueueApplication (src/lib/applications/queue.ts) only reuses a
+  // document whose stored fingerprint matches the job's CURRENT one, a
+  // document inserted without one is indistinguishable from stale and is
+  // never reused — the pre-existing fallback path also does not apply here
+  // (it only accepts MASTER_RESUME_FALLBACK-tagged documents, and this one
+  // is TAILORED_WITH_SUPPORTED_CHANGES). Stamping the real current
+  // fingerprint makes this an "intentionally approved current job-scoped
+  // document" the production contract actually reuses, so every fixture
+  // enqueue below queues immediately rather than depending on a live
+  // generation attempt that would fail every time.
+  const fingerprint = await computeDocumentFingerprint(job.id, TEST_USER_ID);
   await prisma.generatedDocument.create({
-    data: { userId: TEST_USER_ID, jobId: job.id, type: "resume", storagePath: resumePath, qaStatus: "pass", qaIssues: "[]", identityVerified: true, tailoringStatus: "TAILORED_WITH_SUPPORTED_CHANGES" },
+    data: { userId: TEST_USER_ID, jobId: job.id, type: "resume", storagePath: resumePath, qaStatus: "pass", qaIssues: "[]", identityVerified: true, tailoringStatus: "TAILORED_WITH_SUPPORTED_CHANGES", documentFingerprint: fingerprint },
   });
   await prisma.generatedDocument.create({
-    data: { userId: TEST_USER_ID, jobId: job.id, type: "coverLetter", storagePath: resumePath, qaStatus: "pass", qaIssues: "[]", identityVerified: true, tailoringStatus: "TAILORED_WITH_SUPPORTED_CHANGES" },
+    data: { userId: TEST_USER_ID, jobId: job.id, type: "coverLetter", storagePath: resumePath, qaStatus: "pass", qaIssues: "[]", identityVerified: true, tailoringStatus: "TAILORED_WITH_SUPPORTED_CHANGES", documentFingerprint: fingerprint },
   });
   return job;
 }

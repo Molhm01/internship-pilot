@@ -8,6 +8,7 @@ import {
 } from "@/lib/documents/strategy";
 import { enqueueApplication, ApplicationAgentError } from "@/lib/applications/queue";
 import { setApplicationMode } from "@/lib/applications/settings";
+import { computeDocumentFingerprint } from "@/lib/documents/documentFingerprint";
 
 let failures = 0;
 const TEST_EMAIL = "document-strategy-audit@example.test";
@@ -109,6 +110,21 @@ async function main() {
     check(false, `legacy resume should be usable, threw: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  console.log("\n6a) A CURRENT fingerprint-matched TAILORED résumé is reused directly");
+  const jobCurrent = await makeJob({ ...COMPLETE, title: "Current Fingerprint Intern" });
+  const currentFingerprint = await computeDocumentFingerprint(jobCurrent.id, userId);
+  await makeResume(jobCurrent.id, "TAILORED_WITH_SUPPORTED_CHANGES", currentFingerprint);
+  try {
+    const res = await enqueueApplication(jobCurrent.id, userId);
+    check(res.queued === true, "run queued using the current fingerprint-matched résumé");
+    const run = await prisma.applicationRun.findFirst({ where: { id: res.runId, userId } });
+    check(run?.documentStrategy === "EXISTING_APPROVED_DOCUMENT", `documentStrategy recorded (got ${run?.documentStrategy})`);
+    const usedDoc = await prisma.generatedDocument.findUnique({ where: { id: run?.resumeDocumentId ?? "" } });
+    check(usedDoc?.documentFingerprint === currentFingerprint, "the fingerprint-matched résumé (not a regenerated one) was attached");
+  } catch (err) {
+    check(false, `should not throw, but threw: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   console.log("\n6b) REGRESSION: a stale TAILORED résumé (fingerprint mismatch) is never reused as current");
   // A TAILORED résumé whose stored fingerprint does not match the job's
   // CURRENT fingerprint must not be silently treated as current just because
@@ -143,6 +159,48 @@ async function main() {
     check(usedDoc?.tailoringStatus === "MASTER_RESUME_FALLBACK", `used the master-fallback document, not the stale TAILORED one (got tailoringStatus=${usedDoc?.tailoringStatus})`);
   } catch (err) {
     check(false, `should not throw, but threw: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  console.log("\n6d) A CURRENT fingerprint-matched résumé that failed QA is never reused");
+  const jobQaFailed = await makeJob({ ...COMPLETE, title: "QA Failed Intern" });
+  const qaFailedFingerprint = await computeDocumentFingerprint(jobQaFailed.id, userId);
+  await prisma.generatedDocument.create({
+    data: {
+      userId,
+      jobId: jobQaFailed.id,
+      type: "resume",
+      version: 1,
+      storagePath: `data/generated/${userId}/${jobQaFailed.id}/resume-v1.pdf`,
+      qaStatus: "fail",
+      tailoringStatus: "TAILORED_WITH_SUPPORTED_CHANGES",
+      identityVerified: true,
+      bulletIdsUsed: "[]",
+      documentFingerprint: qaFailedFingerprint,
+    },
+  });
+  try {
+    await enqueueApplication(jobQaFailed.id, userId);
+    check(false, "should have thrown NO_APPROVED_DOCUMENT for a QA-failed résumé");
+  } catch (err) {
+    check(
+      err instanceof ApplicationAgentError && /No approved resume exists/i.test(err.message),
+      `QA-failed résumé rejected, blocked with NO_APPROVED_DOCUMENT (got: ${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
+
+  console.log("\n6e) A résumé generated for a DIFFERENT job is never reused for this job");
+  const jobWrongOwner = await makeJob({ ...COMPLETE, title: "Wrong Job Owner Intern" });
+  const jobTarget = await makeJob({ ...COMPLETE, title: "Wrong Job Target Intern" });
+  const wrongOwnerFingerprint = await computeDocumentFingerprint(jobWrongOwner.id, userId);
+  await makeResume(jobWrongOwner.id, "TAILORED_WITH_SUPPORTED_CHANGES", wrongOwnerFingerprint);
+  try {
+    await enqueueApplication(jobTarget.id, userId);
+    check(false, "should have thrown NO_APPROVED_DOCUMENT rather than reusing another job's résumé");
+  } catch (err) {
+    check(
+      err instanceof ApplicationAgentError && /No approved resume exists/i.test(err.message),
+      `wrong-job résumé never reused (got: ${err instanceof Error ? err.message : String(err)})`,
+    );
   }
 
   console.log("\n6) A job with NO approved resume blocks with NO_APPROVED_DOCUMENT");
