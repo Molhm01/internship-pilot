@@ -38,8 +38,39 @@ export function reusableApplicationDocuments<T extends {
   return [resume, ...(cover ? [cover] : [])];
 }
 
+// Concurrent Apply requests for the SAME user + job (five rapid clicks, or a
+// resume+retry racing a first click) each start here before any of them has
+// created an ApplicationRun. Without coalescing, every one of them would see
+// the same stale/missing document, and every one of them would kick off its
+// own generateDocumentsForJob — a wasted duplicate Typst compile at best, and
+// at worst a genuine TOCTOU: one racer's generation can fail (e.g. transient
+// file contention) while a sibling racer's identical attempt would have
+// succeeded, so a real, valid document exists in the database moments later
+// but this caller already threw NO_APPROVED_DOCUMENT and never saw it.
+//
+// Keying by user+job only (not by request) means only ONE generation attempt
+// happens per rapid-click burst, and every caller in that burst awaits and
+// shares its single outcome. A different job or a different user is a
+// different key and proceeds independently — this is not a global lock.
+const inFlightReadiness = new Map<string, Promise<ApplicationDocumentReadiness>>();
+
 /** Reuses only QA-passed documents whose complete freshness fingerprint matches. */
-export async function ensureApplicationDocuments(
+export function ensureApplicationDocuments(
+  jobId: string,
+  userId: string,
+  options: { includeCoverLetter: boolean },
+): Promise<ApplicationDocumentReadiness> {
+  const key = `${userId}:${jobId}:${options.includeCoverLetter}`;
+  const existing = inFlightReadiness.get(key);
+  if (existing) return existing;
+  const attempt = ensureApplicationDocumentsUncoalesced(jobId, userId, options).finally(() => {
+    inFlightReadiness.delete(key);
+  });
+  inFlightReadiness.set(key, attempt);
+  return attempt;
+}
+
+async function ensureApplicationDocumentsUncoalesced(
   jobId: string,
   userId: string,
   options: { includeCoverLetter: boolean },
