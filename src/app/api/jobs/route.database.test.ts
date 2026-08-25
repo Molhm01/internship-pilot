@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { Prisma } from "@/generated/prisma/client";
 import { FRESHNESS_FIELDS } from "@/lib/jobs/jobsQueryError";
 import { jobOrderBy, JOB_SORT_OPTIONS } from "@/lib/jobs/jobSort";
+import { KNOWN_POSTED_FRESH_WINDOW_MS, UNKNOWN_DATE_DISCOVERED_WINDOW_MS } from "@/lib/jobs/freshness";
 import { GET } from "./route";
 
 // Route handlers authenticate through this module. The tests below call them
@@ -74,16 +75,23 @@ const ms = (value: string | null): number | null => (value ? new Date(value).get
 const FIXTURE_COMPANY = "Jobs Route Database Fixture";
 const DAY = 24 * 60 * 60 * 1000;
 
-async function seedCatalogue(): Promise<void> {
+async function seedCatalogue(): Promise<Record<string, string>> {
   const now = Date.now();
-  const postings: Array<{ suffix: string; sourcePostedAt: Date | null }> = [
-    { suffix: "newest", sourcePostedAt: new Date(now - 1 * DAY) },
-    { suffix: "middle", sourcePostedAt: new Date(now - 8 * DAY) },
-    { suffix: "oldest", sourcePostedAt: new Date(now - 90 * DAY) },
-    { suffix: "undated", sourcePostedAt: null },
+  // "undated" and "stale-undated" both lack a source-posted date and are
+  // distinguished only by discovery time, exactly like the route's own Fresh
+  // view: sourcePostedAt null falls back to firstSeenAt, never to "not
+  // fresh" by default. A test that ignores that second branch (as this one
+  // used to) undercounts the real Fresh view.
+  const postings: Array<{ suffix: string; sourcePostedAt: Date | null; firstSeenAt: Date }> = [
+    { suffix: "newest", sourcePostedAt: new Date(now - 1 * DAY), firstSeenAt: new Date(now) },
+    { suffix: "middle", sourcePostedAt: new Date(now - 8 * DAY), firstSeenAt: new Date(now) },
+    { suffix: "oldest", sourcePostedAt: new Date(now - 90 * DAY), firstSeenAt: new Date(now) },
+    { suffix: "undated", sourcePostedAt: null, firstSeenAt: new Date(now) },
+    { suffix: "stale-undated", sourcePostedAt: null, firstSeenAt: new Date(now - 10 * DAY) },
   ];
+  const ids: Record<string, string> = {};
   for (const posting of postings) {
-    await prisma.job.create({
+    const job = await prisma.job.create({
       data: {
         title: `Fixture ${posting.suffix} intern`,
         company: FIXTURE_COMPANY,
@@ -93,14 +101,18 @@ async function seedCatalogue(): Promise<void> {
         verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
         activeFeed: true,
         sourcePostedAt: posting.sourcePostedAt,
-        firstSeenAt: new Date(),
+        firstSeenAt: posting.firstSeenAt,
         lastSeenAt: new Date(),
       },
     });
+    ids[posting.suffix] = job.id;
   }
+  return ids;
 }
 
 describe.skipIf(!DATABASE_AVAILABLE)("GET /api/jobs against the live database", () => {
+  let fixtureJobIds: Record<string, string> = {};
+
   beforeAll(async () => {
     await prisma.job.deleteMany({ where: { company: FIXTURE_COMPANY } });
     await prisma.user.deleteMany({ where: { email: FIXTURE_USER_EMAIL } });
@@ -110,7 +122,7 @@ describe.skipIf(!DATABASE_AVAILABLE)("GET /api/jobs against the live database", 
       { userId: FIXTURE_USER_ID, type: "graduationDate", content: "Expected May 2027", status: "approved", source: "manual" },
       { userId: FIXTURE_USER_ID, type: "skill", content: "Python and SystemVerilog", status: "approved", source: "manual" },
     ] });
-    await seedCatalogue();
+    fixtureJobIds = await seedCatalogue();
   });
 
   afterAll(async () => {
@@ -239,14 +251,41 @@ describe.skipIf(!DATABASE_AVAILABLE)("GET /api/jobs against the live database", 
   });
 
   it("defaults to the seven-day Fresh view while All Active remains reachable", async () => {
-    const cutoff = new Date(Date.now() - 7 * DAY);
-    const freshCount = await prisma.job.count({ where: { activeFeed: true, sourcePostedAt: { gte: cutoff } } });
+    // Mirrors the route's own Fresh-view predicate exactly (src/app/api/jobs/route.ts):
+    // a known-posted job within the 7-day window, OR an undated job whose
+    // discovery time is within the 72-hour unknown-date window. A count that
+    // only checked the first branch undercounts Fresh — see the fixture
+    // assertions below for why that matters.
+    const now = new Date();
+    const knownCutoff = new Date(now.getTime() - KNOWN_POSTED_FRESH_WINDOW_MS);
+    const discoveredCutoff = new Date(now.getTime() - UNKNOWN_DATE_DISCOVERED_WINDOW_MS);
+    const freshCount = await prisma.job.count({
+      where: {
+        activeFeed: true,
+        OR: [
+          { sourcePostedAt: { gte: knownCutoff, lte: now } },
+          { sourcePostedAt: null, firstSeenAt: { gte: discoveredCutoff, lte: now } },
+        ],
+      },
+    });
     const { status, body } = await get("http://localhost/api/jobs");
 
     expect(status).toBe(200);
     expect(body.sort).toBe("newest");
     expect(body.total).toBe(freshCount);
     expect(body.returned).toBeLessThanOrEqual(50);
+
+    // Prove both Fresh categories directly against this suite's own fixture,
+    // not just the aggregate count. A wide limit here (rather than the
+    // default page) keeps this independent of how many other fresh jobs the
+    // shared test database happens to hold.
+    const freshPage = await get("http://localhost/api/jobs?limit=100");
+    const freshIds = freshPage.body.jobs.map((job) => job.id);
+    expect(freshIds).toContain(fixtureJobIds["newest"]); // recently source-posted
+    expect(freshIds).toContain(fixtureJobIds["undated"]); // recently discovered, no source date
+    expect(freshIds).not.toContain(fixtureJobIds["middle"]); // known-posted, outside the 7-day window
+    expect(freshIds).not.toContain(fixtureJobIds["oldest"]); // known-posted, long stale
+    expect(freshIds).not.toContain(fixtureJobIds["stale-undated"]); // undated, discovered outside the 72h window
 
     const all = await get("http://localhost/api/jobs?view=all&limit=50");
     expect(all.body.total).toBe(await prisma.job.count({ where: { activeFeed: true } }));
