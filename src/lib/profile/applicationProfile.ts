@@ -110,6 +110,7 @@ export async function applicationProfileForUser(userId: string): Promise<Profile
         : preferences?.legallyAuthorizedToWork === false
           ? "Not currently authorized to work in the United States"
           : null,
+    legallyAuthorizedToWork: preferences?.legallyAuthorizedToWork ?? null,
     requiresSponsorship: preferences?.requiresSponsorshipNow ?? null,
     clearanceEligible: null,
     securityClearanceStatus: preferences?.securityClearanceStatus ?? null,

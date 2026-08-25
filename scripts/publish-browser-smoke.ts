@@ -310,6 +310,75 @@ async function visualSmoke(
   }
 }
 
+/**
+ * Fill in, Save, and reload /profile/application — the exact regression that
+ * would have caught the field-persistence incident this check exists for: a
+ * UI reporting "Saved" while several displayed fields were silently
+ * discarded. Synthetic CI values only, never real identity.
+ */
+async function profileSaveRegression(page: Page) {
+  const area = "profile save regression";
+  try {
+    await page.goto(`${BASE_URL}/profile/application`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+
+    const legalFirstName = "Audit";
+    const legalLastName = "Fixture";
+    const applicationEmail = `audit-fixture-${Date.now()}@example.test`;
+    const school = "Audit Fixture University";
+
+    await page.locator('input[name="legalFirstName"]').fill(legalFirstName);
+    await page.locator('input[name="legalLastName"]').fill(legalLastName);
+    await page.locator('input[name="applicationEmail"]').fill(applicationEmail);
+    await page.locator('input[name="school"]').fill(school);
+    await page.locator('input[name="major"]').fill("Audit Studies");
+    await page.locator('select[name="legallyAuthorizedToWork"]').selectOption("yes");
+    await page.locator('input[name="eeoGender"]').fill("Audit answer");
+
+    await page.getByRole("button", { name: /Save profile|Saving…/ }).click();
+    await page.getByText("Saved.", { exact: true }).waitFor({ timeout: 15_000 });
+
+    // A visible error after clicking Save is exactly what the client-side
+    // round-trip check (CanonicalProfileForm.tsx) should have surfaced
+    // instead, if it had one — this asserts it did not.
+    const errorVisible = await page.getByText(/could not be saved|Save did not take effect/i).isVisible().catch(() => false);
+    if (errorVisible) {
+      fail(area, "an error message was visible alongside a reported Saved state");
+    }
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.locator('input[name="legalFirstName"]').waitFor({ state: "visible", timeout: 15_000 });
+
+    const reloadedFirstName = await page.locator('input[name="legalFirstName"]').inputValue();
+    const reloadedLastName = await page.locator('input[name="legalLastName"]').inputValue();
+    const reloadedEmail = await page.locator('input[name="applicationEmail"]').inputValue();
+    const reloadedSchool = await page.locator('input[name="school"]').inputValue();
+    const reloadedMajor = await page.locator('input[name="major"]').inputValue();
+    const reloadedAuth = await page.locator('select[name="legallyAuthorizedToWork"]').inputValue();
+    const reloadedGender = await page.locator('input[name="eeoGender"]').inputValue();
+
+    const checks: Array<[string, string, string]> = [
+      ["legalFirstName", legalFirstName, reloadedFirstName],
+      ["legalLastName", legalLastName, reloadedLastName],
+      ["applicationEmail", applicationEmail, reloadedEmail],
+      ["school", school, reloadedSchool],
+      ["major", "Audit Studies", reloadedMajor],
+      ["legallyAuthorizedToWork", "yes", reloadedAuth],
+      ["eeoGender", "Audit answer", reloadedGender],
+    ];
+    const mismatches = checks.filter(([, expected, actual]) => expected !== actual);
+    if (mismatches.length > 0) {
+      fail(
+        area,
+        `after reload, fields did not retain their saved value: ${mismatches.map(([name, expected, actual]) => `${name} (expected "${expected}", got "${actual}")`).join("; ")}`,
+      );
+    } else {
+      pass(area, "fill → Save → reload retained every checked field, across UserProfile, ApplicationPreferences, Education, and SensitiveAnswerPreferences");
+    }
+  } catch (error) {
+    fail(area, error instanceof Error ? error.message : String(error));
+  }
+}
+
 async function main() {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
@@ -348,6 +417,8 @@ async function main() {
       for (const route of authenticatedRoutes) {
         await routeSmoke(page, route);
       }
+
+      await profileSaveRegression(page);
 
       // Authenticated visual gates, now that the app shell actually renders.
       for (const entry of VISUAL_ROUTES.filter((candidate) => candidate.expectSidebar)) {
