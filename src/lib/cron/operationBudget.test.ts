@@ -650,3 +650,163 @@ describe.skipIf(!DATABASE_AVAILABLE)("ATS marginal cost — due companies vs cha
     expect(results[100]!).toBeGreaterThan(results[10]!);
   }, 120_000);
 });
+
+/**
+ * Pass #6, item 1: SyncStatusPanel's real 8-hour visible-tab cost, measured
+ * (not calculated as 96 x 27) — the ACTUAL watch scheduling logic
+ * (startSyncStatusWatch) driving the ACTUAL server-side cached health
+ * computation (getCachedCatalogHealth), with a fake clock standing in for
+ * real wall-clock time so the cache's 5-minute TTL behaves exactly as it
+ * would in production.
+ */
+describe.skipIf(!DATABASE_AVAILABLE)("SyncStatusPanel 8-hour session (pass #6, item 1)", () => {
+  let resetPrismaOperationCounter: typeof import("@/lib/db").resetPrismaOperationCounter;
+  let getPrismaOperationCount: typeof import("@/lib/db").getPrismaOperationCount;
+  let startSyncStatusWatch: typeof import("@/lib/sync/syncStatusWatch").startSyncStatusWatch;
+  let getCachedCatalogHealth: typeof import("@/lib/sync/liveDiscoveryHealthCache").getCachedCatalogHealth;
+
+  beforeAll(async () => {
+    const db = await import("@/lib/db");
+    db.resetPrismaClientForTests();
+    ({ resetPrismaOperationCounter, getPrismaOperationCount } = db);
+    ({ startSyncStatusWatch } = await import("@/lib/sync/syncStatusWatch"));
+    ({ getCachedCatalogHealth } = await import("@/lib/sync/liveDiscoveryHealthCache"));
+  });
+
+  afterEach(() => vi.useRealTimers());
+
+  class FakeVisibility extends EventTarget {
+    visibilityState = "visible";
+    setHidden(hidden: boolean) {
+      this.visibilityState = hidden ? "hidden" : "visible";
+      this.dispatchEvent(new Event("visibilitychange"));
+    }
+  }
+
+  const EIGHT_HOURS_MS = 8 * 60 * 60 * 1000;
+
+  // Only `Date` is faked — NOT setTimeout/setInterval. This module's watch
+  // itself uses no timers at all (that's the point of the pass #6 redesign),
+  // but the REAL pg connection underneath getCachedCatalogHealth uses real
+  // setTimeout internally for its own socket housekeeping; faking those too
+  // (vi.useFakeTimers()'s default) starves that housekeeping and drops the
+  // connection the instant fake time jumps forward by hours. Advancing only
+  // the clock, then flushing with a real (tiny) macrotask wait, exercises
+  // the cache's actual TTL logic without breaking the real network I/O.
+  function useDateOnlyFakeTimers() {
+    vi.useFakeTimers({ toFake: ["Date"] });
+  }
+  async function advanceClock(ms: number) {
+    vi.setSystemTime(new Date(Date.now() + ms));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  it("A. one visible tab, 8 hours, no tab-switching: measured Prisma operations", async () => {
+    useDateOnlyFakeTimers();
+    const visibility = new FakeVisibility();
+    resetPrismaOperationCounter();
+    const watch = startSyncStatusWatch({
+      checkFreshness: async () => { await getCachedCatalogHealth(); },
+      visibility,
+    });
+    await advanceClock(0);
+    await advanceClock(EIGHT_HOURS_MS);
+    const ops = getPrismaOperationCount();
+    console.log("[MEASURED] SyncStatusPanel: 1 visible tab / 8h, no switching:", ops, "ops");
+    expect(ops).toBeLessThanOrEqual(30);
+    watch.stop();
+  }, 30_000);
+
+  it("B. three visible tabs, 8 hours, sharing the same cache: measured Prisma operations", async () => {
+    useDateOnlyFakeTimers();
+    resetPrismaOperationCounter();
+    const visibilities = [new FakeVisibility(), new FakeVisibility(), new FakeVisibility()];
+    const watches = visibilities.map((visibility) =>
+      startSyncStatusWatch({ checkFreshness: async () => { await getCachedCatalogHealth(); }, visibility }),
+    );
+    await advanceClock(0);
+    await advanceClock(EIGHT_HOURS_MS);
+    const ops = getPrismaOperationCount();
+    console.log("[MEASURED] SyncStatusPanel: 3 visible tabs / 8h:", ops, "ops");
+    // Three tabs must NOT triple the cold-computation cost — they share the
+    // same DB-backed cache (src/lib/sync/liveDiscoveryHealthCache.ts).
+    expect(ops).toBeLessThanOrEqual(60);
+    watches.forEach((w) => w.stop());
+  }, 30_000);
+
+  it("C. one hidden tab, 8 hours: measured Prisma operations", async () => {
+    useDateOnlyFakeTimers();
+    const visibility = new FakeVisibility();
+    visibility.setHidden(true);
+    resetPrismaOperationCounter();
+    const watch = startSyncStatusWatch({
+      checkFreshness: async () => { await getCachedCatalogHealth(); },
+      visibility,
+    });
+    await advanceClock(EIGHT_HOURS_MS);
+    const ops = getPrismaOperationCount();
+    console.log("[MEASURED] SyncStatusPanel: 1 hidden tab / 8h:", ops, "ops");
+    expect(ops).toBe(0);
+    watch.stop();
+  }, 30_000);
+
+  it("D. visible -> hidden -> visible: measured Prisma operations", async () => {
+    useDateOnlyFakeTimers();
+    const visibility = new FakeVisibility();
+    resetPrismaOperationCounter();
+    const watch = startSyncStatusWatch({
+      checkFreshness: async () => { await getCachedCatalogHealth(); },
+      visibility,
+      staleAfterMs: 5 * 60 * 1000,
+    });
+    await advanceClock(0);
+    const afterMount = getPrismaOperationCount();
+
+    await advanceClock(6 * 60 * 1000); // past staleAfterMs
+    visibility.setHidden(true);
+    visibility.setHidden(false);
+    await advanceClock(0);
+    const afterVisibilityReturn = getPrismaOperationCount();
+
+    console.log(
+      "[MEASURED] SyncStatusPanel: visible->hidden->visible — after mount:",
+      afterMount, "ops, after visibility-return:", afterVisibilityReturn, "ops total",
+    );
+    // The visibility-return check should be warm (cache still within the
+    // health module's own TTL from the mount-time check moments earlier).
+    expect(afterVisibilityReturn).toBe(afterMount);
+    watch.stop();
+  }, 30_000);
+
+  it("E. cache expiration: a check after the TTL elapses re-computes; one still inside it does not", async () => {
+    useDateOnlyFakeTimers();
+    const visibility = new FakeVisibility();
+    resetPrismaOperationCounter();
+    const watch = startSyncStatusWatch({
+      checkFreshness: async () => { await getCachedCatalogHealth(); },
+      visibility,
+      staleAfterMs: 0, // force every visibility-return to attempt a check, to isolate the cache's own TTL behavior
+    });
+    await advanceClock(0);
+    const coldOps = getPrismaOperationCount();
+    expect(coldOps).toBeGreaterThan(0);
+
+    resetPrismaOperationCounter();
+    visibility.setHidden(true);
+    visibility.setHidden(false);
+    await advanceClock(1_000); // well inside the 5-minute TTL
+    const warmOps = getPrismaOperationCount();
+    console.log("[MEASURED] cache expiration: cold =", coldOps, "ops, warm (inside TTL) =", warmOps, "ops");
+    expect(warmOps).toBe(0);
+
+    resetPrismaOperationCounter();
+    await advanceClock(6 * 60 * 1000); // past the 5-minute TTL
+    visibility.setHidden(true);
+    visibility.setHidden(false);
+    await advanceClock(0);
+    const afterTtlOps = getPrismaOperationCount();
+    console.log("[MEASURED] cache expiration: after TTL elapses =", afterTtlOps, "ops (expect > 0, a fresh computation)");
+    expect(afterTtlOps).toBeGreaterThan(0);
+    watch.stop();
+  }, 30_000);
+});
