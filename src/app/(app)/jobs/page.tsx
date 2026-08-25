@@ -218,11 +218,15 @@ function JobsPageContent() {
   // Automatic scoring can start on the server after this page was already
   // opened. Keep a cheap status watch alive while the tab is visible so a new
   // queue is noticed without a manual reload; cards/counts are re-fetched only
-  // when work actually settles.
+  // when work actually settles. Polls every 15s only while something is
+  // actually queued/running; idle (the common case — nothing to score) drops
+  // to every 2 minutes instead of continuing at 15s forever (database-usage
+  // audit, pass #3: this status check is six count() queries).
   useEffect(() => startBulkScoreStatusPolling({
     fetchStatus: fetchBulkScoreStatus,
     onStatus: applyBulkStatus,
     intervalMs: 15_000,
+    idleIntervalMs: 120_000,
     keepWatchingWhenIdle: true,
   }), [applyBulkStatus]);
 

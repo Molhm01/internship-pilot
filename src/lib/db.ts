@@ -126,7 +126,7 @@ function createPrismaClient() {
   const client = new PrismaClient({ adapter });
   if (!OPERATION_BUDGET_TRACKING_ENABLED) return client;
 
-  return client.$extends({
+  const extended = client.$extends({
     name: "operation-budget-counter",
     query: {
       $allModels: {
@@ -137,6 +137,23 @@ function createPrismaClient() {
       },
     },
   }) as unknown as PrismaClient;
+
+  // The `query.$allModels.$allOperations` hook above only sees model-level
+  // calls (`prisma.model.method()`) — it does not see client-level raw
+  // queries (`$executeRaw`/`$queryRaw` and their `Unsafe` variants), which
+  // this repo uses for a few database-side aggregates (radarQueueHealth.ts)
+  // and for the batch Company update in companyDiscovery.ts (see the
+  // DATABASE EFFICIENCY PASS #3 report). Wrap those four methods directly so
+  // a raw query counts as the one operation it actually is.
+  const rawMethods = ["$executeRaw", "$executeRawUnsafe", "$queryRaw", "$queryRawUnsafe"] as const;
+  for (const method of rawMethods) {
+    const original = (extended[method] as (...args: unknown[]) => unknown).bind(extended);
+    (extended as unknown as Record<string, unknown>)[method] = (...args: unknown[]) => {
+      operationCount += 1;
+      return original(...args);
+    };
+  }
+  return extended;
 }
 
 /**

@@ -110,6 +110,35 @@ describe("bulk score client", () => {
     cleanup();
   });
 
+  it("drops to the idle interval when nothing is queued/running, instead of continuing at the active cadence forever", async () => {
+    // Database-usage audit (pass #3): keepWatchingWhenIdle used to mean
+    // "keep polling at the SAME fast cadence forever" — six count() queries
+    // every 15s indefinitely for an empty queue. It must now mean "keep
+    // watching, but much less often" once idle.
+    vi.useFakeTimers();
+    const visibility = new TestVisibility();
+    const fetchStatus = vi.fn().mockResolvedValue(idleStatus);
+    const cleanup = startBulkScoreStatusPolling({
+      fetchStatus,
+      onStatus: vi.fn(),
+      visibility,
+      intervalMs: 15_000,
+      idleIntervalMs: 120_000,
+      keepWatchingWhenIdle: true,
+    });
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(fetchStatus).toHaveBeenCalledOnce();
+    // The active interval elapsing again must NOT trigger another poll —
+    // idle work uses the slower idle interval, not the active one.
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(fetchStatus).toHaveBeenCalledOnce();
+    // Advancing the rest of the way to the idle interval does poll again.
+    await vi.advanceTimersByTimeAsync(120_000 - 15_000);
+    expect(fetchStatus).toHaveBeenCalledTimes(2);
+    cleanup();
+  });
+
   it("stops polling in hidden tabs and cleans up on unmount", async () => {
     vi.useFakeTimers();
     const visibility = new TestVisibility();

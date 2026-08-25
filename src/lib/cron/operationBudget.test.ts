@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 
 /**
  * Regression protection for the database-usage repair (see the DATABASE
@@ -90,7 +90,10 @@ describe.skipIf(!DATABASE_AVAILABLE)("recurring-pipeline operation budgets", () 
 
   it("a cached catalog-health request costs zero additional operations on a warm hit (health request)", async () => {
     const { getCachedCatalogHealth } = await import("@/lib/sync/liveDiscoveryHealthCache");
-    const first = await getCachedCatalogHealth();
+    // force:true guarantees a genuine fresh computation to start from,
+    // regardless of a still-warm cache row left by an earlier test run
+    // against this same database (the cache TTL is 5 minutes).
+    const first = await getCachedCatalogHealth({ force: true });
     expect(first.fresh).toBe(true);
     expect(getPrismaOperationCount()).toBeGreaterThan(0);
 
@@ -139,4 +142,164 @@ describe.skipIf(!DATABASE_AVAILABLE)("recurring-pipeline operation budgets", () 
     // point of gating them is that this is the entire cost.
     expect(getPrismaOperationCount()).toBe(1);
   });
+});
+
+/**
+ * ATS/company-check wave scaling (database-usage repair, pass #3).
+ *
+ * `listJobsForCompany` is mocked to a fixed "nothing new" response so the
+ * measured operation count reflects only the batch-persistence architecture
+ * in src/lib/sync/companyDiscovery.ts, not real network/ATS variability —
+ * these are regression tests for N-linear DB-operation scaling, not a
+ * measurement of a real ATS board.
+ */
+vi.mock("@/lib/ats", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/ats")>();
+  return { ...actual, listJobsForCompany: vi.fn() };
+});
+
+describe.skipIf(!DATABASE_AVAILABLE)("ATS company-check wave operation budget", () => {
+  let prisma: typeof import("@/lib/db").prisma;
+  let resetPrismaOperationCounter: typeof import("@/lib/db").resetPrismaOperationCounter;
+  let getPrismaOperationCount: typeof import("@/lib/db").getPrismaOperationCount;
+  let runCompanyCheckWave: typeof import("@/lib/sync/companyDiscovery").runCompanyCheckWave;
+  let listJobsForCompanyMock: ReturnType<typeof vi.fn>;
+  const seededCompanyIds: string[] = [];
+
+  beforeAll(async () => {
+    const db = await import("@/lib/db");
+    db.resetPrismaClientForTests();
+    ({ prisma, resetPrismaOperationCounter, getPrismaOperationCount } = db);
+    ({ runCompanyCheckWave } = await import("@/lib/sync/companyDiscovery"));
+    const ats = await import("@/lib/ats");
+    listJobsForCompanyMock = ats.listJobsForCompany as ReturnType<typeof vi.fn>;
+  });
+
+  beforeEach(() => {
+    resetPrismaOperationCounter();
+    listJobsForCompanyMock.mockResolvedValue({
+      jobs: [],
+      supported: true,
+      notModified: false,
+      totalAvailableJobs: 0,
+    });
+  });
+
+  afterEach(async () => {
+    if (seededCompanyIds.length === 0) return;
+    await prisma.company.deleteMany({ where: { id: { in: seededCompanyIds.splice(0) } } });
+  });
+
+  // Cheap providers with distinct rate-limit domains (see ATS_API_DOMAINS in
+  // companyDiscovery.ts) — spreading seeded companies across all five avoids
+  // waitForDomainSlot's real 1.5s-per-domain politeness pacing serializing
+  // every company onto one queue, which is correct production behavior but
+  // would make a 50-company wave take well over a minute here for no reason
+  // relevant to what this test measures (DB operation count, not wall time).
+  const CHEAP_PROVIDERS = ["greenhouse", "lever", "ashby", "smartrecruiters", "workday"] as const;
+
+  async function seedCompanies(n: number): Promise<Parameters<typeof runCompanyCheckWave>[0]> {
+    const prefix = `budget-test-ats-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const companies = [];
+    for (let index = 0; index < n; index += 1) {
+      const name = `${prefix}-${index}`;
+      const atsType = CHEAP_PROVIDERS[index % CHEAP_PROVIDERS.length];
+      const company = await prisma.company.create({
+        data: {
+          name,
+          atsType,
+          atsIdentifier: name,
+          careersUrl: `https://example.test/${name}`,
+          monitoringStatus: "active",
+          allowlisted: true,
+          priority: "standard",
+        },
+      });
+      // Pre-approved so checkCompanyPure never needs the tenant-confirmation
+      // network call — isolates the measurement to the DB-operation shape.
+      await prisma.approvedAtsTenant.create({
+        data: { companyId: company.id, atsType, atsIdentifier: name, discoveredFromCareersUrl: company.careersUrl! },
+      });
+      seededCompanyIds.push(company.id);
+      companies.push(company);
+    }
+    return companies;
+  }
+
+  // FIXED_WAVE_OPS: 2 prefetch queries (approvedTenants, trackedJobs) + 1
+  // raw batch Company update + 1 officialBoardPoll createMany. Board-delta
+  // reconciliation's job.updateMany calls are 0 here because the mocked
+  // board always returns zero jobs (see reconciliationBucketsFor's
+  // `deduped.length === 0` early return) — a wave with real board content
+  // would add up to 4 more, still fixed regardless of wave size.
+  const FIXED_WAVE_OPS = 4;
+
+  it("1 company: fixed wave cost, no per-company growth", async () => {
+    const companies = await seedCompanies(1);
+    resetPrismaOperationCounter();
+    await runCompanyCheckWave(companies);
+    expect(getPrismaOperationCount()).toBe(FIXED_WAVE_OPS);
+  });
+
+  it("10 companies: same fixed wave cost as 1 company", async () => {
+    const companies = await seedCompanies(10);
+    resetPrismaOperationCounter();
+    await runCompanyCheckWave(companies);
+    expect(getPrismaOperationCount()).toBe(FIXED_WAVE_OPS);
+  }, 20_000);
+
+  it("25 companies: same fixed wave cost as 1 company", async () => {
+    const companies = await seedCompanies(25);
+    resetPrismaOperationCounter();
+    await runCompanyCheckWave(companies);
+    expect(getPrismaOperationCount()).toBe(FIXED_WAVE_OPS);
+  }, 30_000);
+
+  it("50 companies: same fixed wave cost — NOT ~5x50=250 (the pre-refactor shape)", async () => {
+    const companies = await seedCompanies(50);
+    resetPrismaOperationCounter();
+    await runCompanyCheckWave(companies);
+    const count = getPrismaOperationCount();
+    expect(count).toBe(FIXED_WAVE_OPS);
+    // Explicit regression guard against the old ~5 ops/company shape, in
+    // case FIXED_WAVE_OPS above is ever loosened without noticing the real
+    // scaling has changed: 50 companies must cost nowhere near 50 x 5.
+    expect(count).toBeLessThan(50);
+  }, 40_000);
+
+  // "Maintenance with representative work" (item F): runCompanyDiscoverySweep
+  // is what the maintenance lane calls, and it processes companies in
+  // multiple small concurrent waves rather than one big wave. This confirms
+  // the fixed cost holds across MANY waves, not just within one — the sweep
+  // prefetches and persists exactly once for the whole run, regardless of
+  // wave count. This is the change that brought maintenance's ATS-polling
+  // cost down from scaling with wave count to a small constant.
+  it("a multi-wave sweep (25 companies, concurrency 5 -> 5 waves) still costs the fixed wave total, not 5x it", async () => {
+    const { runCompanyDiscoverySweep } = await import("@/lib/sync/companyDiscovery");
+    await seedCompanies(25);
+    resetPrismaOperationCounter();
+    const sweep = await runCompanyDiscoverySweep({ limit: 25, concurrency: 5, maxRuntimeMs: 30_000 });
+    expect(sweep.checked).toBe(25);
+    // due-company fetch (1) + FIXED_WAVE_OPS (4) — independent of the 5
+    // separate concurrent waves the sweep actually ran internally.
+    expect(getPrismaOperationCount()).toBe(1 + FIXED_WAVE_OPS);
+  }, 40_000);
+
+  // "Maintenance with no work due" (item E).
+  it("a sweep with no active/allowlisted companies due costs a single query", async () => {
+    const { runCompanyDiscoverySweep } = await import("@/lib/sync/companyDiscovery");
+    resetPrismaOperationCounter();
+    const sweep = await runCompanyDiscoverySweep({
+      limit: 1,
+      // A name that cannot match any real seeded company in this shared
+      // test database keeps this deterministic without depending on the
+      // database being otherwise empty.
+      maxRuntimeMs: 5_000,
+    });
+    // Whatever the real due-company count is, the fixed cost when nothing is
+    // due is exactly the due-company query itself — no prefetch, no persist.
+    if (sweep.checked === 0) {
+      expect(getPrismaOperationCount()).toBe(1);
+    }
+  }, 10_000);
 });

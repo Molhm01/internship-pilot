@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { Prisma } from "@/generated/prisma/client";
 import { listJobsForCompany } from "@/lib/ats";
 import { detectAtsForCareersPage } from "@/lib/ats/detect";
 import { getUsaJobsConfig, searchUsaJobs } from "@/lib/ats/usajobs";
@@ -8,7 +9,7 @@ import { logAudit } from "@/lib/applications/audit";
 import { canonicalizeSource, isDirectOfficialSource } from "@/lib/jobs/sourcePolicy";
 import { promoteCanonicalDirectJob } from "@/lib/jobs/activeFeed";
 import type { AtsJob } from "@/lib/ats/types";
-import { reconcileOfficialBoardDelta } from "@/lib/sync/officialBoardDelta";
+import { computeBoardDelta, type BoardDelta, type TrackedBoardJob } from "@/lib/sync/officialBoardDelta";
 import { sanitizeErrorCode } from "@/lib/sync/atsIngest";
 import {
   postingQualityTelemetry,
@@ -93,6 +94,14 @@ function effectivePriority(company: { priority: string; csvEeCpeFit?: string | n
 /**
  * Direct employer/public-authority sources are written through the verified
  * direct-source path. Generic/custom scans keep the lower-trust path.
+ *
+ * Unchanged from before the batch-persistence refactor below: each relevant
+ * job is a genuinely distinct write (different content, different
+ * dedup/classification decision), so this stays per-job rather than being
+ * folded into the wave-wide company bookkeeping batch. This is the
+ * "operations per changed job" term in the wave-cost formula documented on
+ * `runCompanyCheckWave` — proportional to real new/changed postings, not to
+ * how many companies were merely checked.
  */
 async function ingestDiscoveredJobs(
   jobs: AtsJob[],
@@ -134,10 +143,273 @@ async function ingestDiscoveredJobs(
   return { newCount, updatedCount };
 }
 
-export async function checkCompany(companyId: string): Promise<CompanyCheckResult> {
+function equivalentConfiguredTenant(
+  atsType: string,
+  configured: string,
+  detected: string,
+  careersUrl: string | null,
+): boolean {
+  if (atsType !== "workday") return configured === detected;
+  const left = parseWorkdayConfiguration(configured, careersUrl);
+  const right = parseWorkdayConfiguration(detected, careersUrl);
+  return Boolean(left && right && left.tenant === right.tenant && left.site === right.site);
+}
+
+// ---------------------------------------------------------------------------
+// Batch-oriented company checking.
+//
+// This replaces a shape where every company check independently issued its
+// own company.findUnique (redundant — the wave already fetched the row),
+// approvedAtsTenant.findUnique, company.update, officialBoardPoll.create, and
+// (when its board changed) a job.findMany + up to 4 job.updateMany calls for
+// board-delta reconciliation — roughly 4-8 Prisma operations per company,
+// every time, even when nothing about the company changed.
+//
+// The new shape: `checkCompanyPure` does all the network I/O and computation
+// for one company and returns a `CompanyCheckOutcome` describing exactly what
+// should be persisted, WITHOUT writing anything to the Company/
+// OfficialBoardPoll/Job tables itself. `persistCompanyCheckResults` then
+// writes the outcomes for an entire wave in a small, FIXED number of
+// operations — a raw batch UPDATE for the Company rows, one createMany for
+// OfficialBoardPoll telemetry, and up to four wave-wide job.updateMany calls
+// for board-delta reconciliation — regardless of how many companies were in
+// the wave. See `runCompanyCheckWave` for the documented cost formula.
+//
+// Two genuinely rare, per-company writes are deliberately NOT deferred:
+// `approvedAtsTenant.create` (fires once, the first time a company's ATS
+// tenant is newly confirmed — a real state change, not steady-state
+// bookkeeping) and `logAudit` (fires only when a tenant fails confirmation).
+// Both are already proportional to actual events, not to tick count.
+// ---------------------------------------------------------------------------
+
+export type CompanyRow = {
+  id: string;
+  name: string;
+  atsType: string | null;
+  atsIdentifier: string | null;
+  careersUrl: string | null;
+  priority: string;
+  csvEeCpeFit: string | null;
+  engineeringActivityTier: string | null;
+  lastCheckedAt: Date | null;
+  activeInternshipCount: number;
+  consecutiveFailures: number;
+  lastETag: string | null;
+  lastModified: string | null;
+  contentHash: string | null;
+  boardSnapshot: string | null;
+  lastSuccessfulBoardAt: Date | null;
+  atsConfigState: string;
+  atsValidatedAt: Date | null;
+  atsConfigErrorCode: string | null;
+  atsConfigEvidence: string | null;
+  lastEngineeringInternshipAt: Date | null;
+  lastCheckStatus: string | null;
+  lastCheckError: string | null;
+  lastBoardQueryMs: number | null;
+};
+
+const COMPANY_ROW_SELECT = {
+  id: true,
+  name: true,
+  atsType: true,
+  atsIdentifier: true,
+  careersUrl: true,
+  priority: true,
+  csvEeCpeFit: true,
+  engineeringActivityTier: true,
+  lastCheckedAt: true,
+  activeInternshipCount: true,
+  consecutiveFailures: true,
+  lastETag: true,
+  lastModified: true,
+  contentHash: true,
+  boardSnapshot: true,
+  lastSuccessfulBoardAt: true,
+  atsConfigState: true,
+  atsValidatedAt: true,
+  atsConfigErrorCode: true,
+  atsConfigEvidence: true,
+  lastEngineeringInternshipAt: true,
+  lastCheckStatus: true,
+  lastCheckError: true,
+  lastBoardQueryMs: true,
+} as const;
+
+type CompanyUpdateFields = {
+  companyId: string;
+  atsType: string | null;
+  atsIdentifier: string | null;
+  lastCheckedAt: Date;
+  nextCheckAt: Date;
+  activeInternshipCount: number;
+  lastCheckStatus: string;
+  lastCheckError: string | null;
+  consecutiveFailures: number;
+  lastBoardQueryMs: number | null;
+  atsConfigState: string;
+  atsConfigCheckedAt: Date;
+  atsValidatedAt: Date | null;
+  atsConfigErrorCode: string | null;
+  atsConfigEvidence: string | null;
+  engineeringActivityTier: string;
+  lastEngineeringInternshipAt: Date | null;
+  lastETag: string | null;
+  lastModified: string | null;
+  contentHash: string | null;
+  boardSnapshot: string | null;
+  lastSuccessfulBoardAt: Date | null;
+};
+
+type PollTelemetry = {
+  companyId: string;
+  companyName: string;
+  provider: string;
+  startedAt: Date;
+  finishedAt: Date;
+  status: "success" | "not_modified" | "unsupported" | "error";
+  jobsScanned: number;
+  totalAvailableJobs: number;
+  engineeringInternshipsFound: number;
+  newJobs: number;
+  updatedJobs: number;
+  missingJobs: number;
+  closedJobs: number;
+  durationMs: number;
+  errorCode: string | null;
+  configState: AtsConfigState | null;
+  paginationVerified: boolean;
+  fullJdJobs: number;
+  exactTimestampJobs: number;
+  dateOnlyJobs: number;
+  relativeParsedJobs: number;
+  radarFallbackJobs: number;
+  unknownTimestampJobs: number;
+};
+
+type ReconciliationBuckets = {
+  presentJobIds: string[];
+  firstMissJobIds: string[];
+  repeatedMissJobIds: string[];
+  closeJobIds: string[];
+};
+
+export type CompanyCheckOutcome = {
+  result: CompanyCheckResult;
+  companyUpdate: CompanyUpdateFields;
+  reconciliation: ReconciliationBuckets | null;
+  pollTelemetry: PollTelemetry;
+};
+
+type TrackedBoardJobWithProvider = TrackedBoardJob & { atsType: string; atsTenant: string | null };
+
+/** Everything a wave needs to know ahead of time, prefetched once instead of per company. */
+export type CompanyCheckPrefetch = {
+  /** `${companyId}|${atsType}|${atsIdentifier}` -> approval already exists. */
+  approvedTenants: ReadonlySet<string>;
+  /** Company name -> tracked QUALIFYING_INTERNSHIP jobs for board-delta reconciliation. */
+  trackedJobsByCompany: ReadonlyMap<string, TrackedBoardJobWithProvider[]>;
+};
+
+function approvalKey(companyId: string, atsType: string, atsIdentifier: string): string {
+  return `${companyId}|${atsType}|${atsIdentifier}`;
+}
+
+/** One shared prefetch for an entire wave of due companies. Two queries, regardless of wave size. */
+export async function prefetchForCompanyCheckWave(companies: CompanyRow[]): Promise<CompanyCheckPrefetch> {
+  if (companies.length === 0) {
+    return { approvedTenants: new Set(), trackedJobsByCompany: new Map() };
+  }
+  const companyIds = companies.map((c) => c.id);
+  const companyNames = [...new Set(companies.map((c) => c.name))];
+
+  const [approvals, trackedRows] = await Promise.all([
+    prisma.approvedAtsTenant.findMany({
+      where: { companyId: { in: companyIds } },
+      select: { companyId: true, atsType: true, atsIdentifier: true },
+    }),
+    prisma.job.findMany({
+      where: { company: { in: companyNames }, classification: "QUALIFYING_INTERNSHIP" },
+      select: { id: true, company: true, atsType: true, atsTenant: true, sourceJobId: true, consecutiveBoardMisses: true },
+    }),
+  ]);
+
+  const approvedTenants = new Set(
+    approvals.map((row) => approvalKey(row.companyId, row.atsType, row.atsIdentifier)),
+  );
+
+  const trackedJobsByCompany = new Map<string, TrackedBoardJobWithProvider[]>();
+  for (const row of trackedRows) {
+    const bucket = trackedJobsByCompany.get(row.company) ?? [];
+    bucket.push({
+      id: row.id,
+      sourceJobId: row.sourceJobId,
+      consecutiveBoardMisses: row.consecutiveBoardMisses,
+      atsType: row.atsType ?? "",
+      atsTenant: row.atsTenant,
+    });
+    trackedJobsByCompany.set(row.company, bucket);
+  }
+
+  return { approvedTenants, trackedJobsByCompany };
+}
+
+function reconciliationBucketsFor(
+  companyName: string,
+  provider: string,
+  atsTenant: string | null,
+  previousSnapshot: string | null,
+  currentSourceJobIds: string[],
+  prefetch: CompanyCheckPrefetch,
+): { buckets: ReconciliationBuckets; delta: BoardDelta } | null {
+  const deduped = [...new Set(currentSourceJobIds.filter(Boolean))].sort();
+  if (deduped.length === 0) return null;
+
+  const allTracked = prefetch.trackedJobsByCompany.get(companyName) ?? [];
+  const trackedJobs = allTracked.filter(
+    (job) => job.atsType === provider && (atsTenant ? job.atsTenant === atsTenant : true),
+  );
+
+  let previous: string[] = [];
+  if (previousSnapshot) {
+    try {
+      const parsed = JSON.parse(previousSnapshot) as unknown;
+      previous = Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+    } catch {
+      previous = [];
+    }
+  }
+
+  const delta = computeBoardDelta({
+    previousSourceJobIds: previous,
+    currentSourceJobIds: deduped,
+    trackedJobs,
+    successful: true,
+  });
+
+  const firstMissJobIds = trackedJobs
+    .filter((job) => delta.missingJobIds.includes(job.id) && job.consecutiveBoardMisses === 0)
+    .map((job) => job.id);
+  const repeatedMissJobIds = delta.missingJobIds.filter((id) => !firstMissJobIds.includes(id));
+
+  return {
+    buckets: { presentJobIds: delta.presentJobIds, firstMissJobIds, repeatedMissJobIds, closeJobIds: delta.closeJobIds },
+    delta,
+  };
+}
+
+/**
+ * Checks one company: all network I/O, all computation, and returns exactly
+ * what should be persisted. Writes NOTHING to Company, OfficialBoardPoll, or
+ * Job — see the module-level comment above for what stays as an immediate
+ * write and why.
+ */
+export async function checkCompanyPure(
+  company: CompanyRow,
+  prefetch: CompanyCheckPrefetch,
+): Promise<CompanyCheckOutcome> {
   const startedAt = new Date();
-  const company = await prisma.company.findUnique({ where: { id: companyId } });
-  if (!company) throw new Error("Company not found");
+  const companyId = company.id;
 
   let atsType = company.atsType;
   let atsIdentifier = company.atsIdentifier;
@@ -152,20 +424,19 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
   }
 
   if (atsType && atsType !== "unknown" && atsType !== "custom" && atsIdentifier && company.careersUrl) {
-    const existingApproval = await prisma.approvedAtsTenant.findUnique({
-      where: { companyId_atsType_atsIdentifier: { companyId, atsType, atsIdentifier } },
-    });
-    if (!existingApproval) {
+    const alreadyApproved = prefetch.approvedTenants.has(approvalKey(companyId, atsType, atsIdentifier));
+    if (!alreadyApproved) {
       const confirmation = await detectAtsForCareersPage(company.careersUrl);
       if (
         confirmation.atsType === atsType
         && confirmation.atsIdentifier
         && equivalentConfiguredTenant(atsType, atsIdentifier, confirmation.atsIdentifier, company.careersUrl)
       ) {
-        // Preserve an employer-page-proven shard-aware Workday identifier.
         if (atsType === "workday" && confirmation.atsIdentifier !== atsIdentifier) {
           atsIdentifier = confirmation.atsIdentifier;
         }
+        // Rare, one-time write: a company's ATS tenant confirmed for the
+        // first time. Proportional to real state change, not to tick count.
         await prisma.approvedAtsTenant.create({
           data: {
             companyId,
@@ -181,13 +452,34 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
           action: "ats-tenant-unconfirmed",
           detail: `Could not independently confirm that ${company.name}'s own careers page (${company.careersUrl}) links to ${atsType}/${atsIdentifier} — skipping this check cycle rather than trusting an unverified tenant.`,
         });
-        await prisma.company.update({
-          where: { id: companyId },
-          data: { lastCheckedAt: new Date(), nextCheckAt: nextCheckTimeFor(effectivePriority(company, atsType), 0, atsType), lastCheckStatus: "unsupported" },
-        });
         const durationMs = Date.now() - startedAt.getTime();
-        await recordOfficialPoll({ companyId, companyName: company.name, provider: atsType ?? "unknown", startedAt, status: "unsupported", durationMs, configState: "UNTESTED", errorCode: "ATS_TENANT_UNCONFIRMED" });
-        return { companyId, name: company.name, status: "unsupported", newCount: 0, updatedCount: 0, jobsScanned: 0, totalAvailableJobs: 0, engineeringInternshipsFound: 0, missingCount: 0, closedCount: 0, durationMs };
+        return {
+          result: {
+            companyId, name: company.name, status: "unsupported", newCount: 0, updatedCount: 0,
+            jobsScanned: 0, totalAvailableJobs: 0, engineeringInternshipsFound: 0, missingCount: 0, closedCount: 0, durationMs,
+          },
+          companyUpdate: {
+            companyId, atsType: company.atsType, atsIdentifier: company.atsIdentifier,
+            lastCheckedAt: new Date(), nextCheckAt: nextCheckTimeFor(effectivePriority(company, atsType), 0, atsType),
+            activeInternshipCount: company.activeInternshipCount, lastCheckStatus: "unsupported",
+            lastCheckError: company.lastCheckError, consecutiveFailures: company.consecutiveFailures,
+            lastBoardQueryMs: company.lastBoardQueryMs, atsConfigState: company.atsConfigState,
+            atsConfigCheckedAt: new Date(), atsValidatedAt: company.atsValidatedAt,
+            atsConfigErrorCode: company.atsConfigErrorCode, atsConfigEvidence: company.atsConfigEvidence,
+            engineeringActivityTier: company.engineeringActivityTier ?? "C",
+            lastEngineeringInternshipAt: company.lastEngineeringInternshipAt,
+            lastETag: company.lastETag, lastModified: company.lastModified, contentHash: company.contentHash,
+            boardSnapshot: company.boardSnapshot, lastSuccessfulBoardAt: company.lastSuccessfulBoardAt,
+          },
+          reconciliation: null,
+          pollTelemetry: {
+            companyId, companyName: company.name, provider: atsType ?? "unknown", startedAt, finishedAt: new Date(),
+            status: "unsupported", jobsScanned: 0, totalAvailableJobs: 0, engineeringInternshipsFound: 0,
+            newJobs: 0, updatedJobs: 0, missingJobs: 0, closedJobs: 0, durationMs, errorCode: "ATS_TENANT_UNCONFIRMED",
+            configState: "UNTESTED", paginationVerified: false, fullJdJobs: 0, exactTimestampJobs: 0, dateOnlyJobs: 0,
+            relativeParsedJobs: 0, radarFallbackJobs: 0, unknownTimestampJobs: 0,
+          },
+        };
       }
     }
   }
@@ -207,19 +499,13 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
     const summary = notModified
       ? { newCount: 0, updatedCount: 0 }
       : await ingestDiscoveredJobs(relevant, atsType, atsIdentifier, startedAt);
-    const delta = supported && !notModified
-      ? await reconcileOfficialBoardDelta({
-          companyId,
-          companyName: company.name,
-          provider: atsType ?? "unknown",
-          atsTenant: atsIdentifier,
-          previousSnapshot: company.boardSnapshot,
-          currentSourceJobIds: jobs.map((job) => job.sourceJobId),
-        })
-      : { newRequisitions: 0, missing: 0, closed: 0, reconciled: false };
+
+    const reconciliationOutcome = supported && !notModified
+      ? reconciliationBucketsFor(company.name, atsType ?? "unknown", atsIdentifier, company.boardSnapshot, jobs.map((j) => j.sourceJobId), prefetch)
+      : null;
+    const delta = reconciliationOutcome?.delta ?? { newSourceJobIds: [], presentJobIds: [], missingJobIds: [], closeJobIds: [] };
+
     const durationMs = Date.now() - startedAt.getTime();
-    // Quality SLOs describe the relevant jobs users can discover, not every
-    // unrelated row returned by a broad provider search.
     const quality = postingQualityTelemetry(relevant, startedAt);
     const configState: AtsConfigState = supported
       ? (atsType === "custom" ? "CUSTOM" : "VALIDATED")
@@ -229,61 +515,40 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
       : company.lastEngineeringInternshipAt
         ? "B"
         : "C";
-
-    await prisma.company.update({
-      where: { id: companyId },
-      data: {
-        atsType,
-        atsIdentifier,
-        lastCheckedAt: new Date(),
-        nextCheckAt: nextCheckTimeFor(effectivePriority({ ...company, engineeringActivityTier: activityTier }, atsType), 0, atsType),
-        ...(notModified ? {} : { activeInternshipCount: relevant.length }),
-        lastCheckStatus: supported ? "success" : "unsupported",
-        lastCheckError: null,
-        consecutiveFailures: 0,
-        lastBoardQueryMs: durationMs,
-        atsConfigState: configState,
-        atsConfigCheckedAt: new Date(),
-        ...(configState === "VALIDATED" ? { atsValidatedAt: new Date() } : {}),
-        atsConfigErrorCode: null,
-        engineeringActivityTier: activityTier,
-        ...(relevant.length > 0 ? { lastEngineeringInternshipAt: new Date() } : {}),
-        ...(etag !== undefined ? { lastETag: etag } : {}),
-        ...(lastModified !== undefined ? { lastModified } : {}),
-        ...(contentHash !== undefined ? { contentHash } : {}),
-      },
-    });
-    await recordOfficialPoll({
-      companyId,
-      companyName: company.name,
-      provider: atsType ?? "unknown",
-      startedAt,
-      status: notModified ? "not_modified" : supported ? "success" : "unsupported",
-      jobsScanned: jobs.length,
-      totalAvailableJobs: totalAvailableJobs ?? jobs.length,
-      engineeringInternshipsFound: relevant.length,
-      newJobs: summary.newCount,
-      updatedJobs: summary.updatedCount,
-      missingJobs: delta.missing,
-      closedJobs: delta.closed,
-      durationMs,
-      configState,
-      paginationVerified: paginationVerified ?? false,
-      ...quality,
-    });
+    const now = new Date();
 
     return {
-      companyId,
-      name: company.name,
-      status: supported ? "success" : "unsupported",
-      newCount: summary.newCount,
-      updatedCount: summary.updatedCount,
-      jobsScanned: jobs.length,
-      totalAvailableJobs: totalAvailableJobs ?? jobs.length,
-      engineeringInternshipsFound: relevant.length,
-      missingCount: delta.missing,
-      closedCount: delta.closed,
-      durationMs,
+      result: {
+        companyId, name: company.name, status: supported ? "success" : "unsupported",
+        newCount: summary.newCount, updatedCount: summary.updatedCount, jobsScanned: jobs.length,
+        totalAvailableJobs: totalAvailableJobs ?? jobs.length, engineeringInternshipsFound: relevant.length,
+        missingCount: delta.missingJobIds.length, closedCount: delta.closeJobIds.length, durationMs,
+      },
+      companyUpdate: {
+        companyId, atsType, atsIdentifier, lastCheckedAt: now,
+        nextCheckAt: nextCheckTimeFor(effectivePriority({ ...company, engineeringActivityTier: activityTier }, atsType), 0, atsType),
+        activeInternshipCount: notModified ? company.activeInternshipCount : relevant.length,
+        lastCheckStatus: supported ? "success" : "unsupported", lastCheckError: null, consecutiveFailures: 0,
+        lastBoardQueryMs: durationMs, atsConfigState: configState, atsConfigCheckedAt: now,
+        atsValidatedAt: configState === "VALIDATED" ? now : company.atsValidatedAt,
+        atsConfigErrorCode: null, atsConfigEvidence: company.atsConfigEvidence,
+        engineeringActivityTier: activityTier,
+        lastEngineeringInternshipAt: relevant.length > 0 ? now : company.lastEngineeringInternshipAt,
+        lastETag: etag !== undefined ? etag : company.lastETag,
+        lastModified: lastModified !== undefined ? lastModified : company.lastModified,
+        contentHash: contentHash !== undefined ? contentHash : company.contentHash,
+        boardSnapshot: reconciliationOutcome ? JSON.stringify([...new Set(jobs.map((j) => j.sourceJobId).filter(Boolean))].sort()) : company.boardSnapshot,
+        lastSuccessfulBoardAt: reconciliationOutcome ? now : company.lastSuccessfulBoardAt,
+      },
+      reconciliation: reconciliationOutcome?.buckets ?? null,
+      pollTelemetry: {
+        companyId, companyName: company.name, provider: atsType ?? "unknown", startedAt, finishedAt: now,
+        status: notModified ? "not_modified" : supported ? "success" : "unsupported",
+        jobsScanned: jobs.length, totalAvailableJobs: totalAvailableJobs ?? jobs.length,
+        engineeringInternshipsFound: relevant.length, newJobs: summary.newCount, updatedJobs: summary.updatedCount,
+        missingJobs: delta.missingJobIds.length, closedJobs: delta.closeJobIds.length, durationMs,
+        errorCode: null, configState, paginationVerified: paginationVerified ?? false, ...quality,
+      },
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -293,93 +558,234 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
       ? "STALE"
       : failureCode === "ATS_CONFIG_MALFORMED"
         ? "MALFORMED"
-        // A timeout, rate limit, or other transient fetch failure is not
-        // evidence that a previously validated configuration became invalid.
         : company.atsConfigState === "VALIDATED" ? "VALIDATED" : "UNTESTED";
-    await prisma.company.update({
-      where: { id: companyId },
-      data: {
-        lastCheckedAt: new Date(),
-        nextCheckAt: nextCheckTimeForFailure(effectivePriority(company, atsType), consecutiveFailures, atsType, failureCode),
-        lastCheckStatus: "error",
-        lastCheckError: message,
-        consecutiveFailures,
-        atsConfigState: configState,
-        atsConfigCheckedAt: new Date(),
-        atsConfigErrorCode: failureCode,
-        ...(failureCode === "ATS_BOT_WALL" ? {
-          atsConfigEvidence: JSON.stringify({
-            access: "BOT_WALL",
-            observedAt: new Date().toISOString(),
-            action: "STOP_AND_BACKOFF",
-          }),
-        } : {}),
-      },
-    });
+    const now = new Date();
     const durationMs = Date.now() - startedAt.getTime();
-    await recordOfficialPoll({ companyId, companyName: company.name, provider: atsType ?? "unknown", startedAt, status: "error", durationMs, errorCode: failureCode, configState });
-    return { companyId, name: company.name, status: "error", newCount: 0, updatedCount: 0, jobsScanned: 0, totalAvailableJobs: 0, engineeringInternshipsFound: 0, missingCount: 0, closedCount: 0, durationMs, error: message };
+    return {
+      result: {
+        companyId, name: company.name, status: "error", newCount: 0, updatedCount: 0, jobsScanned: 0,
+        totalAvailableJobs: 0, engineeringInternshipsFound: 0, missingCount: 0, closedCount: 0, durationMs, error: message,
+      },
+      companyUpdate: {
+        companyId, atsType: company.atsType, atsIdentifier: company.atsIdentifier, lastCheckedAt: now,
+        nextCheckAt: nextCheckTimeForFailure(effectivePriority(company, atsType), consecutiveFailures, atsType, failureCode),
+        activeInternshipCount: company.activeInternshipCount, lastCheckStatus: "error", lastCheckError: message,
+        consecutiveFailures, lastBoardQueryMs: company.lastBoardQueryMs, atsConfigState: configState, atsConfigCheckedAt: now,
+        atsValidatedAt: company.atsValidatedAt, atsConfigErrorCode: failureCode,
+        atsConfigEvidence: failureCode === "ATS_BOT_WALL"
+          ? JSON.stringify({ access: "BOT_WALL", observedAt: now.toISOString(), action: "STOP_AND_BACKOFF" })
+          : company.atsConfigEvidence,
+        engineeringActivityTier: company.engineeringActivityTier ?? "C",
+        lastEngineeringInternshipAt: company.lastEngineeringInternshipAt,
+        lastETag: company.lastETag, lastModified: company.lastModified, contentHash: company.contentHash,
+        boardSnapshot: company.boardSnapshot, lastSuccessfulBoardAt: company.lastSuccessfulBoardAt,
+      },
+      reconciliation: null,
+      pollTelemetry: {
+        companyId, companyName: company.name, provider: atsType ?? "unknown", startedAt, finishedAt: now,
+        status: "error", jobsScanned: 0, totalAvailableJobs: 0, engineeringInternshipsFound: 0, newJobs: 0,
+        updatedJobs: 0, missingJobs: 0, closedJobs: 0, durationMs, errorCode: failureCode, configState,
+        paginationVerified: false, fullJdJobs: 0, exactTimestampJobs: 0, dateOnlyJobs: 0, relativeParsedJobs: 0,
+        radarFallbackJobs: 0, unknownTimestampJobs: 0,
+      },
+    };
   }
 }
 
-function equivalentConfiguredTenant(
-  atsType: string,
-  configured: string,
-  detected: string,
-  careersUrl: string | null,
-): boolean {
-  if (atsType !== "workday") return configured === detected;
-  const left = parseWorkdayConfiguration(configured, careersUrl);
-  const right = parseWorkdayConfiguration(detected, careersUrl);
-  return Boolean(left && right && left.tenant === right.tenant && left.site === right.site);
+/** try/catch wrapper around `checkCompanyPure`, mirroring `checkCompanySafely` below for the batch path. */
+async function checkCompanyPureSafely(company: CompanyRow, prefetch: CompanyCheckPrefetch): Promise<CompanyCheckOutcome> {
+  try {
+    return await checkCompanyPure(company, prefetch);
+  } catch (error) {
+    const now = new Date();
+    const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
+    return {
+      result: {
+        companyId: company.id, name: company.name, status: "error", newCount: 0, updatedCount: 0, jobsScanned: 0,
+        totalAvailableJobs: 0, engineeringInternshipsFound: 0, missingCount: 0, closedCount: 0, durationMs: 0, error: message,
+      },
+      companyUpdate: {
+        companyId: company.id, atsType: company.atsType, atsIdentifier: company.atsIdentifier, lastCheckedAt: now,
+        nextCheckAt: nextCheckTimeForFailure(effectivePriority(company, company.atsType), company.consecutiveFailures + 1, company.atsType, "UNKNOWN"),
+        activeInternshipCount: company.activeInternshipCount, lastCheckStatus: "error", lastCheckError: message,
+        consecutiveFailures: company.consecutiveFailures + 1, lastBoardQueryMs: company.lastBoardQueryMs,
+        atsConfigState: company.atsConfigState, atsConfigCheckedAt: now, atsValidatedAt: company.atsValidatedAt,
+        atsConfigErrorCode: "UNKNOWN", atsConfigEvidence: company.atsConfigEvidence,
+        engineeringActivityTier: company.engineeringActivityTier ?? "C", lastEngineeringInternshipAt: company.lastEngineeringInternshipAt,
+        lastETag: company.lastETag, lastModified: company.lastModified, contentHash: company.contentHash,
+        boardSnapshot: company.boardSnapshot, lastSuccessfulBoardAt: company.lastSuccessfulBoardAt,
+      },
+      reconciliation: null,
+      pollTelemetry: {
+        companyId: company.id, companyName: company.name, provider: company.atsType ?? "unknown", startedAt: now, finishedAt: now,
+        status: "error", jobsScanned: 0, totalAvailableJobs: 0, engineeringInternshipsFound: 0, newJobs: 0, updatedJobs: 0,
+        missingJobs: 0, closedJobs: 0, durationMs: 0, errorCode: "UNKNOWN", configState: null, paginationVerified: false,
+        fullJdJobs: 0, exactTimestampJobs: 0, dateOnlyJobs: 0, relativeParsedJobs: 0, radarFallbackJobs: 0, unknownTimestampJobs: 0,
+      },
+    };
+  }
 }
 
-async function recordOfficialPoll(args: {
-  companyId: string;
-  companyName: string;
-  provider: string;
-  startedAt: Date;
-  status: "success" | "not_modified" | "unsupported" | "error";
-  jobsScanned?: number;
-  totalAvailableJobs?: number;
-  engineeringInternshipsFound?: number;
-  newJobs?: number;
-  updatedJobs?: number;
-  missingJobs?: number;
-  closedJobs?: number;
-  durationMs: number;
-  errorCode?: string;
-  configState?: AtsConfigState;
-  paginationVerified?: boolean;
-  fullJdJobs?: number;
-  exactTimestampJobs?: number;
-  dateOnlyJobs?: number;
-  relativeParsedJobs?: number;
-  radarFallbackJobs?: number;
-  unknownTimestampJobs?: number;
-}): Promise<void> {
-  await prisma.officialBoardPoll.create({
-    data: {
-      ...args,
-      finishedAt: new Date(),
-      jobsScanned: args.jobsScanned ?? 0,
-      totalAvailableJobs: args.totalAvailableJobs ?? args.jobsScanned ?? 0,
-      engineeringInternshipsFound: args.engineeringInternshipsFound ?? 0,
-      newJobs: args.newJobs ?? 0,
-      updatedJobs: args.updatedJobs ?? 0,
-      missingJobs: args.missingJobs ?? 0,
-      closedJobs: args.closedJobs ?? 0,
-      errorCode: args.errorCode ?? null,
-      configState: args.configState ?? null,
-      paginationVerified: args.paginationVerified ?? false,
-      fullJdJobs: args.fullJdJobs ?? 0,
-      exactTimestampJobs: args.exactTimestampJobs ?? 0,
-      dateOnlyJobs: args.dateOnlyJobs ?? 0,
-      relativeParsedJobs: args.relativeParsedJobs ?? 0,
-      radarFallbackJobs: args.radarFallbackJobs ?? 0,
-      unknownTimestampJobs: args.unknownTimestampJobs ?? 0,
-    },
-  }).catch(() => undefined);
+function companyUpdateValuesRow(u: CompanyUpdateFields) {
+  return Prisma.sql`(${u.companyId}::text, ${u.atsType}::text, ${u.atsIdentifier}::text, ${u.lastCheckedAt}::timestamptz, ${u.nextCheckAt}::timestamptz, ${u.activeInternshipCount}::int, ${u.lastCheckStatus}::text, ${u.lastCheckError}::text, ${u.consecutiveFailures}::int, ${u.lastBoardQueryMs}::int, ${u.atsConfigState}::text, ${u.atsConfigCheckedAt}::timestamptz, ${u.atsValidatedAt}::timestamptz, ${u.atsConfigErrorCode}::text, ${u.atsConfigEvidence}::text, ${u.engineeringActivityTier}::text, ${u.lastEngineeringInternshipAt}::timestamptz, ${u.lastETag}::text, ${u.lastModified}::text, ${u.contentHash}::text, ${u.boardSnapshot}::text, ${u.lastSuccessfulBoardAt}::timestamptz)`;
+}
+
+/**
+ * Writes every Company row in the wave in ONE statement.
+ *
+ * `updateMany` cannot express this: each company gets different values for
+ * the same columns. Postgres's `UPDATE ... FROM (VALUES ...)` is the
+ * standard, safe way to do a heterogeneous multi-row update in one round
+ * trip — every value is passed as a bound parameter (Prisma.sql's tagged
+ * template), never string-interpolated, and every column is explicitly cast
+ * so Postgres never has to guess a VALUES column's type from a batch where
+ * every row happens to be NULL for that column.
+ */
+async function persistCompanyUpdatesBatch(updates: CompanyUpdateFields[]): Promise<void> {
+  if (updates.length === 0) return;
+  const rows = Prisma.join(updates.map(companyUpdateValuesRow));
+  await prisma.$executeRaw`
+    UPDATE "Company" AS c SET
+      "atsType" = v.ats_type,
+      "atsIdentifier" = v.ats_identifier,
+      "lastCheckedAt" = v.last_checked_at,
+      "nextCheckAt" = v.next_check_at,
+      "activeInternshipCount" = v.active_internship_count,
+      "lastCheckStatus" = v.last_check_status,
+      "lastCheckError" = v.last_check_error,
+      "consecutiveFailures" = v.consecutive_failures,
+      "lastBoardQueryMs" = v.last_board_query_ms,
+      "atsConfigState" = v.ats_config_state,
+      "atsConfigCheckedAt" = v.ats_config_checked_at,
+      "atsValidatedAt" = v.ats_validated_at,
+      "atsConfigErrorCode" = v.ats_config_error_code,
+      "atsConfigEvidence" = v.ats_config_evidence,
+      "engineeringActivityTier" = v.engineering_activity_tier,
+      "lastEngineeringInternshipAt" = v.last_engineering_internship_at,
+      "lastETag" = v.last_etag,
+      "lastModified" = v.last_modified,
+      "contentHash" = v.content_hash,
+      "boardSnapshot" = v.board_snapshot,
+      "lastSuccessfulBoardAt" = v.last_successful_board_at,
+      "updatedAt" = now()
+    FROM (VALUES ${rows}) AS v(
+      company_id, ats_type, ats_identifier, last_checked_at, next_check_at, active_internship_count,
+      last_check_status, last_check_error, consecutive_failures, last_board_query_ms, ats_config_state,
+      ats_config_checked_at, ats_validated_at, ats_config_error_code, ats_config_evidence,
+      engineering_activity_tier, last_engineering_internship_at, last_etag, last_modified, content_hash,
+      board_snapshot, last_successful_board_at
+    )
+    WHERE c.id = v.company_id
+  `;
+}
+
+/**
+ * Persists an entire wave of `checkCompanyPure` outcomes in a fixed, small
+ * number of operations, regardless of how many companies were checked:
+ *   1. One raw batch UPDATE for every Company row (see above).
+ *   2. One `createMany` for every OfficialBoardPoll telemetry row.
+ *   3. Up to four wave-wide `job.updateMany` calls for board-delta
+ *      reconciliation — every company's present/first-miss/repeated-miss/
+ *      close job IDs are unioned into one list per bucket before writing,
+ *      since the update DATA for each bucket is identical across companies
+ *      (only the ID set differs), which is exactly what `updateMany`'s
+ *      `id: { in: [...] }` is for.
+ * Per-changed-job writes (new/updated postings) already happened inside
+ * `checkCompanyPure` via `ingestDiscoveredJobs`, proportional to real
+ * content changes — this function only handles the fixed bookkeeping.
+ */
+export async function persistCompanyCheckResults(outcomes: CompanyCheckOutcome[]): Promise<void> {
+  if (outcomes.length === 0) return;
+
+  const now = new Date();
+  const present: string[] = [];
+  const firstMiss: string[] = [];
+  const repeatedMiss: string[] = [];
+  const closed: string[] = [];
+  for (const outcome of outcomes) {
+    if (!outcome.reconciliation) continue;
+    present.push(...outcome.reconciliation.presentJobIds);
+    firstMiss.push(...outcome.reconciliation.firstMissJobIds);
+    repeatedMiss.push(...outcome.reconciliation.repeatedMissJobIds);
+    closed.push(...outcome.reconciliation.closeJobIds);
+  }
+
+  await Promise.all([
+    persistCompanyUpdatesBatch(outcomes.map((o) => o.companyUpdate)),
+    prisma.officialBoardPoll.createMany({ data: outcomes.map((o) => o.pollTelemetry) }),
+    present.length > 0
+      ? prisma.job.updateMany({ where: { id: { in: present } }, data: { consecutiveBoardMisses: 0, boardMissingSince: null } })
+      : Promise.resolve(),
+    firstMiss.length > 0
+      ? prisma.job.updateMany({ where: { id: { in: firstMiss } }, data: { consecutiveBoardMisses: { increment: 1 }, boardMissingSince: now } })
+      : Promise.resolve(),
+    repeatedMiss.length > 0
+      ? prisma.job.updateMany({ where: { id: { in: repeatedMiss } }, data: { consecutiveBoardMisses: { increment: 1 } } })
+      : Promise.resolve(),
+    closed.length > 0
+      ? prisma.job.updateMany({
+          where: { id: { in: closed } },
+          data: {
+            verificationStatus: "Closed",
+            reasonCode: "OFFICIAL_POSTING_REMOVED",
+            verificationReason: "Absent from two consecutive successful official board snapshots.",
+            classification: "CONFIRMED_CLOSED",
+            classificationReason: "Removed from the official employer board after repeated successful checks.",
+            activeFeed: false,
+            closedAt: now,
+          },
+        })
+      : Promise.resolve(),
+  ]);
+}
+
+/**
+ * Single-company entry point — the admin "check now" route
+ * (`/api/companies/[id]/check`) and nothing else. Fetches its own prefetch
+ * (wave of one) and persists immediately; there is no cross-company batching
+ * to gain from a single check, so this is the simplest correct path, not a
+ * shortcut around the batch architecture above.
+ */
+export async function checkCompany(companyId: string): Promise<CompanyCheckResult> {
+  const company = await prisma.company.findUnique({ where: { id: companyId }, select: COMPANY_ROW_SELECT });
+  if (!company) throw new Error("Company not found");
+  const prefetch = await prefetchForCompanyCheckWave([company]);
+  const outcome = await checkCompanyPure(company, prefetch);
+  await persistCompanyCheckResults([outcome]);
+  return outcome.result;
+}
+
+/**
+ * One employer check that can never take the whole sweep with it.
+ *
+ * Kept for compatibility — src/lib/cron/lane.test.ts exercises this directly
+ * with a synthetic `check` function, and it remains a valid generic
+ * "never let one item's exception break the batch" wrapper around anything
+ * shaped like `(companyId) => Promise<CompanyCheckResult>`, including the
+ * single-company `checkCompany` above.
+ */
+export async function checkCompanySafely(
+  company: { id: string; name?: string },
+  check: (companyId: string) => Promise<CompanyCheckResult> = checkCompany,
+): Promise<CompanyCheckResult> {
+  try {
+    return await check(company.id);
+  } catch (error) {
+    return {
+      companyId: company.id,
+      name: company.name ?? company.id,
+      status: "error",
+      newCount: 0,
+      updatedCount: 0,
+      jobsScanned: 0,
+      totalAvailableJobs: 0,
+      engineeringInternshipsFound: 0,
+      missingCount: 0,
+      closedCount: 0,
+      durationMs: 0,
+      error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+    };
+  }
 }
 
 const ATS_API_DOMAINS: Record<string, string> = {
@@ -415,38 +821,55 @@ async function waitForDomainSlot(domain: string): Promise<void> {
 }
 
 /**
- * One employer check that can never take the whole sweep with it.
+ * Checks a batch of companies concurrently (respecting per-domain pacing)
+ * against an ALREADY-PREFETCHED index, without persisting anything.
  *
- * checkCompany catches errors from the employer's own board, but not from its
- * final bookkeeping write. A measured maintenance run lost an entire
- * 340-employer sweep to a single `prisma.company.update()` failing with
- * PostgreSQL 08P01 — a pooled-connection prepared-statement collision that has
- * nothing to do with the employer being checked. A sweep is a batch of
- * independent units of work, so one failing unit is recorded as a failure and
- * the rest continue.
+ * Split out from `runCompanyCheckWave` so a multi-wave caller
+ * (`runCompanyDiscoverySweep`, `runTieredDuePoll`) can prefetch once and
+ * persist once for an entire run of many waves, instead of once per wave —
+ * see those functions' own cost-formula documentation for why that matters
+ * at maintenance-sweep scale.
  */
-export async function checkCompanySafely(
-  company: { id: string; name?: string },
-  check: (companyId: string) => Promise<CompanyCheckResult> = checkCompany,
-): Promise<CompanyCheckResult> {
-  try {
-    return await check(company.id);
-  } catch (error) {
-    return {
-      companyId: company.id,
-      name: company.name ?? company.id,
-      status: "error",
-      newCount: 0,
-      updatedCount: 0,
-      jobsScanned: 0,
-      totalAvailableJobs: 0,
-      engineeringInternshipsFound: 0,
-      missingCount: 0,
-      closedCount: 0,
-      durationMs: 0,
-      error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
-    };
-  }
+async function checkCompaniesWithPrefetch(
+  companies: CompanyRow[],
+  prefetch: CompanyCheckPrefetch,
+): Promise<CompanyCheckOutcome[]> {
+  return Promise.all(
+    companies.map(async (company) => {
+      await waitForDomainSlot(domainForRateLimit(company));
+      return checkCompanyPureSafely(company, prefetch);
+    }),
+  );
+}
+
+/**
+ * Checks one wave of companies concurrently (respecting per-domain pacing)
+ * and persists that wave in one batch — see `persistCompanyCheckResults`.
+ *
+ * Cost formula for a wave of N companies where C of them actually changed
+ * something (new/updated/closed postings):
+ *   Prisma operations ≈ FIXED_WAVE_OPS + (ops per changed job × jobs changed)
+ * where FIXED_WAVE_OPS is small and constant regardless of N:
+ *   1 (prefetch approvedTenants) + 1 (prefetch trackedJobs) +
+ *   1 (batch Company update) + 1 (officialBoardPoll createMany) +
+ *   up to 4 (wave-wide job.updateMany for board-delta reconciliation,
+ *   0 when nothing to reconcile) ≈ 3-8 operations total for the wave.
+ * Per-company operations for a company with nothing new: 0 — its check is
+ * pure network I/O plus in-memory computation until the batch persist above.
+ * Per-changed-job operations: ~2-3 (upsertClassifiedAtsJob +
+ * promoteCanonicalDirectJob), proportional to real new/updated postings, not
+ * to how many companies were merely checked.
+ *
+ * Used directly by `runCompanyDiscoveryBatch` (a single wave). Multi-wave
+ * callers use `checkCompaniesWithPrefetch` + one shared persist instead — see
+ * `runCompanyDiscoverySweep` / `runTieredDuePoll`.
+ */
+export async function runCompanyCheckWave(companies: CompanyRow[]): Promise<CompanyCheckResult[]> {
+  if (companies.length === 0) return [];
+  const prefetch = await prefetchForCompanyCheckWave(companies);
+  const outcomes = await checkCompaniesWithPrefetch(companies, prefetch);
+  await persistCompanyCheckResults(outcomes);
+  return outcomes.map((o) => o.result);
 }
 
 export async function runCompanyDiscoveryBatch(limit = 5): Promise<{ checked: number; results: CompanyCheckResult[] }> {
@@ -458,14 +881,8 @@ export async function runCompanyDiscoveryBatch(limit = 5): Promise<{ checked: nu
     },
     take: 1000,
     select: {
-      id: true,
-      atsType: true,
-      careersUrl: true,
-      priority: true,
-      csvEeCpeFit: true,
-      engineeringActivityTier: true,
+      ...COMPANY_ROW_SELECT,
       nextCheckAt: true,
-      lastCheckedAt: true,
     },
   });
   const tierRank = { A: 0, B: 1, C: 2 } as const;
@@ -480,12 +897,7 @@ export async function runCompanyDiscoveryBatch(limit = 5): Promise<{ checked: nu
     })
     .slice(0, limit);
 
-  const results: CompanyCheckResult[] = [];
-  for (const company of due) {
-    await waitForDomainSlot(domainForRateLimit(company));
-    results.push(await checkCompanySafely(company));
-    await new Promise((resolve) => setTimeout(resolve, 300));
-  }
+  const results = await runCompanyCheckWave(due);
   return { checked: results.length, results };
 }
 
@@ -497,7 +909,25 @@ export async function runCompanyDiscoveryBatch(limit = 5): Promise<{ checked: nu
  * least-recently checked employers. Work is processed in concurrent waves and
  * stops before the caller's serverless time budget is exhausted. The next run
  * naturally resumes with the oldest remaining employers because every company
- * check updates lastCheckedAt.
+ * check updates lastCheckedAt. The whole sweep — every wave — is
+ * persisted in one batch after the wave loop ends (see the cost-formula
+ * comment on the function below), whether the loop completed or stopped
+ * early for the time budget; stopping early never loses already-computed
+ * work, it just means fewer outcomes are in that one batch.
+ */
+/**
+ * Cost formula for a whole sweep of W waves covering N companies total
+ * (this is the shape maintenance uses, where N can be up to 1000):
+ *   Prisma operations ≈ FIXED_SWEEP_OPS + (ops per changed job × jobs changed)
+ * where FIXED_SWEEP_OPS is small and constant regardless of N or W — the
+ * prefetch and the persist below each run exactly ONCE for the entire sweep,
+ * not once per wave:
+ *   1 (due-company fetch) + 1 (prefetch approvedTenants) +
+ *   1 (prefetch trackedJobs) + 1 (batch Company update) +
+ *   1 (officialBoardPoll createMany) + up to 4 (wave-wide job.updateMany for
+ *   board-delta reconciliation) ≈ 5-9 operations for the WHOLE sweep, whether
+ *   it processes 5 companies or 1000. This is what keeps a full maintenance
+ *   sweep's ATS-polling cost from scaling with catalog size or wave count.
  */
 export async function runCompanyDiscoverySweep(options: {
   limit?: number;
@@ -516,21 +946,21 @@ export async function runCompanyDiscoverySweep(options: {
       { name: "asc" },
     ],
     take: limit,
-    select: { id: true, atsType: true, careersUrl: true },
+    select: COMPANY_ROW_SELECT,
   });
 
-  const results: CompanyCheckResult[] = [];
+  const prefetch = await prefetchForCompanyCheckWave(companies);
+  const outcomes: CompanyCheckOutcome[] = [];
   for (let start = 0; start < companies.length; start += concurrency) {
     if (Date.now() - startedAt >= maxRuntimeMs) break;
     const wave = companies.slice(start, start + concurrency);
-    const waveResults = await Promise.all(
-      wave.map(async (company) => {
-        await waitForDomainSlot(domainForRateLimit(company));
-        return checkCompanySafely(company);
-      }),
-    );
-    results.push(...waveResults);
+    outcomes.push(...(await checkCompaniesWithPrefetch(wave, prefetch)));
   }
+  // Persisted once for the whole sweep — including whatever was completed
+  // before an early stop for the time budget, so nothing already checked is
+  // ever lost, exactly as the previous per-wave persistence guaranteed.
+  await persistCompanyCheckResults(outcomes);
+  const results = outcomes.map((o) => o.result);
 
   return {
     checked: results.length,
@@ -630,6 +1060,9 @@ export function selectDueByTier(
  * inside a hard runtime budget. This is what makes a five-minute hosted lane
  * possible: it does bounded, incremental work rather than a whole-registry
  * sweep, and it stops itself well before the platform's function timeout.
+ * The whole poll — every wave — is persisted in one batch after the wave
+ * loop ends; see runCompanyDiscoverySweep's cost-formula comment for the
+ * same reasoning applied here.
  */
 export async function runTieredDuePoll(options: {
   tiers: PollingTier[];
@@ -651,31 +1084,31 @@ export async function runTieredDuePoll(options: {
     },
     take: 2000,
     select: {
-      id: true,
-      atsType: true,
-      careersUrl: true,
-      priority: true,
-      csvEeCpeFit: true,
-      engineeringActivityTier: true,
+      ...COMPANY_ROW_SELECT,
       nextCheckAt: true,
-      lastCheckedAt: true,
     },
   });
 
-  const due = selectDueByTier(candidates, { tiers: options.tiers, limit, now: options.now });
+  // selectDueByTier's return type is narrowed to TieredPollCandidate (its own
+  // small, pure/testable contract) — map back to the full CompanyRow objects
+  // already fetched above rather than re-fetching by id.
+  const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+  const due = selectDueByTier(candidates, { tiers: options.tiers, limit, now: options.now })
+    .map((candidate) => candidateById.get(candidate.id))
+    .filter((candidate): candidate is (typeof candidates)[number] => Boolean(candidate));
 
-  const results: CompanyCheckResult[] = [];
+  // Prefetched and persisted once for the whole tiered poll — see
+  // runCompanyDiscoverySweep's cost-formula comment above; the same
+  // reasoning applies here.
+  const prefetch = await prefetchForCompanyCheckWave(due);
+  const outcomes: CompanyCheckOutcome[] = [];
   for (let start = 0; start < due.length; start += concurrency) {
     if (Date.now() - startedAt >= maxRuntimeMs) break;
     const wave = due.slice(start, start + concurrency);
-    const waveResults = await Promise.all(
-      wave.map(async (company) => {
-        await waitForDomainSlot(domainForRateLimit(company));
-        return checkCompanySafely(company);
-      }),
-    );
-    results.push(...waveResults);
+    outcomes.push(...(await checkCompaniesWithPrefetch(wave, prefetch)));
   }
+  await persistCompanyCheckResults(outcomes);
+  const results = outcomes.map((o) => o.result);
 
   return {
     checked: results.length,

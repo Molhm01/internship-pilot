@@ -85,11 +85,24 @@ export function startBulkScoreStatusPolling(options: {
   onStatus: (status: BulkInitialMatchStatus) => void;
   onError?: (message: string) => void;
   intervalMs?: number;
+  /**
+   * Poll cadence while idle (nothing queued or running), if
+   * `keepWatchingWhenIdle` is set — a server-started queue still gets
+   * noticed without a manual reload, just less eagerly than while work is
+   * actually in flight. Defaults to 6x the active interval.
+   *
+   * Database-usage audit (pass #3): this endpoint runs six `count()`
+   * queries. At the previous fixed 15s cadence with `keepWatchingWhenIdle`,
+   * one open Jobs tab with nothing to score cost 6 ops every 15s — 1,440
+   * ops/hour — indefinitely, for a queue that was empty the whole time.
+   */
+  idleIntervalMs?: number;
   visibility?: VisibilitySource;
   /** Keep checking for a server-started queue even when the previous poll was idle. */
   keepWatchingWhenIdle?: boolean;
 }): () => void {
   const intervalMs = Math.max(5_000, options.intervalMs ?? 5_000);
+  const idleIntervalMs = Math.max(intervalMs, options.idleIntervalMs ?? intervalMs * 6);
   const visibility = options.visibility ?? document;
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -100,10 +113,10 @@ export function startBulkScoreStatusPolling(options: {
     timer = null;
   };
 
-  const scheduleNext = () => {
+  const scheduleNext = (delayMs: number) => {
     clearTimer();
     if (!stopped && visibility.visibilityState !== "hidden") {
-      timer = setTimeout(() => void tick(), intervalMs);
+      timer = setTimeout(() => void tick(), delayMs);
     }
   };
 
@@ -114,13 +127,16 @@ export function startBulkScoreStatusPolling(options: {
       const status = await options.fetchStatus();
       if (stopped) return;
       options.onStatus(status);
-      if (options.keepWatchingWhenIdle || status.queued > 0 || status.running > 0) {
-        scheduleNext();
+      const active = status.queued > 0 || status.running > 0;
+      if (active) {
+        scheduleNext(intervalMs);
+      } else if (options.keepWatchingWhenIdle) {
+        scheduleNext(idleIntervalMs);
       }
     } catch (error) {
       if (!stopped) {
         options.onError?.(error instanceof Error ? error.message : "Scoring progress is unavailable.");
-        scheduleNext();
+        scheduleNext(idleIntervalMs);
       }
     } finally {
       inFlight = false;
@@ -133,7 +149,7 @@ export function startBulkScoreStatusPolling(options: {
   };
 
   visibility.addEventListener("visibilitychange", onVisibilityChange);
-  scheduleNext();
+  scheduleNext(intervalMs);
   return () => {
     stopped = true;
     clearTimer();
