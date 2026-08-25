@@ -37,14 +37,25 @@ import type { ProfileRow } from "@/lib/applications/profileSnapshot";
  * would break that at the source.
  */
 export async function applicationProfileForUser(userId: string): Promise<ProfileRow | null> {
-  const [profile, preferences, sensitive, education] = await Promise.all([
-    prisma.userProfile.findUnique({ where: { userId } }),
-    prisma.applicationPreferences.findUnique({ where: { userId } }),
-    prisma.sensitiveAnswerPreferences.findUnique({ where: { userId } }),
-    // The current or most recent course of study answers a form's "Degree",
-    // "Major", "GPA" and "Graduation date" boxes.
-    prisma.education.findFirst({ where: { userId }, orderBy: { sortOrder: "asc" } }),
-  ]);
+  // The four source rows are all reached from User by a 1:1 or 1:many
+  // relation, so one relational read replaces what used to be four
+  // independent round trips (pass #7, item 3) — same data, same shape,
+  // nothing about the assembled ProfileRow below changes.
+  const owner = await prisma.user.findUnique({
+    where: { id: userId },
+    include: {
+      profile: true,
+      applicationPreferences: true,
+      sensitivePreferences: true,
+      // The current or most recent course of study answers a form's
+      // "Degree", "Major", "GPA" and "Graduation date" boxes.
+      educations: { orderBy: { sortOrder: "asc" }, take: 1 },
+    },
+  });
+  const profile = owner?.profile ?? null;
+  const preferences = owner?.applicationPreferences ?? null;
+  const sensitive = owner?.sensitivePreferences ?? null;
+  const education = owner?.educations[0] ?? null;
 
   // No profile row and no preferences means this account has entered nothing.
   // That is a real state — a brand-new user — and the callers already handle a

@@ -632,8 +632,18 @@ const HYDRATION_JOB_SELECT = {
  * path is the correct, already-safe response to "no usable JD was found,"
  * not an exception.
  */
-export async function hydrateJobDescriptionForApply(jobId: string): Promise<{ hydrated: boolean }> {
-  const job = await prisma.job.findUnique({ where: { id: jobId }, select: HYDRATION_JOB_SELECT });
+/**
+ * `preloadedJob` lets a caller that already holds the row (enqueueApplication
+ * loads the full Job before deciding document strategy) skip the read below —
+ * every field this function needs is already a plain scalar on that row, so
+ * there is nothing left to fetch. Any subset of `HydrationJob`'s fields not
+ * already on the caller's object still forces the normal read.
+ */
+export async function hydrateJobDescriptionForApply(
+  jobId: string,
+  preloadedJob?: HydrationJob,
+): Promise<{ hydrated: boolean }> {
+  const job = preloadedJob ?? await prisma.job.findUnique({ where: { id: jobId }, select: HYDRATION_JOB_SELECT });
   if (!job) return { hydrated: false };
   if (hasUsableJobDescription(job)) return { hydrated: false };
   try {

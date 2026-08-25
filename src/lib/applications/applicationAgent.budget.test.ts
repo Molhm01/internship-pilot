@@ -186,6 +186,13 @@ describe.skipIf(!DATABASE_AVAILABLE)("application-agent lifecycle operation budg
     await prisma.generatedDocument.create({
       data: { userId, jobId: job.id, type: "resume", storagePath: resumePath, qaStatus: "pass", qaIssues: "[]", identityVerified: true, tailoringStatus: "MASTER_RESUME_FALLBACK", documentFingerprint: fingerprint },
     });
+    // Fixture scaffolding, not part of the production enqueue request path — a
+    // job and its documents already exist in the catalog before a user clicks
+    // Apply. Resetting here means every caller's own measurement starts clean
+    // regardless of what it does next, instead of silently folding this
+    // setup's ~10 ops into the "enqueue" number (a real bug pass #6's own
+    // measurement had: see pass #7's TRACE test).
+    resetPrismaOperationCounter();
     return job.id;
   }
 
@@ -197,10 +204,32 @@ describe.skipIf(!DATABASE_AVAILABLE)("application-agent lifecycle operation budg
     });
   }
 
+  it("TRACE. exact ordered Prisma call sequence for enqueueApplication (pass #7, item 1)", async () => {
+    const db = await import("@/lib/db");
+    const jobId = await makeJob("TraceEnqueue");
+    db.resetPrismaOperationTrace();
+    resetPrismaOperationCounter();
+    const enqueued = await enqueueApplication(jobId, userId);
+    const trace = db.getPrismaOperationTrace();
+    expect(enqueued.queued).toBe(true);
+    console.log(`[trace] enqueueApplication ordered Prisma calls (${trace.length} total):`);
+    trace.forEach((call, index) => console.log(`  ${index + 1}. ${call}`));
+    // The ordered trace is only populated when PRISMA_OPERATION_TRACE=1 is
+    // also set (see src/lib/db.ts) — the counter itself always runs under
+    // PRISMA_OPERATION_BUDGET_TRACKING alone, so only assert the two agree
+    // when tracing was actually turned on for this run.
+    if (trace.length > 0) expect(trace.length).toBe(getPrismaOperationCount());
+  });
+
   it("A. a full successful application (enqueue + claim + fill to FINAL_REVIEW)", async () => {
+    const db = await import("@/lib/db");
     const jobId = await makeJob("Successful");
+    db.resetPrismaOperationTrace();
     const enqueued = await enqueueApplication(jobId, userId);
     const enqueueOps = getPrismaOperationCount();
+    const enqueueTrace = db.getPrismaOperationTrace();
+    console.log(`[trace] test-A enqueueApplication ordered Prisma calls (${enqueueTrace.length} total):`);
+    enqueueTrace.forEach((call, index) => console.log(`  ${index + 1}. ${call}`));
     expect(enqueued.queued).toBe(true);
 
     resetPrismaOperationCounter();
@@ -217,9 +246,10 @@ describe.skipIf(!DATABASE_AVAILABLE)("application-agent lifecycle operation budg
     expect(run?.currentStep).toBe("FINAL_REVIEW");
 
     console.log(`[budget] A. successful application: enqueue=${enqueueOps} claim=${claimOps} process=${processOps} total=${enqueueOps + claimOps + processOps}`);
-    // Regression guard, not a target: this pass measures the real cost of the
-    // existing state machine rather than prescribing a new one (item 3).
-    expect(enqueueOps + claimOps + processOps).toBeLessThanOrEqual(120);
+    // Pass #7 target: <=55/application (stretch <=50). Real measured cost is
+    // 48; the bound below is a regression guard with headroom, not the
+    // target itself — see the pass #7 report for the exact number.
+    expect(enqueueOps + claimOps + processOps).toBeLessThanOrEqual(70);
   });
 
   it("B. CAPTCHA pause (needs_user_action) costs no more than a successful run", async () => {
@@ -234,7 +264,7 @@ describe.skipIf(!DATABASE_AVAILABLE)("application-agent lifecycle operation budg
 
     expect(result.status).toBe("needs_user_action");
     console.log(`[budget] B. CAPTCHA pause: process=${processOps}`);
-    expect(processOps).toBeLessThanOrEqual(80);
+    expect(processOps).toBeLessThanOrEqual(55);
   });
 
   it("C. a failed application (adapter throws)", async () => {
@@ -251,7 +281,7 @@ describe.skipIf(!DATABASE_AVAILABLE)("application-agent lifecycle operation budg
 
     expect(result.status).toBe("failed");
     console.log(`[budget] C. failed application: process=${processOps}`);
-    expect(processOps).toBeLessThanOrEqual(80);
+    expect(processOps).toBeLessThanOrEqual(55);
     return { runId: enqueued.runId };
   });
 
@@ -281,25 +311,31 @@ describe.skipIf(!DATABASE_AVAILABLE)("application-agent lifecycle operation budg
 
     expect(result.status).toBe("filled");
     console.log(`[budget] D. failed+retry: retry=${retryOps} claim=${claimOps} process=${processOps} total=${retryOps + claimOps + processOps}`);
-    expect(retryOps + claimOps + processOps).toBeLessThanOrEqual(120);
+    expect(retryOps + claimOps + processOps).toBeLessThanOrEqual(70);
   });
 
   it("E. ten successful applications cost roughly 10x one, not more", { timeout: 30_000 }, async () => {
-    resetPrismaOperationCounter();
+    // makeJob resets the counter internally (fixture scaffolding must not be
+    // attributed to enqueue), so this loop tracks its own running total
+    // across iterations instead of reading the global counter only once at
+    // the end — reading it only at the end would silently keep just the
+    // last iteration's count, since each makeJob() call zeroes it again.
+    let totalOps = 0;
     for (let i = 0; i < 10; i += 1) {
       const jobId = await makeJob(`Batch${i}`);
+      resetPrismaOperationCounter();
       const enqueued = await enqueueApplication(jobId, userId);
       await claimRun(enqueued.runId);
       fillOutcome = { status: "filled", answers: {} };
       const result = await processApplicationRun(enqueued.runId, fakeBrowserManager());
       expect(result.status).toBe("filled");
+      totalOps += getPrismaOperationCount();
     }
-    const totalOps = getPrismaOperationCount();
     console.log(`[budget] E. ten successful applications: total=${totalOps} avg-per-application=${(totalOps / 10).toFixed(1)}`);
     // No shared per-application state to amortize here (each application is a
     // distinct job/run), so the honest bound is a generous multiple of a
     // single run's cost rather than a sub-linear one.
-    expect(totalOps).toBeLessThanOrEqual(1000);
+    expect(totalOps).toBeLessThanOrEqual(600);
   });
 
   it("F. an idle worker daemon issues zero Prisma operations while there is nothing queued", async () => {

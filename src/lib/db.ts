@@ -95,6 +95,25 @@ export function getPrismaOperationCount(): number {
 }
 
 /**
+ * Ordered per-call trace (database-usage repair, pass #7 — item 1).
+ *
+ * Opt-in via PRISMA_OPERATION_TRACE=1, on top of the budget counter above.
+ * This exists purely to produce the exact ordered `model.operation` trace
+ * a measurement pass needs to attribute cost to a specific code path — it is
+ * never read by production code and costs nothing unless explicitly enabled.
+ */
+let operationTrace: string[] = [];
+const OPERATION_TRACE_ENABLED = process.env.PRISMA_OPERATION_TRACE === "1";
+
+export function resetPrismaOperationTrace(): void {
+  operationTrace = [];
+}
+
+export function getPrismaOperationTrace(): string[] {
+  return operationTrace;
+}
+
+/**
  * Forces the next `prisma.*` call to rebuild the cached client.
  *
  * Test-only. The client is cached on `globalThis` per process/module
@@ -130,8 +149,9 @@ function createPrismaClient() {
     name: "operation-budget-counter",
     query: {
       $allModels: {
-        async $allOperations({ query, args }) {
+        async $allOperations({ model, operation, query, args }) {
           operationCount += 1;
+          if (OPERATION_TRACE_ENABLED) operationTrace.push(`${model}.${operation}`);
           return query(args);
         },
       },
@@ -150,6 +170,7 @@ function createPrismaClient() {
     const original = (extended[method] as (...args: unknown[]) => unknown).bind(extended);
     (extended as unknown as Record<string, unknown>)[method] = (...args: unknown[]) => {
       operationCount += 1;
+      if (OPERATION_TRACE_ENABLED) operationTrace.push(`$raw.${method}`);
       return original(...args);
     };
   }

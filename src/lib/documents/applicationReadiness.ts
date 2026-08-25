@@ -58,7 +58,7 @@ const inFlightReadiness = new Map<string, Promise<ApplicationDocumentReadiness>>
 export function ensureApplicationDocuments(
   jobId: string,
   userId: string,
-  options: { includeCoverLetter: boolean },
+  options: { includeCoverLetter: boolean; fingerprint?: string },
 ): Promise<ApplicationDocumentReadiness> {
   const key = `${userId}:${jobId}:${options.includeCoverLetter}`;
   const existing = inFlightReadiness.get(key);
@@ -73,9 +73,14 @@ export function ensureApplicationDocuments(
 async function ensureApplicationDocumentsUncoalesced(
   jobId: string,
   userId: string,
-  options: { includeCoverLetter: boolean },
+  options: { includeCoverLetter: boolean; fingerprint?: string },
 ): Promise<ApplicationDocumentReadiness> {
-  const fingerprint = await computeDocumentFingerprint(jobId, userId);
+  // A caller that already computed the current fingerprint (enqueueApplication
+  // does, to decide document strategy before this ever runs) passes it in so
+  // the same freshness inputs are not read from the database a second time —
+  // computeDocumentFingerprint alone costs 7 Prisma operations. Any caller
+  // without one already computed still gets it here, unchanged.
+  const fingerprint = options.fingerprint ?? await computeDocumentFingerprint(jobId, userId);
   const existing = await prisma.generatedDocument.findMany({
     where: {
       jobId,

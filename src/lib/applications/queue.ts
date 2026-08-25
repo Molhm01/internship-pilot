@@ -104,7 +104,10 @@ export async function enqueueApplication(
   // unreachable official source cannot make this call hang.
   let jobForCompleteness: { description: string; jobResponsibilities: string | null; jobQualifications: string | null } = job;
   if (jobDescriptionCompleteness(job) !== "complete") {
-    const { hydrated } = await hydrateJobDescriptionForApply(jobId).catch(() => ({ hydrated: false }));
+    // `job` here already carries every scalar field hydrateJobDescriptionForApply
+    // needs — passing it skips that function's own redundant re-read of the
+    // same row (pass #7, item 5).
+    const { hydrated } = await hydrateJobDescriptionForApply(jobId, job).catch(() => ({ hydrated: false }));
     if (hydrated) {
       const refreshed = await prisma.job.findUnique({
         where: { id: jobId },
@@ -140,8 +143,8 @@ export async function enqueueApplication(
     // Resume only here: a cover letter is optional (below), and a cover
     // letter generation failure must never cost the applicant an otherwise
     // good, current resume.
-    currentFingerprint = await computeDocumentFingerprint(jobId, userId);
-    const ready = await ensureApplicationDocuments(jobId, userId, { includeCoverLetter: false });
+    currentFingerprint = await computeDocumentFingerprint(jobId, userId, job);
+    const ready = await ensureApplicationDocuments(jobId, userId, { includeCoverLetter: false, fingerprint: currentFingerprint });
     resume = ready.documents.find((document) => document.type === "resume");
   } catch {
     // Deterministic generation was not possible right now (no AI match yet,

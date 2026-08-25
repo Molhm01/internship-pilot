@@ -50,13 +50,39 @@ async function sourceRevision(): Promise<string> {
   return hash.digest("hex");
 }
 
-/** Computes the exact freshness key used for both reuse and extension transfer. */
-export async function computeDocumentFingerprint(jobId: string, userId: string): Promise<string> {
+type FingerprintJob = {
+  id: string;
+  matchResults: Array<{
+    id: string;
+    eligibility: string;
+    score: number;
+    skillsSupported: string;
+    skillsNeedConfirmation: string;
+    skillsNeverAdd: string;
+    tailoringPreview: string | null;
+    factsUsed: string;
+    origin: string | null;
+    createdAt: Date;
+  }>;
+} & Parameters<typeof matchJobDescriptionText>[0];
+
+/**
+ * Computes the exact freshness key used for both reuse and extension transfer.
+ *
+ * `preloadedJob` lets a caller that already holds the job (with the same
+ * per-user `matchResults` shape this function needs) skip the read below —
+ * enqueueApplication does, since it already loaded the job with its own
+ * current-user matchResults before ever computing a fingerprint (pass #7,
+ * item 2).
+ */
+export async function computeDocumentFingerprint(jobId: string, userId: string, preloadedJob?: FingerprintJob): Promise<string> {
   const [job, profile, facts, latestMasterResume, masterResumeRevision] = await Promise.all([
-    prisma.job.findUnique({
-      where: { id: jobId },
-      include: { matchResults: { where: { userId }, orderBy: { createdAt: "desc" }, take: 1 } },
-    }),
+    preloadedJob
+      ? Promise.resolve(preloadedJob)
+      : prisma.job.findUnique({
+          where: { id: jobId },
+          include: { matchResults: { where: { userId }, orderBy: { createdAt: "desc" }, take: 1 } },
+        }),
     applicationProfileForUser(userId),
     prisma.resumeFact.findMany({
       where: { userId, status: { in: ["approved", "edited"] } },
