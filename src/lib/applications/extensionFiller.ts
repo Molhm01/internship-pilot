@@ -37,7 +37,7 @@ type ExtensionDetail = {
 };
 
 function absolute(relativePath: string): string {
-  return path.isAbsolute(relativePath) ? relativePath : path.join(process.cwd(), relativePath);
+  return path.isAbsolute(relativePath) ? relativePath : path.join(/* turbopackIgnore: true */ process.cwd(), relativePath);
 }
 
 function parseDetail(raw: string | null): ExtensionDetail {
