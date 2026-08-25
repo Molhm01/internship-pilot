@@ -1,23 +1,30 @@
 name: Hosted job-ingestion lanes
 
-# Cadence, and why it is here rather than only in vercel.json.
+# Cadence, and why it is here rather than in vercel.json or QStash.
 #
-# The product goal is that a newly posted internship shows up in Discover
-# within minutes. Vercel's Hobby plan caps cron at two jobs, each at most once
-# per day, so the platform alone cannot express a five-minute lane — vercel.json
-# therefore declares only the two daily lanes it is allowed to, and this
-# workflow drives the real cadence. Moving the project to a Vercel plan with
-# minute-level cron would let the same three routes be scheduled natively; the
-# routes themselves need no change.
+# GitHub Actions is the ONE production scheduler for job ingestion. There must
+# never be a second scheduler (Vercel cron, QStash, or anything else) running
+# these same routes on an overlapping cadence — that duplication (a QStash
+# */5 schedule racing this workflow's own */5 "fresh" lane, plus vercel.json
+# separately re-triggering the daily lanes GitHub Actions already owns) was
+# the largest single driver of exceeding the Prisma Postgres Free-plan
+# database-operations budget. See the DATABASE USAGE DIAGNOSTIC /
+# DATABASE EFFICIENCY REPAIR reports for the full accounting.
+#
+# Cadence was deliberately widened as part of that repair:
+#   fresh       every 10 minutes (was 5)  — still fast enough that a new
+#                                            posting shows up within minutes
+#   standard    every 60 minutes (was every 30 minutes)
+#   maintenance once daily (unchanged)
 #
 # GitHub's own floor is five minutes, and scheduled runs are queued rather than
 # guaranteed on time — under load a tick can be late or dropped. That is an
-# acknowledged limit of this fallback, not a claim of five-minute precision.
+# acknowledged limit of this fallback, not a claim of exact-minute precision.
 
 on:
   schedule:
-    - cron: "*/5 * * * *"    # LANE A — fresh
-    - cron: "12,42 * * * *"  # LANE B — standard
+    - cron: "*/10 * * * *"   # LANE A — fresh
+    - cron: "27 * * * *"     # LANE B — standard
     - cron: "25 8 * * *"     # LANE C — maintenance
   workflow_dispatch:
     inputs:
@@ -37,7 +44,7 @@ env:
 jobs:
   fresh:
     name: Lane A — fresh opportunities
-    if: github.event.schedule == '*/5 * * * *' || github.event.inputs.lane == 'fresh'
+    if: github.event.schedule == '*/10 * * * *' || github.event.inputs.lane == 'fresh'
     runs-on: ubuntu-latest
     timeout-minutes: 6
     concurrency:
@@ -59,7 +66,7 @@ jobs:
 
   standard:
     name: Lane B — standard polling cycle
-    if: github.event.schedule == '12,42 * * * *' || github.event.inputs.lane == 'standard'
+    if: github.event.schedule == '27 * * * *' || github.event.inputs.lane == 'standard'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     concurrency:

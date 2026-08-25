@@ -943,6 +943,40 @@ export async function runJobrightFreshDiscovery(
   const source = await fetchJobrightFreshSignals(now);
   const selected = source.jobs.slice(0, boundedLimit);
 
+  // Empty-work fast path: with no fresh signals this tick there is nothing to
+  // resolve, so skip loading the full approved-company index and the entire
+  // active/verified job catalog (loadOfficialCatalogIndex has no row limit —
+  // it exists to build an in-memory match index for signals that need it).
+  // This is the common case on a 10-minute cadence when the upstream feed
+  // hasn't posted anything new since the last tick.
+  if (selected.length === 0) {
+    return {
+      categoriesAttempted: CATEGORY_SLUGS.length,
+      categoryCounts: source.categoryCounts,
+      signalsFetched: source.jobs.length,
+      under24h: source.freshUnder24h,
+      under72h: source.freshUnder72h,
+      examined: 0,
+      alreadyResolved: 0,
+      alreadyFoundOfficial: 0,
+      deferred: 0,
+      officialUrlDirect: 0,
+      sourceOriginalPost: 0,
+      companyResolved: 0,
+      boardResolved: 0,
+      unresolved: 0,
+      closed: 0,
+      duplicates: 0,
+      newJobs: 0,
+      updatedJobs: 0,
+      medianResolutionMs: null,
+      reasonCounts: emptyReasonCounts(),
+      providerCounts: {},
+      resolvedWithJd: 0,
+      stoppedForTimeBudget: false,
+    };
+  }
+
   const approvedIndex = await loadApprovedCompanyIndex();
   const officialCatalog = await loadOfficialCatalogIndex();
   const queueRows = await loadQueueRows(selected.map((signal) => signal.sourceJobId));

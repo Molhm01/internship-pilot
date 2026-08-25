@@ -1,15 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "npm run build",
-  "fluid": true,
-  "crons": [
-    {
-      "path": "/api/cron/job-ingestion/standard",
-      "schedule": "0 9 * * *"
-    },
-    {
-      "path": "/api/cron/job-ingestion/maintenance",
-      "schedule": "0 11 * * *"
-    }
-  ]
+  "fluid": true
 }

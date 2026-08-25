@@ -196,12 +196,14 @@ export async function recordTickResult(
   });
 }
 
-export async function getSchedulerHealth(): Promise<{
+type SchedulerHealth = {
   paused: boolean;
   pause: SchedulerPauseMetadata | null;
-  worker: SchedulerHeartbeat & { healthy: boolean } | null;
+  worker: (SchedulerHeartbeat & { healthy: boolean }) | null;
   ticks: Record<string, TickInfo>;
-}> {
+};
+
+async function computeSchedulerHealth(): Promise<SchedulerHealth> {
   const pauseState = await getSchedulerPauseState();
   const settings = await prisma.appSetting.findMany({
     where: { OR: [{ key: { startsWith: TICK_KEY_PREFIX } }, { key: HEARTBEAT_KEY }] },
@@ -222,4 +224,43 @@ export async function getSchedulerHealth(): Promise<{
     worker: heartbeat ? { ...heartbeat, healthy: heartbeatIsHealthy(heartbeat) } : null,
     ticks,
   };
+}
+
+export async function getSchedulerHealth(): Promise<SchedulerHealth> {
+  return computeSchedulerHealth();
+}
+
+// In-process cache only (no DB-backed layer): scheduler health is read by a
+// single admin-facing panel, not fanned out across every browser tab like
+// catalog health, so a short in-instance TTL is enough to collapse a burst of
+// requests without adding another cross-instance cache row to maintain.
+const SCHEDULER_HEALTH_TTL_MS = 20_000;
+let cachedSchedulerHealth: { computedAt: number; value: SchedulerHealth } | null = null;
+let schedulerHealthInFlight: Promise<SchedulerHealth> | null = null;
+
+/**
+ * Cached scheduler health for the `/api/scheduler/status` panel.
+ *
+ * Before this cache, every 30-second poll from `SchedulerHealthPanel` (per
+ * open browser tab) recomputed this from three Prisma queries. The panel now
+ * polls far less often and only while visible, but the cache stays as a
+ * second line of defense against any caller that polls tighter than that.
+ */
+export async function getCachedSchedulerHealth(
+  options: { force?: boolean } = {},
+): Promise<{ health: SchedulerHealth; computedAt: string }> {
+  const now = Date.now();
+  if (!options.force && cachedSchedulerHealth && now - cachedSchedulerHealth.computedAt < SCHEDULER_HEALTH_TTL_MS) {
+    return { health: cachedSchedulerHealth.value, computedAt: new Date(cachedSchedulerHealth.computedAt).toISOString() };
+  }
+  if (schedulerHealthInFlight) {
+    const value = await schedulerHealthInFlight;
+    return { health: value, computedAt: new Date(cachedSchedulerHealth?.computedAt ?? now).toISOString() };
+  }
+  schedulerHealthInFlight = computeSchedulerHealth().finally(() => {
+    schedulerHealthInFlight = null;
+  });
+  const value = await schedulerHealthInFlight;
+  cachedSchedulerHealth = { computedAt: now, value };
+  return { health: value, computedAt: new Date(now).toISOString() };
 }

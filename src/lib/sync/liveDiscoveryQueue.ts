@@ -383,6 +383,13 @@ export async function processLiveDiscoveryQueue(limit = 60): Promise<{
     )
     .slice(0, Math.max(1, Math.min(limit, 200)));
 
+  // Empty-work fast path: nothing due means there is no signal to resolve
+  // against a company board, so skip the company-table read entirely rather
+  // than fetching it on every tick regardless of whether it will be used.
+  if (due.length === 0) {
+    return { due: 0, processed: 0, resolved: 0, closed: 0, retried: 0, abandoned: 0, newCount: 0, updatedCount: 0 };
+  }
+
   const companies: CompanyForListing[] = await prisma.company.findMany({
     where: { allowlisted: true, monitoringStatus: "active" },
     select: {

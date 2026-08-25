@@ -3,10 +3,7 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const ACTIVE_TARGET = 500;
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-export async function GET() {
+export async function GET(request: Request) {
   // Keep database-dependent imports inside the handler. If a deployment is
   // missing/has an invalid DATABASE_URL, a top-level import can fail before
   // GET() exists and Vercel can only return an opaque framework 500.
@@ -22,70 +19,34 @@ export async function GET() {
   }
 
   try {
-    const [{ prisma }, { getLiveDiscoveryHealth }] = await Promise.all([
-      import("@/lib/db"),
-      import("@/lib/sync/liveDiscoveryEngine"),
-    ]);
-
-    const now = Date.now();
-    const last24h = new Date(now - DAY_MS);
-    const last72h = new Date(now - 3 * DAY_MS);
-    const fourteenDaysAgo = new Date(now - 14 * DAY_MS);
-
-    const [
-      active,
-      total,
-      verifiedActive,
-      fresh24h,
-      fresh72h,
-      olderThan14d,
-      latestSync,
-      bySource,
-      liveDiscovery,
-    ] = await Promise.all([
-      prisma.job.count({ where: { activeFeed: true } }),
-      prisma.job.count(),
-      prisma.job.count({
-        where: {
-          activeFeed: true,
-          verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
-        },
-      }),
-      prisma.job.count({ where: { activeFeed: true, sourcePostedAt: { gte: last24h } } }),
-      prisma.job.count({ where: { activeFeed: true, sourcePostedAt: { gte: last72h } } }),
-      prisma.job.count({ where: { activeFeed: true, sourcePostedAt: { lt: fourteenDaysAgo } } }),
-      prisma.syncLog.findFirst({
-        where: { source: "employer-ats", status: "success" },
-        orderBy: { finishedAt: "desc" },
-        select: { finishedAt: true, newJobsCount: true, updatedJobsCount: true },
-      }),
-      prisma.job.groupBy({
-        by: ["source"],
-        where: { activeFeed: true },
-        _count: { _all: true },
-        orderBy: { _count: { source: "desc" } },
-      }),
-      getLiveDiscoveryHealth(),
-    ]);
+    const { getCachedCatalogHealth } = await import("@/lib/sync/liveDiscoveryHealthCache");
+    // Ops-monitoring callers (e.g. the hourly GH Actions catalog audit) may
+    // pass ?fresh=1 to force a live computation instead of the shared cache —
+    // useful when actively diagnosing a suspected regression, not for routine
+    // polling.
+    const force = new URL(request.url).searchParams.get("fresh") === "1";
+    const { health, computedAt, fresh } = await getCachedCatalogHealth({ force });
 
     return NextResponse.json(
       {
         ok: true,
-        activeTarget: ACTIVE_TARGET,
-        active,
-        targetReached: active >= ACTIVE_TARGET,
-        verifiedActive,
-        total,
+        activeTarget: health.activeTarget,
+        active: health.active,
+        targetReached: health.targetReached,
+        verifiedActive: health.verifiedActive,
+        total: health.total,
         freshness: {
-          postedWithin24h: fresh24h,
-          postedWithin72h: fresh72h,
-          olderThan14Days: olderThan14d,
+          postedWithin24h: health.fresh24h,
+          postedWithin72h: health.fresh72h,
+          olderThan14Days: health.olderThan14d,
         },
-        liveDiscovery,
-        lastSuccessfulSyncAt: latestSync?.finishedAt?.toISOString() ?? null,
-        lastSyncNewJobs: latestSync?.newJobsCount ?? 0,
-        lastSyncUpdatedJobs: latestSync?.updatedJobsCount ?? 0,
-        activeBySource: bySource.map((row) => ({ source: row.source, count: row._count._all })),
+        liveDiscovery: health.liveDiscovery,
+        lastSuccessfulSyncAt: health.lastSuccessfulEmployerAtsSyncAt,
+        lastSyncNewJobs: health.lastSuccessfulEmployerAtsSyncNewJobs,
+        lastSyncUpdatedJobs: health.lastSuccessfulEmployerAtsSyncUpdatedJobs,
+        activeBySource: health.activeBySource,
+        computedAt,
+        cacheFresh: fresh,
       },
       { headers: { "cache-control": "no-store, max-age=0" } },
     );

@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { prisma } from "@/lib/db";
 import { startScheduler } from "@/lib/sync/scheduler";
+import { isCloudRuntime } from "@/lib/runtime/deployment";
 
 /**
  * Standalone long-lived scheduler process — radar discovery, verification,
@@ -29,6 +30,58 @@ if (!process.env.DATABASE_URL) {
   );
   process.exit(1);
 }
+
+/**
+ * Hard production guard.
+ *
+ * This process runs nine independent `setInterval` loops (radar discovery,
+ * verification, Gmail tracking, description hydration, ATS scoring, ...) on
+ * cadences as tight as every few minutes — deliberately local-only, since
+ * GitHub Actions is the single production scheduler (see the DATABASE
+ * EFFICIENCY REPAIR report). If this ever ran against the production
+ * database it would recreate exactly the duplicate-scheduler problem that
+ * report fixes, indefinitely, from a machine nobody is watching.
+ *
+ * Two independent checks, because either one drifting alone must still stop
+ * it: `isCloudRuntime()` (VERCEL=1 or INTERNSHIP_PILOT_RUNTIME=cloud) covers
+ * "this is actually a cloud deployment", and the DATABASE_URL host check
+ * covers "a local process was accidentally pointed at a hosted database" —
+ * the failure mode `npm run local` exists to prevent by always injecting a
+ * fresh local Prisma Dev URL, but this worker can also be run directly.
+ */
+function assertNotProductionDatabase(): void {
+  if (isCloudRuntime()) {
+    console.error(
+      "[scheduler-worker] Refusing to start: this process detected a cloud runtime "
+        + "(VERCEL or INTERNSHIP_PILOT_RUNTIME=cloud). The scheduler-worker is local-only — "
+        + "GitHub Actions (.github/workflows/live-job-ingestion.yml) is the production scheduler.",
+    );
+    process.exit(1);
+  }
+
+  const raw = process.env.DATABASE_URL ?? "";
+  let host = "";
+  try {
+    // DATABASE_URL may be a non-standard scheme (e.g. prisma+postgres://), which
+    // the WHATWG URL parser still handles fine for extracting the host.
+    host = new URL(raw).hostname.toLowerCase();
+  } catch {
+    console.error("[scheduler-worker] Refusing to start: DATABASE_URL could not be parsed.");
+    process.exit(1);
+  }
+  const isLocalHost = host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "";
+  if (!isLocalHost) {
+    console.error(
+      `[scheduler-worker] Refusing to start: DATABASE_URL host "${host}" is not localhost. `
+        + "This worker must only run against the local Prisma Dev database that `npm run local` "
+        + "provisions — running it against a remote/production database would recreate the "
+        + "duplicate-scheduler problem the hosted GitHub Actions lanes exist to fix alone.",
+    );
+    process.exit(1);
+  }
+}
+
+assertNotProductionDatabase();
 
 let stopping = false;
 

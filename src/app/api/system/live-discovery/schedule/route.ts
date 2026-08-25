@@ -117,64 +117,39 @@ export async function GET() {
   return NextResponse.json({ configured: true, scheduled: true, schedule });
 }
 
+/**
+ * Recurring-schedule creation is permanently disabled here.
+ *
+ * GitHub Actions (`.github/workflows/live-job-ingestion.yml`) is the single
+ * production scheduler owner. A QStash schedule pointed at
+ * `/api/cron/live-discovery` used to run a full discovery cycle every five
+ * minutes in parallel with GitHub Actions' own five-minute "fresh" lane —
+ * two independent schedulers doing overlapping work on the same cadence,
+ * which was the largest single driver of the Prisma Postgres Free-plan
+ * overage (see the DATABASE USAGE DIAGNOSTIC). This endpoint must not be able
+ * to recreate that duplication, so POST no longer calls QStash at all.
+ *
+ * If an unattended admin script or a stale bookmark still hits this route
+ * expecting to (re)create the schedule, it gets a clear 410 rather than a
+ * silently-accepted schedule.
+ */
 export async function POST() {
   const denied = await guardSession();
   if (denied) return denied;
-  const { token, cronSecret, baseUrl } = config();
-  if (!token || !cronSecret || !baseUrl) {
-    return NextResponse.json(
-      {
-        error: "Live scheduling is not fully configured.",
-        missing: [
-          ...(!token ? ["QSTASH_TOKEN"] : []),
-          ...(!cronSecret ? ["CRON_SECRET"] : []),
-          ...(!baseUrl ? ["production base URL"] : []),
-        ],
-      },
-      { status: 503 },
-    );
-  }
-
-  const destination = `${baseUrl}/api/cron/live-discovery`;
-
-  // Keep the destination literal. This mirrors Upstash's documented REST form:
-  // /v2/schedules/https://example.com/endpoint. Encoding the whole URL into a
-  // single path segment causes QStash to reject the schedule destination.
-  const response = await qstash(`/schedules/${destination}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Upstash-Cron": SCHEDULE_CRON,
-      "Upstash-Schedule-Id": SCHEDULE_ID,
-      "Upstash-Method": "POST",
-      "Upstash-Timeout": "240s",
-      "Upstash-Retries": "2",
-      "Upstash-Forward-Authorization": `Bearer ${cronSecret}`,
+  return NextResponse.json(
+    {
+      error:
+        "Recurring QStash scheduling for /api/cron/live-discovery has been retired. " +
+        "GitHub Actions (.github/workflows/live-job-ingestion.yml) is the sole production " +
+        "scheduler. If a QStash schedule still exists from before this change, delete it with " +
+        "DELETE /api/system/live-discovery/schedule (or `curl -X DELETE https://api.upstash.com/v2/schedules/" +
+        SCHEDULE_ID +
+        "` / the Upstash console) — see the cleanup note in the DATABASE EFFICIENCY REPAIR report.",
+      scheduleId: SCHEDULE_ID,
+      retired: true,
     },
-    body: JSON.stringify({ source: "qstash-live-discovery" }),
-  });
-
-  if (!response.ok) {
-    const detail = await response.text();
-    return NextResponse.json(
-      {
-        error: "QStash rejected the live-discovery schedule.",
-        detail: detail.slice(0, 1000),
-        status: response.status,
-      },
-      { status: 502 },
-    );
-  }
-
-  const created = await response.json();
-  return NextResponse.json({
-    ok: true,
-    configured: true,
-    scheduled: true,
-    scheduleId: created.scheduleId ?? SCHEDULE_ID,
-    cron: SCHEDULE_CRON,
-    destination,
-  });
+    { status: 410 },
+  );
 }
 
 export async function DELETE() {
