@@ -20,14 +20,28 @@ import { getLiveDiscoveryHealth } from "@/lib/sync/liveDiscoveryEngine";
  *      requests across the whole deployment collapses into a single full
  *      computation per TTL window instead of one computation per caller.
  *
- * A 90s TTL keeps data close to real-time relative to the slowest consumer
- * (a 5-minute client refresh, a 10-minute cron lane) while collapsing bursts.
- * Failures are never cached — a broken computation surfaces on the very next
- * call rather than being hidden behind a stale "healthy" TTL.
+ * A 5-minute TTL (pass #2 of the database-usage repair widened this from
+ * 90s) matches the frontend's own 5-minute poll interval — a single caller
+ * on its own cadence gets no cache benefit from any TTL shorter than its own
+ * poll interval, so 90s bought nothing beyond "many callers within the same
+ * 90s window", while 5 minutes is close to the longest TTL that still keeps
+ * the badge visibly current ("status as of a moment ago" vs. "...5+ minutes
+ * ago"). Failures are never cached — a broken computation surfaces on the
+ * very next call rather than being hidden behind a stale "healthy" TTL.
+ *
+ * The memory-cache layer is what actually keeps this close to free: on
+ * Vercel Fluid Compute, warm instances are reused across requests, so almost
+ * every request within the TTL window costs nothing at all — not even the
+ * one-row DB cache read. The DB-backed layer exists only for the minority of
+ * requests that land on a cold instance or a different instance than the one
+ * that computed the cache, which is the lowest-operation architecture this
+ * repo has for sharing one computation across many callers (there is no
+ * shared-memory or pub/sub layer available here to avoid that one read
+ * entirely).
  */
 
 const CACHE_KEY = "catalogHealth:cache:v1";
-const TTL_MS = 90_000;
+const TTL_MS = 5 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ACTIVE_TARGET = 500;
 

@@ -234,7 +234,11 @@ export async function getSchedulerHealth(): Promise<SchedulerHealth> {
 // single admin-facing panel, not fanned out across every browser tab like
 // catalog health, so a short in-instance TTL is enough to collapse a burst of
 // requests without adding another cross-instance cache row to maintain.
-const SCHEDULER_HEALTH_TTL_MS = 20_000;
+// Matches the panel's own 5-minute, visibility-aware poll interval (database-
+// usage repair pass #2) — a shorter TTL bought nothing beyond "many requests
+// within the same instance's warm lifetime, within this window", which a
+// single 5-minute-interval panel essentially never produces.
+const SCHEDULER_HEALTH_TTL_MS = 5 * 60 * 1000;
 let cachedSchedulerHealth: { computedAt: number; value: SchedulerHealth } | null = null;
 let schedulerHealthInFlight: Promise<SchedulerHealth> | null = null;
 

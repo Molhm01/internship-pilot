@@ -66,6 +66,50 @@ function connectionString(): string {
   return url;
 }
 
+/**
+ * Operation-budget counter (database-usage repair, pass #2 — item 11).
+ *
+ * Opt-in only: disabled unless PRISMA_OPERATION_BUDGET_TRACKING=1 is set, so
+ * it costs nothing in production or in the default test run. Its only job is
+ * to let a test assert "this recurring pipeline issued at most N Prisma
+ * calls for this input", as regression protection against silently
+ * reintroducing an unbounded loop, a full-table scan fed into per-row calls,
+ * or a duplicate scheduler — the exact shape of the problems that produced
+ * the original Free-plan overage. It counts CALLS (one per `prisma.model.op`
+ * invocation), matching how this repo's own usage estimates are built
+ * throughout the DATABASE USAGE DIAGNOSTIC / DATABASE EFFICIENCY REPAIR
+ * reports — not rows returned, which Prisma's own operation billing does not
+ * key off either.
+ */
+let operationCount = 0;
+const OPERATION_BUDGET_TRACKING_ENABLED = process.env.PRISMA_OPERATION_BUDGET_TRACKING === "1";
+
+/** Resets the counter. Call before the pipeline under test. */
+export function resetPrismaOperationCounter(): void {
+  operationCount = 0;
+}
+
+/** Current count since the last reset. */
+export function getPrismaOperationCount(): number {
+  return operationCount;
+}
+
+/**
+ * Forces the next `prisma.*` call to rebuild the cached client.
+ *
+ * Test-only. The client is cached on `globalThis` per process/module
+ * registry (see resolveClient below), keyed on the generated-schema
+ * fingerprint — which does not change when PRISMA_OPERATION_BUDGET_TRACKING
+ * is toggled. A budget test that sets that env var after some earlier test
+ * already built the client would otherwise silently get the uninstrumented
+ * cached instance. Calling this after setting the env var guarantees a fresh,
+ * instrumented client instead.
+ */
+export function resetPrismaClientForTests(): void {
+  globalForPrisma.prisma = undefined;
+  globalForPrisma.prismaSchemaFingerprint = undefined;
+}
+
 function createPrismaClient() {
   const adapter = new PrismaPg({
     connectionString: connectionString(),
@@ -79,7 +123,20 @@ function createPrismaClient() {
     // processes still want a bounded wait rather than an instant failure.
     connectionTimeoutMillis: Number(process.env.DATABASE_CONNECT_TIMEOUT_MS ?? 15_000),
   });
-  return new PrismaClient({ adapter });
+  const client = new PrismaClient({ adapter });
+  if (!OPERATION_BUDGET_TRACKING_ENABLED) return client;
+
+  return client.$extends({
+    name: "operation-budget-counter",
+    query: {
+      $allModels: {
+        async $allOperations({ query, args }) {
+          operationCount += 1;
+          return query(args);
+        },
+      },
+    },
+  }) as unknown as PrismaClient;
 }
 
 /**
