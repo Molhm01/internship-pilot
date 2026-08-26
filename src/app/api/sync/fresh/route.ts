@@ -2,6 +2,7 @@ import { guardSession } from "@/lib/auth/session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { runLiveDiscoveryCycle } from "@/lib/sync/liveDiscoveryEngine";
+import { blockedInDiagnosticMode, isLocalDiagnosticMode } from "@/lib/runtime/diagnosticMode";
 
 export const runtime = "nodejs";
 export const maxDuration = 180;
@@ -14,6 +15,7 @@ const RECENT_RUNNING_WINDOW_MS = 4 * 60 * 1000;
 export async function POST() {
   const denied = await guardSession();
   if (denied) return denied;
+  if (isLocalDiagnosticMode()) return blockedInDiagnosticMode();
 
   const running = await prisma.syncLog.findFirst({
     where: {

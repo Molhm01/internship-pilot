@@ -31,7 +31,7 @@ const PROFILE = {
   school: "New Jersey Institute of Technology", previousSchool: null,
   addressStreet: "1 Engineering Way", addressCity: "Newark", addressState: "NJ", addressZip: "07102",
   countryOfResidence: "United States", willingToRelocate: true, locationPreferences: ["Remote", "New Jersey"],
-  internshipTermAvailability: "Summer 2027", salaryAnswerPreference: "Negotiable",
+  internshipTermAvailability: "Summer 2027", earliestStartDate: null, salaryAnswerPreference: "Negotiable",
   workAuthorization: "U.S. Citizen", requiresSponsorship: false, clearanceEligible: null,
   eeoGender: null, eeoRaceEthnicity: null, eeoVeteranStatus: null, eeoDisabilityStatus: null,
 };

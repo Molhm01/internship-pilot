@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { signIn, signUp } from "@/lib/auth/client";
+import { safeNextPath } from "@/lib/auth/postAuthRedirect";
 
 /**
  * Sign-up and sign-in share a shape, so they share a component. The only
@@ -51,6 +52,8 @@ export default function AuthForm({
   googleEnabled?: boolean;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const nextPath = safeNextPath(searchParams.get("next"));
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
@@ -92,8 +95,17 @@ export default function AuthForm({
         setError(result.error.message ?? "That did not work. Check your details and try again.");
         return;
       }
-      router.push("/dashboard");
-      router.refresh();
+      // The sign-in/sign-up call above already set the session cookie via its
+      // own fetch response, so the destination's server-rendered data is
+      // fetched with a valid session the moment this navigation request goes
+      // out — no separate refresh is needed. router.refresh() here used to
+      // race this push(): calling it right after push() sometimes re-fetched
+      // the auth PAGE (still the current route mid-transition) instead of the
+      // destination, which left a successfully authenticated user stranded on
+      // the signup/login form with no visible confirmation. (auth) and (app)
+      // are separate route groups with independent layouts, so push() alone
+      // already renders the destination with fresh, non-cached data.
+      router.push(nextPath);
     } catch {
       setError("Could not reach Internship Pilot. Is the site still running?");
     } finally {

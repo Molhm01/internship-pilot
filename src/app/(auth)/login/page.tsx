@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import AuthForm from "@/components/AuthForm";
 import { googleAuthConfigured } from "@/lib/auth/betterAuth";
 
@@ -7,5 +8,11 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Log in — Internship Pilot" };
 
 export default function LoginPage() {
-  return <AuthForm mode="login" googleEnabled={googleAuthConfigured} />;
+  // AuthForm reads the `next` redirect target via useSearchParams(), which
+  // requires a Suspense boundary in the App Router.
+  return (
+    <Suspense fallback={null}>
+      <AuthForm mode="login" googleEnabled={googleAuthConfigured} />
+    </Suspense>
+  );
 }

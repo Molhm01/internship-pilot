@@ -190,15 +190,24 @@ describe("bulk score client", () => {
     expect(fetchStatus).toHaveBeenCalledOnce();
   });
 
-  it("does not trigger bulk scoring on Jobs page load", () => {
-    // Scoring is queued server-side; the page only watches the queue. Opening
-    // Jobs must never schedule work, so what this guards is the absence of any
-    // POST to the scheduling endpoint from the page itself.
+  it("does not trigger bulk scoring on Jobs page load — only from the manual 'Score all unscored' button click", () => {
+    // Scoring is queued server-side and the page only watches the queue by
+    // default; opening Jobs must never schedule work on its own. A manual
+    // recovery button was added for a stuck/failed queue (product
+    // requirement: restore Score all unscored), so what this guards now is
+    // narrower than "the string never appears": the scheduling call must
+    // live inside its own click-handler function, never inside a page-load
+    // useEffect.
     const source = readFileSync(resolve(process.cwd(), "src/app/(app)/jobs/page.tsx"), "utf8");
     expect(source).toContain("fetchBulkScoreStatus");
     expect(source).toContain("startBulkScoreStatusPolling");
-    expect(source).not.toContain("requestScoreAllUnscored");
-    expect(source).not.toContain("/api/jobs/score-unscored");
+    expect(source).toContain("async function handleScoreAllUnscored");
+    expect(source).toContain("onClick={() => void handleScoreAllUnscored()}");
+
+    // Exactly the two pre-existing effects (initial load, and the bulk-status
+    // watch) — a regression here would mean a THIRD effect was added, which
+    // is the shape an accidental auto-trigger-on-mount would take.
+    expect(source.split("useEffect(").length - 1).toBe(2);
   });
 
   it("rejects malformed scheduling responses", async () => {

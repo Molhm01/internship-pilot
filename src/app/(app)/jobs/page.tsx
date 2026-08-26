@@ -22,6 +22,7 @@ import {
 } from "@/lib/jobs/jobsApi";
 import {
   fetchBulkScoreStatus,
+  runBulkScoreScheduling,
   startBulkScoreStatusPolling,
 } from "@/lib/matching/bulkScoreClient";
 import type { BulkInitialMatchStatus } from "@/lib/matching/bulkInitialMatch";
@@ -104,6 +105,8 @@ function JobsPageContent() {
   const [countsError, setCountsError] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [bulkStatus, setBulkStatus] = useState<BulkInitialMatchStatus | null>(null);
+  const [scoreAllPending, setScoreAllPending] = useState(false);
+  const [scoreAllError, setScoreAllError] = useState<string | null>(null);
   const lastSettledCount = useRef<number | null>(null);
 
   // The selected sort lives in the URL, not in component state, so it survives
@@ -228,6 +231,24 @@ function JobsPageContent() {
     };
   }, [applyBulkStatus]);
 
+  // Manual/emergency fallback: normal operation schedules scoring
+  // automatically in the background (see JobCard's scoring-badge comment),
+  // but a stuck or failed queue needs a way to explicitly retry without
+  // waiting for the next automatic pass. Reuses the exact same optimized
+  // bulk-scoring queue POST /api/jobs/score-unscored already schedules —
+  // this button does not introduce a second scoring path.
+  async function handleScoreAllUnscored() {
+    if (scoreAllPending || scoringActive) return;
+    setScoreAllError(null);
+    await runBulkScoreScheduling({
+      setScheduling: setScoreAllPending,
+      onSuccess: async () => {
+        await bulkWatchRef.current?.recheck();
+      },
+      onError: setScoreAllError,
+    });
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setFormError(null);
@@ -293,6 +314,18 @@ function JobsPageContent() {
               <Plus className="size-3.5" aria-hidden />
               Add job
             </Button>
+            {(bulkStatus?.totalUnscored ?? 0) > 0 && (
+              <Button
+                size="md"
+                onClick={() => void handleScoreAllUnscored()}
+                disabled={scoreAllPending || scoringActive}
+                title="Scoring runs automatically in the background; use this only if unscored jobs are stuck."
+              >
+                {scoreAllPending || scoringActive
+                  ? `Scoring… (${bulkStatus?.queued ?? 0} queued, ${bulkStatus?.running ?? 0} running)`
+                  : `Score all unscored (${bulkStatus?.totalUnscored ?? 0})`}
+              </Button>
+            )}
           </>
         }
       />
@@ -318,6 +351,12 @@ function JobsPageContent() {
       {countsError && (
         <Notice tone="caution" className="mb-4">
           Job summary unavailable: {countsError}
+        </Notice>
+      )}
+
+      {scoreAllError && (
+        <Notice tone="caution" className="mb-4">
+          Score all unscored: {scoreAllError}
         </Notice>
       )}
 

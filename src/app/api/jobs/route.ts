@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { TRACKER_STATUSES } from "@/lib/statuses";
 import { computeActiveFeed } from "@/lib/jobs/sourcePolicy";
+import { sourcesForBucket } from "@/lib/jobs/sourceFilterBuckets";
 import type { Prisma } from "@/generated/prisma/client";
 import {
   destinationPersistenceData,
@@ -111,6 +112,8 @@ async function getJobsResponse(req: Request, userId: string) {
   });
   if (missingCurrentScores > 0) await backfillBaselineScoresForUser(userId);
   const location = searchParams.get("location");
+  const company = searchParams.get("company");
+  const source = searchParams.get("source");
   const status = searchParams.get("status");
   const internshipTerm = searchParams.get("internshipTerm");
   const duration = searchParams.get("duration");
@@ -147,6 +150,14 @@ async function getJobsResponse(req: Request, userId: string) {
   // PostgreSQL's does not, and a filter for "remote" that stops matching
   // "Remote" reads as a broken feed rather than a changed database.
   if (location) where.location = { contains: location, mode: "insensitive" };
+  if (company) where.company = { contains: company, mode: "insensitive" };
+  if (source) {
+    const bucketSources = sourcesForBucket(source);
+    // An unrecognized bucket key filters to nothing rather than silently
+    // falling back to "all sources" — a stale/garbled query param must not
+    // look like a working filter that happens to match everything.
+    where.source = bucketSources ? { in: bucketSources } : { in: [] };
+  }
   // Tracker status is this user's, so the filter is a constraint on their
   // state row rather than on the shared job.
   if (status) where.userStates = { some: { userId, applicationStatus: status } };

@@ -12,7 +12,7 @@ import { logAudit } from "./audit";
 import { normalizeQuestionText } from "./approvedAnswers";
 import { classifyErrorCode, type AtsType, type FillContext } from "./types";
 import { getApplicationSettings } from "./settings";
-import { applicationNarrativeForUser, fillContextProfile } from "./fillProfile";
+import { applicationNarrativeForUser, fillContextProfile, longAnswerFactsForUser } from "./fillProfile";
 import { assertGeneratedDocumentUploadable } from "@/lib/documents/identityGuard";
 import { isUsableResume } from "@/lib/documents/strategy";
 import { captureApplicationStep } from "./browserAgent";
@@ -111,6 +111,7 @@ export async function processApplicationRun(
     // Degree and most recent role come from this user's own history, never from
     // a module constant holding somebody else's résumé.
     const narrative = await applicationNarrativeForUser(run.userId);
+    const longAnswerFacts = await longAnswerFactsForUser(run.userId, job.company);
     await assertGeneratedDocumentUploadable(resumeDoc.id);
     if (coverLetterDoc) await assertGeneratedDocumentUploadable(coverLetterDoc.id);
 
@@ -139,6 +140,8 @@ export async function processApplicationRun(
       coverLetterFilePath: coverLetterDoc?.storagePath ?? null,
       coverLetterText,
       ...narrative,
+      ...longAnswerFacts,
+      jobDescription: job.description,
       approvedRunAnswers: parseRunAnswers(run.answers),
     };
 

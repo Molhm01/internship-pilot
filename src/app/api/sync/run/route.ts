@@ -16,6 +16,7 @@ import { runExpandedPublicDirectFeedDiscovery } from "@/lib/sync/publicDirectFee
 import { runMassTechnicalFeedDiscovery } from "@/lib/sync/massTechnicalFeeds";
 import { runJobrightFreshDiscovery } from "@/lib/sync/jobrightFreshDiscovery";
 import { reconcileDirectOfficialFeed } from "@/lib/jobs/activeFeed";
+import { blockedInDiagnosticMode, isLocalDiagnosticMode } from "@/lib/runtime/diagnosticMode";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -38,6 +39,7 @@ async function recentRunningSync() {
 export async function POST() {
   const denied = await guardSession();
   if (denied) return denied;
+  if (isLocalDiagnosticMode()) return blockedInDiagnosticMode();
 
   const running = await recentRunningSync();
   if (running) {

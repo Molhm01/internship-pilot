@@ -5,11 +5,31 @@ import type { FillContext, FillResult, StopReason } from "./types";
 import { lookupAnswer } from "./answerBank";
 import { getApprovedAnswer } from "./approvedAnswers";
 import { normalizeQuestionText } from "./approvedAnswers";
+import { classifyEssayQuestion, generateLongAnswer, type LongAnswerFacts } from "./longAnswer";
 import { captureApplicationStep } from "./browserAgent";
 import { recordRunStage } from "./validation";
 
 function absolute(relativePath: string): string {
   return path.isAbsolute(relativePath) ? relativePath : path.join(/* turbopackIgnore: true */ process.cwd(), relativePath);
+}
+
+function longAnswerFacts(ctx: FillContext): LongAnswerFacts {
+  return {
+    jobTitle: ctx.jobTitle,
+    company: ctx.company,
+    jobDescription: ctx.jobDescription ?? "",
+    school: ctx.profile.school,
+    degree: ctx.educationDegree ?? null,
+    experiences: ctx.approvedExperiences ?? [],
+    projects: ctx.approvedProjects ?? [],
+    willingToRelocate: ctx.profile.willingToRelocate,
+    // internshipTermAvailability has no storage field yet and is always null
+    // in practice — earliestStartDate is the field that is actually populated.
+    internshipTermAvailability: ctx.profile.internshipTermAvailability ?? ctx.profile.earliestStartDate,
+    workAuthorization: ctx.profile.workAuthorization,
+    requiresSponsorship: ctx.profile.requiresSponsorship,
+    companyRelationship: ctx.companyRelationship ?? null,
+  };
 }
 
 type ScannedField = {
@@ -270,6 +290,18 @@ async function fillFieldsOnCurrentPage(
     // explicit profile setting rather than an incidentally-saved answer.
     if (value === null) {
       value = await getApprovedAnswer(displayLabel);
+    }
+
+    // Free-text/essay questions get one grounded attempt from approved facts
+    // before falling back to a pause — see longAnswer.ts. Never for
+    // work-authorization/EEO, which always require an explicit profile
+    // setting rather than composed text.
+    if (value === null && field.tag === "textarea" && category !== "eeo" && category !== "work_authorization") {
+      const essayCategory = classifyEssayQuestion(displayLabel);
+      if (essayCategory) {
+        const generated = await generateLongAnswer(essayCategory, ctx.jobId, longAnswerFacts(ctx));
+        value = generated.answer;
+      }
     }
 
     if (value === null) {

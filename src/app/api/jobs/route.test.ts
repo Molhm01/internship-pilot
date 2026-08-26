@@ -491,3 +491,54 @@ describe("GET /api/jobs default freshness ordering", () => {
     expect(filtered[0]).toBe("ats-3-months");
   });
 });
+
+describe("GET /api/jobs — company and source filters", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    findMany.mockResolvedValue([]);
+    countJobs.mockResolvedValue(0);
+  });
+
+  it("filters by company with a case-insensitive contains match", async () => {
+    await GET(new Request("http://localhost/api/jobs?feed=all&company=board"), {});
+    const where = findMany.mock.calls[0][0].where;
+    expect(where.company).toEqual({ contains: "board", mode: "insensitive" });
+  });
+
+  it("maps the official_ats source bucket to the direct-official ATS tokens", async () => {
+    await GET(new Request("http://localhost/api/jobs?feed=all&source=official_ats"), {});
+    const where = findMany.mock.calls[0][0].where;
+    expect(where.source.in).toContain("greenhouse");
+    expect(where.source.in).toContain("lever");
+    expect(where.source.in).not.toContain("manual");
+  });
+
+  it("maps the intern_list source bucket to its raw tokens", async () => {
+    await GET(new Request("http://localhost/api/jobs?feed=all&source=intern_list"), {});
+    const where = findMany.mock.calls[0][0].where;
+    expect(where.source).toEqual({ in: ["intern-list", "intern-list-public"] });
+  });
+
+  it("an unrecognized source bucket filters to zero results rather than silently matching everything", async () => {
+    await GET(new Request("http://localhost/api/jobs?feed=all&source=not-a-real-bucket"), {});
+    const where = findMany.mock.calls[0][0].where;
+    expect(where.source).toEqual({ in: [] });
+  });
+
+  it("company and source filters combine with location/duration without extra queries", async () => {
+    await GET(
+      new Request(
+        "http://localhost/api/jobs?feed=all&company=board&source=manual&location=Newark&duration=10+weeks",
+      ),
+      {},
+    );
+    expect(findMany).toHaveBeenCalledTimes(1);
+    const where = findMany.mock.calls[0][0].where;
+    expect(where).toMatchObject({
+      company: { contains: "board", mode: "insensitive" },
+      source: { in: ["manual"] },
+      location: { contains: "Newark", mode: "insensitive" },
+      duration: { contains: "10 weeks", mode: "insensitive" },
+    });
+  });
+});

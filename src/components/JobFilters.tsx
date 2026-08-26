@@ -3,10 +3,13 @@
 import { useEffect, useState } from "react";
 import { DISCIPLINE_TAGS, DisciplineTag } from "@/lib/sync/classify";
 import { TRACKER_STATUSES } from "@/lib/statuses";
+import { SOURCE_FILTER_OPTIONS } from "@/lib/jobs/sourceFilterBuckets";
 
 export type JobFiltersState = {
   availability: string; // "" = active feed (default) | official | source_listed | verification_pending | closed | security | all
   location: string;
+  company: string;
+  source: string; // "" = all | see SOURCE_FILTER_OPTIONS
   status: string;
   internshipTerm: string;
   duration: string;
@@ -31,6 +34,8 @@ export type JobFiltersState = {
 export const EMPTY_FILTERS: JobFiltersState = {
   availability: "",
   location: "",
+  company: "",
+  source: "",
   status: "",
   internshipTerm: "",
   duration: "",
@@ -98,6 +103,8 @@ export function buildJobsQuery(filters: JobFiltersState): URLSearchParams {
   const params = new URLSearchParams();
   (AVAILABILITY_QUERY[filters.availability] ?? AVAILABILITY_QUERY[""])(params);
   if (filters.location) params.set("location", filters.location);
+  if (filters.company) params.set("company", filters.company);
+  if (filters.source) params.set("source", filters.source);
   if (filters.status) params.set("status", filters.status);
   if (filters.internshipTerm) params.set("internshipTerm", filters.internshipTerm);
   if (filters.duration) params.set("duration", filters.duration);
@@ -133,11 +140,16 @@ export default function JobFilters({
   onChange: (f: JobFiltersState) => void;
 }) {
   const [presets, setPresets] = useState<SavedFilter[]>([]);
+  const [companyOptions, setCompanyOptions] = useState<string[]>([]);
 
   useEffect(() => {
     fetch("/api/filters/saved")
       .then((r) => r.json())
       .then((data) => setPresets(data.filters ?? []))
+      .catch(() => {});
+    fetch("/api/jobs/companies")
+      .then((r) => r.json())
+      .then((data) => setCompanyOptions(data.companies ?? []))
       .catch(() => {});
   }, []);
 
@@ -185,6 +197,19 @@ export default function JobFilters({
         <summary className="cursor-pointer text-sm font-medium text-secondary">Location & distance</summary>
         <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
           <TextField label="Location" value={filters.location} onChange={(v) => set("location", v)} />
+          <TextField
+            label="Company"
+            value={filters.company}
+            onChange={(v) => set("company", v)}
+            listId="job-filter-company-options"
+            listOptions={companyOptions}
+          />
+          <SelectField
+            label="Source"
+            value={filters.source}
+            onChange={(v) => set("source", v)}
+            options={SOURCE_FILTER_OPTIONS}
+          />
           <SelectField
             label="Workplace type"
             value={filters.workplaceType}
@@ -340,11 +365,16 @@ function TextField({
   value,
   onChange,
   type = "text",
+  listId,
+  listOptions,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   type?: string;
+  /** When set with listOptions, renders a <datalist> for practical searching over a large option set. */
+  listId?: string;
+  listOptions?: string[];
 }) {
   return (
     <label className="space-y-1">
@@ -353,8 +383,16 @@ function TextField({
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        list={listId}
         className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-primary outline-none focus:border-accent-line"
       />
+      {listId && listOptions && (
+        <datalist id={listId}>
+          {listOptions.map((option) => (
+            <option key={option} value={option} />
+          ))}
+        </datalist>
+      )}
     </label>
   );
 }
@@ -368,7 +406,7 @@ function SelectField({
   label: string;
   value: string;
   onChange: (v: string) => void;
-  options: Array<string | { value: string; label: string }>;
+  options: ReadonlyArray<string | { value: string; label: string }>;
 }) {
   return (
     <label className="space-y-1">

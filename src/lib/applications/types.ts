@@ -39,7 +39,7 @@ export const STOP_REASON_LABELS: Record<StopReason, string> = {
   login_required: "Log in in the application browser, then click Resume.",
   assessment_required: "This application requires completing a hiring assessment.",
   unknown_question: "The form asked a question with no confident, grounded answer.",
-  essay_without_approved_answer: "A free-text essay question had no pre-approved answer to draw from.",
+  essay_without_approved_answer: "A free-text essay question could not be answered from approved facts — grounded generation was attempted and found insufficient evidence, so nothing was written rather than guessed.",
   citizenship_clearance_sponsorship_ambiguous:
     "The form asked about citizenship, sponsorship, or security clearance and no answer is saved in your Application Profile.",
   eeo_no_saved_preference: "The form asked an EEO/demographic question and no preference is saved in your Application Profile.",
@@ -101,6 +101,8 @@ export interface FillContext {
     willingToRelocate: boolean | null;
     locationPreferences: string[] | null;
     internshipTermAvailability: string | null;
+    /** YYYY-MM-DD, from ApplicationPreferences.earliestStartDate — populated in practice; internshipTermAvailability above currently is not. */
+    earliestStartDate: string | null;
     salaryAnswerPreference: string | null;
     workAuthorization: string | null;
     requiresSponsorship: boolean | null;
@@ -116,6 +118,19 @@ export interface FillContext {
   educationDegree?: string | null;
   recentExperience?: string | null;
   approvedRunAnswers?: Record<string, string>;
+  /** The full job description, for grounded long-answer generation (see longAnswer.ts). */
+  jobDescription?: string | null;
+  /** Approved-bullet work history, for "leadership"/"technical interest" long answers. */
+  approvedExperiences?: ReadonlyArray<{ employer: string; title: string | null; approvedBullets: string[] }>;
+  /** Approved project descriptions, for "describe a project" long answers. */
+  approvedProjects?: ReadonlyArray<{ name: string; description: string | null; approvedSkills: string[] }>;
+  /** This employer specifically — referral/family-at-company facts. Never guessed if absent. */
+  companyRelationship?: {
+    hasReferral: boolean | null;
+    referralName: string | null;
+    referralRelationship: string | null;
+    familyMemberEmployed: boolean | null;
+  } | null;
 }
 
 export interface StoppedFieldDetails {

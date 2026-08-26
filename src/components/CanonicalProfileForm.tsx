@@ -77,10 +77,10 @@ const TEXT_FIELD_GROUPS: ReadonlyArray<{
   },
   {
     title: "Education",
-    hint: "Edits your primary/current education entry. Add additional entries on the Education page.",
+    hint: "Edits your primary/current education entry. Add additional entries in the \"Additional education\" section below.",
     fields: [
       { name: "school", label: "School" },
-      { name: "previousSchool", label: "Previous school", hint: "Add a second entry on the Education page instead — this form edits only your primary entry.", persisted: false },
+      { name: "previousSchool", label: "Previous school", hint: "Add a second entry in the \"Additional education\" section below instead — this form edits only your primary entry.", persisted: false },
       { name: "degreeType", label: "Degree currently pursuing" },
       { name: "highestDegreeAwarded", label: "Highest degree already awarded", hint: "Not saved yet — only one \"degree\" field exists per education entry.", persisted: false },
       { name: "educationLevel", label: "Education level" },

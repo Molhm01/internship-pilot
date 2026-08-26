@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import { applicationNarrativeForUser, fillContextProfile } from "./fillProfile";
+import { applicationNarrativeForUser, fillContextProfile, longAnswerFactsForUser } from "./fillProfile";
 import { classifyField, lookupAnswer } from "./answerBank";
 import { normalizeQuestionText } from "./approvedAnswers";
+import { classifyEssayQuestion, generateLongAnswer, type LongAnswerFacts } from "./longAnswer";
 import { applicationProfileForUser } from "@/lib/profile/applicationProfile";
 import type { FillContext } from "./types";
 import { isActiveAvailability, canonicalAvailability, AVAILABILITY } from "@/lib/jobs/verificationModel";
@@ -179,6 +180,24 @@ export async function buildExtensionFillPlan(input: FillPlanRequest, userId: str
   // Degree and most recent role come from this user's own history, never from
   // a module constant holding somebody else's résumé.
   const narrative = await applicationNarrativeForUser(userId);
+  const longAnswerContext = await longAnswerFactsForUser(userId, run.job.company);
+  const longAnswerFacts: LongAnswerFacts = {
+    jobTitle: run.job.title,
+    company: run.job.company,
+    jobDescription: run.job.description,
+    school: profile.school,
+    degree: narrative.educationDegree,
+    experiences: longAnswerContext.approvedExperiences ?? [],
+    projects: longAnswerContext.approvedProjects ?? [],
+    willingToRelocate: profile.willingToRelocate,
+    // internshipTermAvailability has no storage field yet and is always null
+    // in practice (see applicationProfileForUser) — earliestStartDate is the
+    // field that is actually populated.
+    internshipTermAvailability: profile.internshipTermAvailability ?? profile.earliestStartDate,
+    workAuthorization: profile.workAuthorization,
+    requiresSponsorship: profile.requiresSponsorship,
+    companyRelationship: longAnswerContext.companyRelationship ?? null,
+  };
   const approvedRows = await prisma.approvedAnswer.findMany({ where: { userId } });
   const reusableAnswers = new Map(approvedRows.map((row) => [row.questionText, row.answer]));
   const runAnswers = parseRunAnswers(run.answers);
@@ -206,7 +225,7 @@ export async function buildExtensionFillPlan(input: FillPlanRequest, userId: str
     };
   }
 
-  const instructions = input.fields.map((field) => {
+  const instructions = await Promise.all(input.fields.map(async (field) => {
     const label = fieldDisplayLabel(field);
     const category = classifyField(label);
     const normalizedQuestion = normalizeQuestionText(label);
@@ -228,6 +247,19 @@ export async function buildExtensionFillPlan(input: FillPlanRequest, userId: str
 
     let value: string | null = runAnswers[normalizedQuestion] ?? lookupAnswer(ctx, label).value;
     if (value === null && category === "unknown") value = reusableAnswers.get(normalizedQuestion) ?? null;
+
+    // Free-text/essay questions ("Why this company?", "Describe a project",
+    // relocation/sponsorship explanations, ...) get one grounded attempt from
+    // approved facts before falling back to needs_user. See longAnswer.ts —
+    // this never fabricates: an unanswerable essay still needs the user.
+    if (value === null && field.type === "textarea") {
+      const essayCategory = classifyEssayQuestion(label);
+      if (essayCategory) {
+        const generated = await generateLongAnswer(essayCategory, run.jobId, longAnswerFacts);
+        value = generated.answer;
+      }
+    }
+
     if (value === null) {
       return {
         index: field.index,
@@ -250,7 +282,7 @@ export async function buildExtensionFillPlan(input: FillPlanRequest, userId: str
       return { index: field.index, action: "select", value };
     }
     return { index: field.index, action: "fill", value };
-  });
+  }));
 
   return {
     runId: run.id,

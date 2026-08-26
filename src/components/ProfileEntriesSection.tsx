@@ -14,7 +14,7 @@ import { useCallback, useEffect, useState } from "react";
 
 type Entry = Record<string, unknown>;
 
-type Kind = "experience" | "project";
+type Kind = "experience" | "project" | "education";
 
 const FIELDS: Record<Kind, ReadonlyArray<{ name: string; label: string; list?: boolean }>> = {
   experience: [
@@ -32,9 +32,23 @@ const FIELDS: Record<Kind, ReadonlyArray<{ name: string; label: string; list?: b
     { name: "technologies", label: "Technologies", list: true },
     { name: "approvedSkills", label: "Skills this supports", list: true },
   ],
+  education: [
+    { name: "school", label: "School" },
+    { name: "degree", label: "Degree" },
+    { name: "major", label: "Major" },
+    { name: "minor", label: "Minor" },
+    { name: "educationLevel", label: "Education level" },
+    { name: "startMonth", label: "Start month (MM)" },
+    { name: "startYear", label: "Start year" },
+    { name: "graduationMonth", label: "Graduation month (MM)" },
+    { name: "graduationYear", label: "Graduation year" },
+    { name: "gpa", label: "GPA" },
+    { name: "relevantCoursework", label: "Relevant coursework", list: true },
+  ],
 };
 
-const REQUIRED: Record<Kind, string> = { experience: "employer", project: "name" };
+const REQUIRED: Record<Kind, string> = { experience: "employer", project: "name", education: "school" };
+const REQUIRED_LABEL: Record<Kind, string> = { experience: "An employer", project: "A project name", education: "A school" };
 
 function text(entry: Entry, name: string): string {
   const value = entry[name];
@@ -56,10 +70,13 @@ function EntryEditor({
   kind,
   entry,
   onSaved,
+  createSortOrder,
 }: {
   kind: Kind;
   entry: Entry;
   onSaved: () => void;
+  /** sortOrder to stamp on a newly-created entry, so it sorts after existing ones. Ignored when editing (id present). */
+  createSortOrder?: number;
 }) {
   const [draft, setDraft] = useState<Entry>(entry);
   const [busy, setBusy] = useState(false);
@@ -81,6 +98,7 @@ function EntryEditor({
           : text(draft, field.name);
       }
       if (kind === "experience") body.currentlyEmployed = draft.currentlyEmployed === true;
+      if (!id && typeof createSortOrder === "number") body.sortOrder = createSortOrder;
 
       const response = await fetch(
         id ? `/api/profile/${kind}/${id}` : `/api/profile/${kind}`,
@@ -178,9 +196,7 @@ function EntryEditor({
           </button>
         ) : null}
         {!required ? (
-          <span className="text-xs text-tertiary">
-            {kind === "experience" ? "An employer" : "A project name"} is required.
-          </span>
+          <span className="text-xs text-tertiary">{REQUIRED_LABEL[kind]} is required.</span>
         ) : null}
         {error ? <span className="text-sm text-critical">{error}</span> : null}
       </div>
@@ -191,6 +207,7 @@ function EntryEditor({
 export default function ProfileEntriesSection() {
   const [experiences, setExperiences] = useState<Entry[]>([]);
   const [projects, setProjects] = useState<Entry[]>([]);
+  const [educations, setEducations] = useState<Entry[]>([]);
   const [loaded, setLoaded] = useState(false);
   // Bumped after every save so the blank "add" editors reset rather than
   // keeping the text of the entry that was just created.
@@ -202,9 +219,10 @@ export default function ProfileEntriesSection() {
       setLoaded(true);
       return;
     }
-    const data = (await response.json()) as { experiences: Entry[]; projects: Entry[] };
+    const data = (await response.json()) as { experiences: Entry[]; projects: Entry[]; educations: Entry[] };
     setExperiences(data.experiences ?? []);
     setProjects(data.projects ?? []);
+    setEducations(data.educations ?? []);
     setLoaded(true);
   }, []);
 
@@ -219,8 +237,32 @@ export default function ProfileEntriesSection() {
 
   if (!loaded) return <p className="text-sm text-tertiary">Loading…</p>;
 
+  // educations[0] is the "primary" entry edited on the Application profile
+  // form above (school/degree/major there write to this same row). This
+  // section is for ADDITIONAL entries only, so the primary one is not
+  // duplicated here.
+  const additionalEducations = educations.slice(1);
+
   return (
     <div className="space-y-8">
+      <section className="rounded-lg border border-hairline bg-surface p-6 space-y-4">
+        <h2 className="font-medium text-primary">Additional education</h2>
+        <p className="text-sm text-tertiary">
+          Your primary school is set above, under Education. Add a second degree, a transfer
+          school, or any other entry here.
+        </p>
+        {additionalEducations.map((entry) => (
+          <EntryEditor key={String(entry.id)} kind="education" entry={entry} onSaved={refresh} />
+        ))}
+        <EntryEditor
+          key={`new-education-${generation}`}
+          kind="education"
+          entry={{}}
+          onSaved={refresh}
+          createSortOrder={educations.length}
+        />
+      </section>
+
       <section className="rounded-lg border border-hairline bg-surface p-6 space-y-4">
         <h2 className="font-medium text-primary">Experience</h2>
         {experiences.map((entry) => (
