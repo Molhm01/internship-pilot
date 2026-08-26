@@ -315,6 +315,61 @@ describe.skipIf(!DATABASE_AVAILABLE)("ATS company-check wave operation budget", 
  * path real production hits on a quiet tick, without depending on whatever
  * these public feeds actually contain right now.
  */
+/**
+ * Deterministic replacement for Intern List's own fetch boundary.
+ *
+ * fetchEngineeringInternships() tries a plain HTTP fetch first and falls
+ * back to launching a real headless Chromium against the real, live
+ * intern-list.com when that fetch fails — which the OTHER stub in this file
+ * (global.fetch -> 404, "every external feed fails cleanly") ironically
+ * forces for this one source, since a failed fetch is exactly what triggers
+ * the Playwright fallback. That made this test require a Chromium binary
+ * the CI unit-test job never installs, AND made its "warm cache" assertion
+ * depend on whatever intern-list.com happens to return at the moment the
+ * test runs (see the PR #57 CI investigation this replaces).
+ *
+ * Only the fetch boundary is mocked. Everything downstream —
+ * runInternListOriginalSourceDiscovery's relevance filtering, company
+ * resolution/caching, dedup, and persistence — runs for real against the
+ * test database, so this still measures the actual code being budgeted,
+ * not a stand-in for it.
+ */
+const INTERN_LIST_FIXTURE_JOBS: import("@/lib/sync/internListAdapter").RawInternListJob[] = Array.from(
+  { length: 20 },
+  (_, i) => ({
+    sourceJobId: `fixture-job-${i}`,
+    title: "Software Engineering Intern",
+    company: `Fixture Engineering Co ${i}`,
+    location: "Remote",
+    workModel: "Remote",
+    postedAt: null,
+    sourcePostedAt: null,
+    sourcePostedText: "Posted today",
+    sourceDateConfidence: "UNKNOWN",
+    sourceRowIndex: i,
+    hireTime: "Summer 2027",
+    salary: null,
+    qualifications: "Software engineering internship. Currently pursuing a B.S. in Computer Science.",
+    applyUrl: null,
+    sourceListingUrl: null,
+    officialApplicationUrl: null,
+    originalJobPostUrl: null,
+    h1bSponsored: null,
+  }),
+);
+
+vi.mock("@/lib/sync/internListAdapter", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/sync/internListAdapter")>();
+  return {
+    ...actual,
+    fetchEngineeringInternships: vi.fn().mockResolvedValue({
+      jobs: INTERN_LIST_FIXTURE_JOBS,
+      method: "http",
+      capturedAt: new Date(),
+    }),
+  };
+});
+
 describe.skipIf(!DATABASE_AVAILABLE)("MEASURED fixed-cost floors (pass #4, item 13)", () => {
   let prisma: typeof import("@/lib/db").prisma;
   let resetPrismaOperationCounter: typeof import("@/lib/db").resetPrismaOperationCounter;
@@ -413,38 +468,52 @@ describe.skipIf(!DATABASE_AVAILABLE)("MEASURED fixed-cost floors (pass #4, item 
     expect(ops).toBeLessThanOrEqual(2);
   }, 15_000);
 
-  // PR #57 CI investigation: this test's "network-stubbed candidate pool"
-  // comment doesn't match what the code actually does. The describe block's
-  // beforeEach stubs global.fetch to 404 for every source, which is correct
-  // for feeds that call fetch() directly — but Intern List's HTTP-first path
-  // (fetchViaHttp) 404s BECAUSE of that stub, and its fallback
-  // (fetchViaPlaywright, internListAdapter.ts) then launches a REAL headless
-  // Chromium and navigates the REAL live intern-list.com — no stub reaches
-  // it at all. That's two separate problems: (1) it needs a real Chromium
-  // binary, which the CI unit-test job's runner doesn't install (the actual
-  // originally-reported CI failure: "Executable doesn't exist at
-  // .../chromium_headless_shell..."), and (2) even with Chromium available,
-  // "warm < cold" is measuring live, moment-to-moment site content rather
-  // than a controlled fixture, so it can legitimately vary run to run.
-  // Both predate this PR (nothing here touches internListAdapter.ts,
-  // discoveryResolution.ts, or this test). Skipped rather than chasing a
-  // proper Playwright page.route()/fixture-based rewrite under CI-fix time
-  // pressure — that rewrite is real, separable work, not a "just retry it"
-  // patch.
-  it.skip("NO-CHANGE INTERN LIST RUN: measured Prisma operations (cold cache, then warm cache)", async () => {
+  // PR #57 CI investigation found this test's "network-stubbed candidate
+  // pool" comment didn't match what the code actually did: the describe
+  // block's beforeEach stubs global.fetch to 404 for every source, which is
+  // correct for feeds that call fetch() directly — but Intern List's
+  // HTTP-first path (fetchViaHttp) 404s BECAUSE of that stub, and its
+  // fallback (fetchViaPlaywright) then launched a REAL headless Chromium
+  // against the REAL live intern-list.com, no stub reaching it at all. That
+  // needed a Chromium binary the CI unit-test job's runner doesn't install,
+  // and measured live, moment-to-moment site content rather than a
+  // controlled fixture. Fixed properly (rather than skipped) by mocking
+  // fetchEngineeringInternships itself — see the internListAdapter mock
+  // above — which is the real fetch boundary this comment always intended
+  // to stub. Everything below that boundary (relevance filtering, company
+  // resolution/caching, dedup, persistence) still runs for real.
+  it("NO-CHANGE INTERN LIST RUN: measured Prisma operations (cold cache, then warm cache)", async () => {
     const { runInternListOriginalSourceDiscovery } = await import("@/lib/sync/discoveryResolution");
-    // First call: cold company-resolution cache — every candidate's company
-    // name is a cache miss, so this pays the full-table fuzzy-match fallback
-    // plus one cache-write per distinct company name resolved.
+
+    // The company-resolution cache (AppSetting rows keyed
+    // "internListCompanyResolution:<companyKey(name)>") is a persisted,
+    // 7-day-TTL cross-run cache — running this suite repeatedly against the
+    // same disposable Postgres (not recreated between runs) would otherwise
+    // let an earlier run's cache entries make even the "cold" call here
+    // warm. Clearing every key this fixture could have written first makes
+    // the test self-contained regardless of what a previous run left
+    // behind. discoveryResolution.ts's companyKey() is unexported and not
+    // worth duplicating here just to predict the exact normalized form
+    // (strips "co"/"inc"/etc. as whole words, then all non-alphanumerics —
+    // "Fixture Engineering Co 3" becomes "fixtureengineering3", not the
+    // hyphenated slug a naive guess would produce), so this matches the
+    // shared "fixtureengineering" stem instead of trying to reproduce it.
+    await prisma.appSetting.deleteMany({
+      where: { key: { startsWith: "internListCompanyResolution:fixtureengineering" } },
+    });
+
+    // First call: cold company-resolution cache — every fixture company
+    // name is a cache miss, so this pays the full-table fuzzy-match
+    // fallback plus one cache-write per distinct company name.
     resetPrismaOperationCounter();
     const cold = await runInternListOriginalSourceDiscovery(25);
     const coldOps = getPrismaOperationCount();
     console.log("[MEASURED] Intern List run, COLD cache:", coldOps, "ops —", JSON.stringify(cold));
 
-    // Second call with the same (deterministic, network-stubbed) candidate
-    // pool: every company name this run needs was just cached, so this
-    // measures the real steady-state cost — the number that actually
-    // recurs every two hours in production, not the one-time warm-up cost.
+    // Second call with the exact same deterministic fixture candidate pool:
+    // every company name this run needs was just cached, so this measures
+    // the real steady-state cost — the number that actually recurs every
+    // two hours in production, not the one-time warm-up cost.
     resetPrismaOperationCounter();
     const warm = await runInternListOriginalSourceDiscovery(25);
     const warmOps = getPrismaOperationCount();
