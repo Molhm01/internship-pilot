@@ -244,3 +244,22 @@ export async function getCachedCatalogHealth(
   });
   return inFlight;
 }
+
+/**
+ * Test-only: clears both cache layers (in-memory and the DB-persisted row).
+ *
+ * This module is a genuine cross-call singleton by design (that's the whole
+ * point of the cache), which means a test suite that calls
+ * `getCachedCatalogHealth` more than once — across multiple `it()` blocks
+ * sharing one `beforeAll`-imported module instance — inherits whatever TTL
+ * state an earlier test left behind. A later test's "this should be a cold
+ * miss" assumption then silently rides on an unrelated, still-fresh entry
+ * from moments earlier in wall-clock time, producing exactly the kind of
+ * order-dependent flakiness this export exists to rule out. Call it in a
+ * `beforeEach` alongside `resetPrismaOperationCounter()`.
+ */
+export async function __resetCatalogHealthCacheForTests(): Promise<void> {
+  memoryCache = null;
+  inFlight = null;
+  await prisma.appSetting.deleteMany({ where: { key: CACHE_KEY } }).catch(() => undefined);
+}

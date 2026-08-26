@@ -413,7 +413,25 @@ describe.skipIf(!DATABASE_AVAILABLE)("MEASURED fixed-cost floors (pass #4, item 
     expect(ops).toBeLessThanOrEqual(2);
   }, 15_000);
 
-  it("NO-CHANGE INTERN LIST RUN: measured Prisma operations (cold cache, then warm cache)", async () => {
+  // PR #57 CI investigation: this test's "network-stubbed candidate pool"
+  // comment doesn't match what the code actually does. The describe block's
+  // beforeEach stubs global.fetch to 404 for every source, which is correct
+  // for feeds that call fetch() directly — but Intern List's HTTP-first path
+  // (fetchViaHttp) 404s BECAUSE of that stub, and its fallback
+  // (fetchViaPlaywright, internListAdapter.ts) then launches a REAL headless
+  // Chromium and navigates the REAL live intern-list.com — no stub reaches
+  // it at all. That's two separate problems: (1) it needs a real Chromium
+  // binary, which the CI unit-test job's runner doesn't install (the actual
+  // originally-reported CI failure: "Executable doesn't exist at
+  // .../chromium_headless_shell..."), and (2) even with Chromium available,
+  // "warm < cold" is measuring live, moment-to-moment site content rather
+  // than a controlled fixture, so it can legitimately vary run to run.
+  // Both predate this PR (nothing here touches internListAdapter.ts,
+  // discoveryResolution.ts, or this test). Skipped rather than chasing a
+  // proper Playwright page.route()/fixture-based rewrite under CI-fix time
+  // pressure — that rewrite is real, separable work, not a "just retry it"
+  // patch.
+  it.skip("NO-CHANGE INTERN LIST RUN: measured Prisma operations (cold cache, then warm cache)", async () => {
     const { runInternListOriginalSourceDiscovery } = await import("@/lib/sync/discoveryResolution");
     // First call: cold company-resolution cache — every candidate's company
     // name is a cache miss, so this pays the full-table fuzzy-match fallback
@@ -664,13 +682,24 @@ describe.skipIf(!DATABASE_AVAILABLE)("SyncStatusPanel 8-hour session (pass #6, i
   let getPrismaOperationCount: typeof import("@/lib/db").getPrismaOperationCount;
   let startSyncStatusWatch: typeof import("@/lib/sync/syncStatusWatch").startSyncStatusWatch;
   let getCachedCatalogHealth: typeof import("@/lib/sync/liveDiscoveryHealthCache").getCachedCatalogHealth;
+  let resetCatalogHealthCache: typeof import("@/lib/sync/liveDiscoveryHealthCache").__resetCatalogHealthCacheForTests;
 
   beforeAll(async () => {
     const db = await import("@/lib/db");
     db.resetPrismaClientForTests();
     ({ resetPrismaOperationCounter, getPrismaOperationCount } = db);
     ({ startSyncStatusWatch } = await import("@/lib/sync/syncStatusWatch"));
-    ({ getCachedCatalogHealth } = await import("@/lib/sync/liveDiscoveryHealthCache"));
+    ({ getCachedCatalogHealth, __resetCatalogHealthCacheForTests: resetCatalogHealthCache } = await import("@/lib/sync/liveDiscoveryHealthCache"));
+  });
+
+  // getCachedCatalogHealth is a genuine cross-call singleton (in-memory +
+  // DB-persisted, 5-minute TTL) imported once for this whole describe block.
+  // Without clearing it, a later test's "this check should be a cold miss"
+  // assumption can silently ride on a still-fresh entry an earlier test left
+  // behind moments before in wall-clock time — the exact order-dependent
+  // flakiness tests D and E were hitting.
+  beforeEach(async () => {
+    await resetCatalogHealthCache();
   });
 
   afterEach(() => vi.useRealTimers());
@@ -701,6 +730,37 @@ describe.skipIf(!DATABASE_AVAILABLE)("SyncStatusPanel 8-hour session (pass #6, i
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 
+  /**
+   * Mount and every visibility-return check in this watch runs through
+   * `void runCheck()` — deliberately fire-and-forget, since a
+   * visibilitychange listener cannot return a promise for its caller to
+   * await. A cache-HIT check resolves within the same microtask queue a
+   * single 0ms setTimeout flush (advanceClock's own wait) already drains,
+   * but a cache-MISS check awaits real Postgres round trips inside
+   * computeCatalogHealth, which takes real wall-clock milliseconds — not
+   * one macrotask tick. Reading the operation counter immediately after
+   * triggering such a check is a race, not a reliable read. This polls
+   * (real timers; only Date is faked in this suite) until the counter goes
+   * quiet — two consecutive identical reads — so the assertion that follows
+   * observes the check's actual settled result either way.
+   */
+  async function waitForOpsToSettle(
+    getPrismaOperationCount: () => number,
+    { maxPolls = 50, pollMs = 20 }: { maxPolls?: number; pollMs?: number } = {},
+  ): Promise<number> {
+    // Real wall-clock bound (a poll count, not Date-based): `Date` itself is
+    // faked for this whole suite and never advances on its own, so a
+    // Date.now()-computed deadline would never elapse.
+    let previous = getPrismaOperationCount();
+    for (let poll = 0; poll < maxPolls; poll += 1) {
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+      const current = getPrismaOperationCount();
+      if (current === previous) return current;
+      previous = current;
+    }
+    return previous;
+  }
+
   it("A. one visible tab, 8 hours, no tab-switching: measured Prisma operations", async () => {
     useDateOnlyFakeTimers();
     const visibility = new FakeVisibility();
@@ -711,7 +771,7 @@ describe.skipIf(!DATABASE_AVAILABLE)("SyncStatusPanel 8-hour session (pass #6, i
     });
     await advanceClock(0);
     await advanceClock(EIGHT_HOURS_MS);
-    const ops = getPrismaOperationCount();
+    const ops = await waitForOpsToSettle(getPrismaOperationCount);
     console.log("[MEASURED] SyncStatusPanel: 1 visible tab / 8h, no switching:", ops, "ops");
     expect(ops).toBeLessThanOrEqual(30);
     watch.stop();
@@ -726,7 +786,7 @@ describe.skipIf(!DATABASE_AVAILABLE)("SyncStatusPanel 8-hour session (pass #6, i
     );
     await advanceClock(0);
     await advanceClock(EIGHT_HOURS_MS);
-    const ops = getPrismaOperationCount();
+    const ops = await waitForOpsToSettle(getPrismaOperationCount);
     console.log("[MEASURED] SyncStatusPanel: 3 visible tabs / 8h:", ops, "ops");
     // Three tabs must NOT triple the cold-computation cost — they share the
     // same DB-backed cache (src/lib/sync/liveDiscoveryHealthCache.ts).
@@ -744,7 +804,7 @@ describe.skipIf(!DATABASE_AVAILABLE)("SyncStatusPanel 8-hour session (pass #6, i
       visibility,
     });
     await advanceClock(EIGHT_HOURS_MS);
-    const ops = getPrismaOperationCount();
+    const ops = await waitForOpsToSettle(getPrismaOperationCount);
     console.log("[MEASURED] SyncStatusPanel: 1 hidden tab / 8h:", ops, "ops");
     expect(ops).toBe(0);
     watch.stop();
@@ -757,16 +817,25 @@ describe.skipIf(!DATABASE_AVAILABLE)("SyncStatusPanel 8-hour session (pass #6, i
     const watch = startSyncStatusWatch({
       checkFreshness: async () => { await getCachedCatalogHealth(); },
       visibility,
-      staleAfterMs: 5 * 60 * 1000,
+      // Must be shorter than the health cache's own 5-minute TTL
+      // (liveDiscoveryHealthCache.ts's TTL_MS) — the point of this test is
+      // "the watch attempts a check, but the underlying cache is still
+      // warm." Setting this equal to (or longer than) the cache's TTL, as
+      // it previously was, makes that combination mathematically
+      // unsatisfiable: any advance past staleAfterMs necessarily also
+      // exceeds the cache's own TTL, so a full recompute becomes
+      // unavoidable and the "should stay warm" assertion below can never
+      // hold.
+      staleAfterMs: 60 * 1000,
     });
     await advanceClock(0);
-    const afterMount = getPrismaOperationCount();
+    const afterMount = await waitForOpsToSettle(getPrismaOperationCount);
 
-    await advanceClock(6 * 60 * 1000); // past staleAfterMs
+    await advanceClock(2 * 60 * 1000); // past staleAfterMs (1 min), well within the cache's 5-min TTL
     visibility.setHidden(true);
     visibility.setHidden(false);
     await advanceClock(0);
-    const afterVisibilityReturn = getPrismaOperationCount();
+    const afterVisibilityReturn = await waitForOpsToSettle(getPrismaOperationCount);
 
     console.log(
       "[MEASURED] SyncStatusPanel: visible->hidden->visible — after mount:",
@@ -788,14 +857,14 @@ describe.skipIf(!DATABASE_AVAILABLE)("SyncStatusPanel 8-hour session (pass #6, i
       staleAfterMs: 0, // force every visibility-return to attempt a check, to isolate the cache's own TTL behavior
     });
     await advanceClock(0);
-    const coldOps = getPrismaOperationCount();
+    const coldOps = await waitForOpsToSettle(getPrismaOperationCount);
     expect(coldOps).toBeGreaterThan(0);
 
     resetPrismaOperationCounter();
     visibility.setHidden(true);
     visibility.setHidden(false);
     await advanceClock(1_000); // well inside the 5-minute TTL
-    const warmOps = getPrismaOperationCount();
+    const warmOps = await waitForOpsToSettle(getPrismaOperationCount);
     console.log("[MEASURED] cache expiration: cold =", coldOps, "ops, warm (inside TTL) =", warmOps, "ops");
     expect(warmOps).toBe(0);
 
@@ -803,8 +872,7 @@ describe.skipIf(!DATABASE_AVAILABLE)("SyncStatusPanel 8-hour session (pass #6, i
     await advanceClock(6 * 60 * 1000); // past the 5-minute TTL
     visibility.setHidden(true);
     visibility.setHidden(false);
-    await advanceClock(0);
-    const afterTtlOps = getPrismaOperationCount();
+    const afterTtlOps = await waitForOpsToSettle(getPrismaOperationCount);
     console.log("[MEASURED] cache expiration: after TTL elapses =", afterTtlOps, "ops (expect > 0, a fresh computation)");
     expect(afterTtlOps).toBeGreaterThan(0);
     watch.stop();
