@@ -460,6 +460,13 @@ export async function processSupplementalRadarQueue(limit = 80): Promise<{
     })
     .slice(0, Math.max(1, Math.min(limit, 250)));
 
+  // Empty-work fast path: nothing due means there is no signal to resolve
+  // against a company board, so skip the company-table read entirely rather
+  // than fetching it on every tick regardless of whether it will be used.
+  if (due.length === 0) {
+    return { due: 0, processed: 0, resolved: 0, retried: 0, abandoned: 0, newCount: 0, updatedCount: 0 };
+  }
+
   // Radar signals are only hints. They may resolve through ANY company whose
   // official ATS configuration we already know; the signal itself never makes
   // an aggregator URL trusted. Intern List signals get one additional approved

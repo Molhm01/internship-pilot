@@ -11,7 +11,16 @@
 import { detectAtsForCareersPage } from "@/lib/ats/detect";
 import { fetchJsonSafe } from "@/lib/ats/types";
 
-export type ResolvableAts = "greenhouse" | "lever" | "ashby" | "smartrecruiters" | "workday";
+export type ResolvableAts =
+  | "greenhouse"
+  | "lever"
+  | "ashby"
+  | "smartrecruiters"
+  | "workday"
+  | "successfactors"
+  | "icims"
+  | "eightfold"
+  | "phenom";
 type ProbeableAts = "greenhouse" | "lever" | "ashby";
 
 export type AtsResolution = {
@@ -157,12 +166,17 @@ const DIRECT_TYPES = new Set<ResolvableAts>([
   "ashby",
   "smartrecruiters",
   "workday",
+  "successfactors",
+  "icims",
+  "eightfold",
+  "phenom",
 ]);
 
 export type ResolveOptions = {
   throttleMs?: number;
   only?: ResolvableAts[];
   sleep?: (ms: number) => Promise<void>;
+  probeFallback?: boolean;
 };
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -197,6 +211,8 @@ export async function resolveAtsForCompany(
       };
     }
   }
+
+  if (options.probeFallback === false) return null;
 
   const throttleMs = options.throttleMs ?? 250;
   const sleep = options.sleep ?? defaultSleep;

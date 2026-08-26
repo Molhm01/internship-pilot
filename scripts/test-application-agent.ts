@@ -85,6 +85,17 @@ async function main(): Promise<void> {
     // belongs in a deterministic fixture run, so the scheduler is paused before
     // the server that would start it comes up.
     await setSchedulerPaused(true);
+    // This process is about to spawn two more (the `next start` server and
+    // the isolated suite), each opening its own Prisma connection pool
+    // against the same local Prisma Dev/PGlite instance. PGlite is a
+    // single embedded engine, not a multi-process-safe Postgres server —
+    // three simultaneous pools against it is what produced this harness's
+    // "Connection terminated unexpectedly" / "bind message supplies N
+    // parameters, prepared statement requires 0" failures. This parent has
+    // no further queries to run until the finally block, so releasing its
+    // pool here removes one full set of concurrent connections for the
+    // duration of the run; Prisma reconnects lazily if cleanup needs it.
+    await prisma.$disconnect();
 
     server = spawn(process.execPath, [path.join(process.cwd(), "node_modules", "next", "dist", "bin", "next"), "start", "-p", String(port)], {
       cwd: process.cwd(),

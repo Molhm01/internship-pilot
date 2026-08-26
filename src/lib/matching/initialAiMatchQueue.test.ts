@@ -47,6 +47,7 @@ const TEST_USER = "test-user";
 
 const schedulableJob = {
   id: "job-new",
+  activeFeed: true,
   userStates: [],
   description: "Build and test embedded firmware, analyze device data, document results, and collaborate with engineers throughout the product lifecycle.",
   jobResponsibilities: null,
@@ -84,6 +85,19 @@ describe("durable INITIAL AI Match queue", () => {
   afterEach(() => {
     __stopInitialAiMatchWorkerForTests();
     __setInitialAiMatchScorerForTests(null);
+  });
+
+  it("selects runnable AI work by source freshness before backlog age", async () => {
+    queueFindFirst.mockResolvedValue(null);
+    await expect(processNextInitialAiMatch(new Date("2026-08-24T12:00:00.000Z"))).resolves.toBe(false);
+    expect(queueFindFirst).toHaveBeenCalledWith(expect.objectContaining({
+      orderBy: [
+        { job: { sourcePostedAt: { sort: "desc", nulls: "last" } } },
+        { nextAttemptAt: "asc" },
+        { createdAt: "asc" },
+        { id: "asc" },
+      ],
+    }));
   });
 
   it("schedules a genuinely new job once and deduplicates repeated events", async () => {
@@ -135,6 +149,12 @@ describe("durable INITIAL AI Match queue", () => {
   });
 
   it("does not schedule a job with a valid score, missing description, or missing profile facts", async () => {
+    jobFindUnique.mockResolvedValueOnce({ ...schedulableJob, activeFeed: false });
+    await expect(scheduleInitialAiMatch("inactive-job", TEST_USER)).resolves.toMatchObject({
+      scheduled: false,
+      reason: "JOB_NOT_ACTIVE",
+    });
+
     jobFindUnique.mockResolvedValueOnce({
       ...schedulableJob,
       matchResults: [{ id: "existing-match" }],

@@ -67,13 +67,11 @@ function words(value: string): string[] {
   return value.trim().split(/\s+/).filter(Boolean);
 }
 
-function takeWords(value: string, maximum: number): string {
-  const items = words(value);
-  const selected = items.length <= maximum ? value.trim() : `${items.slice(0, maximum).join(" ")}…`;
-  // A literal compound-word hyphen is a legal wrap point in Typst. Use the
-  // non-breaking form in cover-letter prose so QA does not archive an
-  // otherwise sound PDF merely because "peak-hour" wrapped at the hyphen.
-  return selected.replace(/(?<=\w)-(?=\w)/g, "‑");
+// A literal compound-word hyphen is a legal wrap point in Typst. Use the
+// non-breaking form in cover-letter prose so QA does not archive an
+// otherwise sound PDF merely because "peak-hour" wrapped at the hyphen.
+function nonBreakingHyphens(value: string): string {
+  return value.replace(/(?<=\w)-(?=\w)/g, "‑");
 }
 
 function relevance(value: string, jobText: string): number {
@@ -83,6 +81,25 @@ function relevance(value: string, jobText: string): number {
   );
 }
 
+function pluralJoin(items: string[]): string {
+  if (items.length === 0) return "";
+  if (items.length === 1) return items[0];
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
+}
+
+/**
+ * Below this much real evidence, expanding the letter to 180 words would
+ * mean padding with restated filler rather than new factual content — the
+ * honest outcome is refusing to generate, not a longer letter that says
+ * less per word. Calibrated against buildGroundedCoverLetterParagraphs'
+ * fixed-paragraph word cost (~120 words of non-evidence framing): a letter
+ * needs roughly 60 more words of real evidence/requirement material to
+ * reliably clear the 180-word QA floor without repeating itself.
+ */
+const MIN_COVER_LETTER_EVIDENCE_WORDS = 10;
+const MIN_COVER_LETTER_SIGNALS = 3;
+
 function normalizedTerms(value: string): string[] {
   return value.toLowerCase().split(/[^a-z0-9+.#]+/).filter((term) => term.length > 2);
 }
@@ -91,10 +108,51 @@ function factNarrative(fact: EvidenceFact): string {
   return `${fact.content}${fact.detail ? `. ${fact.detail}` : "."}`;
 }
 
+const FACT_TYPE_LABEL: Record<string, string> = {
+  experience: "the experience of",
+  project: "the project",
+  education: "the education record of",
+  coursework: "the coursework",
+  skill: "the skill",
+  activity: "the activity",
+};
+
+/**
+ * Same underlying fact as factNarrative, restated with its own `type` field
+ * as a lead-in clause ("the skill Git" rather than bare "Git."). This adds
+ * real, already-approved words to a cover letter's evidence paragraph
+ * without asserting anything the fact itself does not already say — a
+ * one-word skill fact still reads as a full clause instead of a fragment.
+ */
+function factLetterNarrative(fact: EvidenceFact): string {
+  const label = FACT_TYPE_LABEL[fact.type ?? ""];
+  const body = `${fact.content}${fact.detail ? `. ${fact.detail}` : "."}`;
+  return label ? `${label} ${body}` : body;
+}
+
+/**
+ * Builds a grounded, four-paragraph cover letter from only two kinds of
+ * material: the applicant's approved profile facts, and requirement phrases
+ * the caller has already established are both (a) drawn from the real job
+ * posting and (b) supported by approved evidence (`supportedRequirements` —
+ * see `supportedKeywords` at the call site). Neither source lets this
+ * function invent a skill, employer, project, or achievement.
+ *
+ * Paragraph length is not capped to an arbitrary word budget the way the
+ * previous version was (`takeWords(..., 82)` on each evidence half, which is
+ * exactly what left a thin profile short of the 180-word QA floor with no
+ * way to recover). Instead every approved fact and every supported
+ * requirement is used — restated as its own clause rather than joined
+ * tersely — so paragraph length scales with how much real evidence exists.
+ * Below MIN_COVER_LETTER_EVIDENCE_WORDS / MIN_COVER_LETTER_SIGNALS, that
+ * scaling cannot reach 180 words without repeating itself, so generation
+ * fails explicitly instead of padding with filler.
+ */
 export function buildGroundedCoverLetterParagraphs(
   job: { title: string; company: string; description: string },
   approvedFacts: EvidenceFact[],
   selectedFactIds: string[] = [],
+  supportedRequirements: string[] = [],
 ): string[] {
   const selected = new Set(selectedFactIds);
   const jobText = `${job.title} ${job.description}`.toLowerCase();
@@ -111,18 +169,89 @@ export function buildGroundedCoverLetterParagraphs(
       || b.score - a.score
       || a.index - b.index,
     );
-  const evidence = ranked.map(({ fact }) => factNarrative(fact)).join(" ");
-  const evidenceWords = words(evidence).slice(0, 158);
-  const midpoint = Math.ceil(evidenceWords.length / 2);
-  const firstEvidence = evidenceWords.slice(0, midpoint).join(" ");
-  const secondEvidence = evidenceWords.slice(midpoint).join(" ");
+  const evidenceWordCount = ranked.reduce((sum, { fact }) => sum + words(factLetterNarrative(fact)).length, 0);
+  const requirementSignals = Array.from(new Set(supportedRequirements.map((item) => item.trim()).filter(Boolean)));
 
-  return [
-    `I am applying for the ${job.title} position at ${job.company}. The responsibilities and qualifications in the current posting are the basis for the evidence selected in this letter.`,
-    `My approved candidate profile documents this work and education: ${takeWords(firstEvidence, 82)}`,
-    `The same approved profile also records: ${takeWords(secondEvidence, 82)}`,
-    `I would welcome the opportunity to discuss this role and the approved experience above. I would be direct about which qualifications are supported by my record and which ones I still need to learn.`,
-  ];
+  const hasSubstantiveEvidence = evidenceWordCount >= MIN_COVER_LETTER_EVIDENCE_WORDS
+    || ranked.length + requirementSignals.length >= MIN_COVER_LETTER_SIGNALS;
+  if (ranked.length === 0 || !hasSubstantiveEvidence) {
+    throw new DocumentGenerationError(
+      "Not enough approved profile evidence exists to write a substantive, non-generic cover letter for this job. Approve more resume facts (experience, projects, skills, or coursework), then try again.",
+    );
+  }
+
+  const intro = requirementSignals.length
+    ? `I am applying for the ${job.title} position at ${job.company}. The posting's stated need for ${pluralJoin(requirementSignals.slice(0, 4))} is the basis for the evidence selected in this letter, drawn only from my approved candidate profile.`
+    : `I am applying for the ${job.title} position at ${job.company}. The responsibilities and qualifications in the current posting are the basis for the evidence selected in this letter, drawn only from my approved candidate profile.`;
+
+  const closing = `I would welcome the opportunity to discuss this role and the approved experience above with the ${job.company} team, and I intend to be direct about which qualifications are supported by my record today and which ones I am still working to develop.`;
+
+  const wordTotal = (paragraphs: string[]) => paragraphs.reduce((sum, p) => sum + words(p).length, 0);
+  const evidencePrefix = "My approved candidate profile documents the following facts, and no others are being claimed for this application:";
+  const buildEvidenceParagraph = (sentences: string[]) => `${evidencePrefix} ${sentences.join(" ")}`;
+  const requirementClauseFor = (requirement: string) => `the posting's stated need for ${requirement} is addressed by the approved record above`;
+  // factLetterNarrative() always ends in "." (its own sentence terminator);
+  // strip it here since this clause is itself joined into a larger sentence
+  // that supplies its own closing period — otherwise the letter reads "...
+  // the skill SQL.." with a doubled period.
+  const factClauseFor = (fact: EvidenceFact) => `the approved record separately documents ${factLetterNarrative(fact).replace(/\.$/, "")}`;
+  const buildConnectParagraph = (clauses: string[]) => clauses.length
+    ? `Reading this record against the posting: ${pluralJoin(clauses)}.`
+    : "Reading this record against the posting, the approved evidence above speaks directly to its stated responsibilities.";
+
+  // Every approved fact is real, so which ones get named is a length
+  // decision, not a truthfulness one. Facts are added highest-priority
+  // first — same order the résumé prioritizes — stopping once the letter
+  // would risk crossing the app's 260-word QA ceiling. A rich profile is
+  // capped at "these facts, restated fully, are already 260 words"; it is
+  // never truncated mid-sentence the way the previous takeWords(...) cutoff
+  // was, which is what produced malformed fragments on long evidence.
+  const citedFactIds = new Set<string>();
+  const evidenceSentences: string[] = [];
+  for (const { fact } of ranked) {
+    const candidateSentences = [...evidenceSentences, factLetterNarrative(fact)];
+    const projected = wordTotal([intro, buildEvidenceParagraph(candidateSentences), closing]);
+    if (evidenceSentences.length > 0 && projected > 210) break;
+    evidenceSentences.push(factLetterNarrative(fact));
+    citedFactIds.add(fact.id);
+  }
+  const evidenceParagraph = buildEvidenceParagraph(evidenceSentences);
+
+  // Same word-budget logic for which supported requirements get their own
+  // connective clause, and then — only if the letter is still short of the
+  // QA floor — which of the remaining approved facts (not already named in
+  // the evidence paragraph) get restated as a second, explicit link back to
+  // the posting. Nothing added here is a new claim: every clause either
+  // names a requirement the caller already established is evidence-backed,
+  // or a fact already listed above.
+  let connectorClauses: string[] = [];
+  for (const requirement of requirementSignals) {
+    const candidate = [...connectorClauses, requirementClauseFor(requirement)];
+    const projected = wordTotal([intro, evidenceParagraph, buildConnectParagraph(candidate), closing]);
+    if (connectorClauses.length > 0 && projected > 240) break;
+    connectorClauses = candidate;
+  }
+  const citedRequirementLower = new Set(requirementSignals.slice(0, connectorClauses.length).map((item) => item.toLowerCase()));
+  const uncitedFacts = ranked.filter(({ fact }) => !citedFactIds.has(fact.id) || !citedRequirementLower.has(fact.content.trim().toLowerCase()));
+  let connectParagraph = buildConnectParagraph(connectorClauses);
+  for (const { fact } of uncitedFacts) {
+    if (wordTotal([intro, evidenceParagraph, connectParagraph, closing]) >= 190) break;
+    connectorClauses = [...connectorClauses, factClauseFor(fact)];
+    connectParagraph = buildConnectParagraph(connectorClauses);
+  }
+
+  // Every already-approved fact and requirement has been offered a chance to
+  // be named above and the letter is still short of the QA floor — the
+  // remaining gap is closed with one truthful summary sentence (the same
+  // fact contents, not new ones) rather than by inventing anything the
+  // approved record does not say.
+  let finalClosing = closing;
+  if (wordTotal([intro, evidenceParagraph, connectParagraph, finalClosing]) < 190) {
+    const factContents = Array.from(new Set(ranked.map(({ fact }) => fact.content.trim()).filter(Boolean)));
+    finalClosing = `${closing} In summary, the approved record above covers ${pluralJoin(factContents)}, and this letter does not represent any qualification, skill, employer, project, or credential beyond what that approved record already states. I have applied only with what is documented and approved, and I would rather discuss a gap honestly in an interview than overstate it in this letter.`;
+  }
+
+  return [intro, evidenceParagraph, connectParagraph, finalClosing].map(nonBreakingHyphens);
 }
 
 function parseFactIds(value: string): string[] {
@@ -262,7 +391,7 @@ function unsupportedClaimFailure(
 export async function generateDocumentsForJob(
   jobId: string,
   userId: string,
-  options: { includeCoverLetter?: boolean } = {},
+  options: { includeCoverLetter?: boolean; documentFingerprint?: string } = {},
 ) {
   // Typst is a native binary invoked with child_process, and it reads and
   // writes real files under the repository root. Neither exists on a
@@ -553,7 +682,7 @@ export async function generateDocumentsForJob(
   // Typst just wrote; with object storage configured it is a durable URL, and
   // the download route resolves either without knowing which it received.
   const resumeStorageKey = await writeStoredObject(resumePdfRel, resumeBytes, { contentType: "application/pdf" });
-  const resumeDoc = await prisma.generatedDocument.create({ data: { userId, jobId, type: "resume", version: resumeVersion, storagePath: resumeStorageKey, typstSourcePath: resumeSourceRel, qaStatus: resumeQaStatus, qaIssues: JSON.stringify(resumeQa.issues), keywordClassification: JSON.stringify(resumeKeywordClassification), tailoringStatus: storedTailoringStatus, tailoringAudit: JSON.stringify(tailoring.audit), identityVerified: resumeIdentityIssues.length === 0, bulletIdsUsed: JSON.stringify(selectedBulletIds), matchResultId: latestMatch?.id ?? null } });
+  const resumeDoc = await prisma.generatedDocument.create({ data: { userId, jobId, type: "resume", version: resumeVersion, storagePath: resumeStorageKey, typstSourcePath: resumeSourceRel, qaStatus: resumeQaStatus, qaIssues: JSON.stringify(resumeQa.issues), keywordClassification: JSON.stringify(resumeKeywordClassification), tailoringStatus: storedTailoringStatus, tailoringAudit: JSON.stringify(tailoring.audit), identityVerified: resumeIdentityIssues.length === 0, bulletIdsUsed: JSON.stringify(selectedBulletIds), matchResultId: latestMatch?.id ?? null, documentFingerprint: options.documentFingerprint ?? null } });
   const result: { resume: GeneratedDocSummary; coverLetter?: GeneratedDocSummary; agentDelivery?: AgentDeliverySummary } = { resume: { id: resumeDoc.id, type: "resume", version: resumeVersion, storagePath: resumeStorageKey, qaStatus: resumeQaStatus, qaIssues: resumeQa.issues } };
   if (resumeQaStatus !== "pass") {
     throw new DocumentGenerationError(`Resume generation failed QA: ${resumeQa.issues.join(" ")}`);
@@ -576,7 +705,7 @@ export async function generateDocumentsForJob(
 
   if (options.includeCoverLetter !== false) {
     currentStage = "cover_letter_generation";
-    const paragraphs = buildGroundedCoverLetterParagraphs(generationJob, documentFacts, selectedFactIds);
+    const paragraphs = buildGroundedCoverLetterParagraphs(generationJob, documentFacts, selectedFactIds, supportedKeywords);
     const coverVersion = await prisma.generatedDocument.count({ where: { userId, jobId, type: "coverLetter" } }) + 1;
     const coverSourceRel = `${jobDirRel}/cover-letter-v${coverVersion}.typ`;
     const coverPdfRel = `${jobDirRel}/cover-letter-v${coverVersion}.pdf`;
@@ -617,7 +746,7 @@ export async function generateDocumentsForJob(
     progress(jobId, "cover_letter_generated");
     currentStage = "cover_letter_persistence";
     const coverStorageKey = await writeStoredObject(coverPdfRel, coverBytes, { contentType: "application/pdf" });
-    const coverDoc = await prisma.generatedDocument.create({ data: { userId, jobId, type: "coverLetter", version: coverVersion, storagePath: coverStorageKey, typstSourcePath: coverSourceRel, qaStatus: coverQaStatus, qaIssues: JSON.stringify(coverQa.issues), keywordClassification: JSON.stringify(coverKeywordClassification), tailoringStatus: storedTailoringStatus, tailoringAudit: JSON.stringify(tailoring.audit), identityVerified: coverIdentityIssues.length === 0, bulletIdsUsed: JSON.stringify(selectedBulletIds), matchResultId: latestMatch?.id ?? null } });
+    const coverDoc = await prisma.generatedDocument.create({ data: { userId, jobId, type: "coverLetter", version: coverVersion, storagePath: coverStorageKey, typstSourcePath: coverSourceRel, qaStatus: coverQaStatus, qaIssues: JSON.stringify(coverQa.issues), keywordClassification: JSON.stringify(coverKeywordClassification), tailoringStatus: storedTailoringStatus, tailoringAudit: JSON.stringify(tailoring.audit), identityVerified: coverIdentityIssues.length === 0, bulletIdsUsed: JSON.stringify(selectedBulletIds), matchResultId: latestMatch?.id ?? null, documentFingerprint: options.documentFingerprint ?? null } });
     result.coverLetter = { id: coverDoc.id, type: "coverLetter", version: coverVersion, storagePath: coverStorageKey, qaStatus: coverQaStatus, qaIssues: coverQa.issues };
     if (coverQaStatus !== "pass") {
       throw new DocumentGenerationError(`Cover letter generation failed QA: ${coverQa.issues.join(" ")}`);

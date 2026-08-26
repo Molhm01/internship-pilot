@@ -12,8 +12,10 @@
 
 import { prisma } from "@/lib/db";
 import { resolveAtsForCompany } from "@/lib/ats/resolve";
+import { rankMissingProviders } from "@/lib/sync/providerQuality";
+import { normalizeCompanyKey } from "@/lib/sync/freshSignalReasons";
 
-type Args = { apply: boolean; limit: number | null; throttleMs: number };
+type Args = { apply: boolean; limit: number | null; throttleMs: number; careersOnly: boolean };
 
 function parseArgs(argv: string[]): Args {
   const apply = argv.includes("--apply");
@@ -23,6 +25,7 @@ function parseArgs(argv: string[]): Args {
     apply,
     limit: limitArg ? parseInt(limitArg.split("=")[1], 10) : null,
     throttleMs: throttleArg ? parseInt(throttleArg.split("=")[1], 10) : 250,
+    careersOnly: argv.includes("--careers-only"),
   };
 }
 
@@ -31,15 +34,34 @@ async function main() {
   const mode = args.apply ? "APPLY" : "DRY-RUN";
   console.log(`[ats:resolve] mode=${mode} throttle=${args.throttleMs}ms`);
 
-  const candidates = await prisma.company.findMany({
+  const candidateRows = await prisma.company.findMany({
     where: {
       allowlisted: true,
       OR: [{ atsType: null }, { atsType: "unknown" }, { atsIdentifier: null }],
     },
-    select: { id: true, name: true, website: true, careersUrl: true, atsType: true },
-    orderBy: { name: "asc" },
-    ...(args.limit ? { take: args.limit } : {}),
+    select: {
+      id: true, name: true, website: true, careersUrl: true, atsType: true, atsIdentifier: true,
+      engineeringActivityTier: true, priority: true, activeInternshipCount: true,
+    },
   });
+  const unresolvedSignals = await prisma.freshSignalResolution.groupBy({
+    by: ["normalizedCompany"],
+    where: { state: "PENDING", sourceCapturedAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } },
+    _count: { _all: true },
+  });
+  const signalCounts = new Map(unresolvedSignals.map((row) => [row.normalizedCompany, row._count._all]));
+  const rankedNames = rankMissingProviders(candidateRows.map((company) => ({
+    name: company.name,
+    engineeringActivityTier: company.engineeringActivityTier,
+    priority: company.priority,
+    activeInternshipCount: company.activeInternshipCount,
+    recentUnresolvedSignals: signalCounts.get(normalizeCompanyKey(company.name)) ?? 0,
+    atsType: company.atsType,
+  }))).map((company) => company.name);
+  const rank = new Map(rankedNames.map((name, index) => [name, index]));
+  const candidates = candidateRows
+    .sort((a, b) => (rank.get(a.name) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.name) ?? Number.MAX_SAFE_INTEGER))
+    .slice(0, args.limit ?? candidateRows.length);
 
   console.log(`[ats:resolve] resolving ${candidates.length} companies\n`);
 
@@ -57,6 +79,7 @@ async function main() {
       const resolutionUrl = company.careersUrl ?? company.website;
       const hit = await resolveAtsForCompany(company.name, resolutionUrl, {
         throttleMs: args.throttleMs,
+        probeFallback: !args.careersOnly,
       });
       if (!hit) {
         unresolved += 1;
@@ -81,6 +104,13 @@ async function main() {
               lastCheckStatus: "success",
               lastCheckError: null,
               consecutiveFailures: 0,
+              atsConfigState: "UNTESTED",
+              atsConfigEvidence: JSON.stringify({
+                method: hit.method,
+                sourceUrl: hit.boardUrl,
+                resolvedAt: new Date().toISOString(),
+                validationPending: true,
+              }),
             },
           });
 

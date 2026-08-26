@@ -7,7 +7,7 @@ import {
   readLock, writeLock, clearLock, pidAlive, waitForHealthy, databasePath,
   expectedInstance, probeRunningServer, stopProcessTree, waitForPortFree, checkAssetHealth,
 } from "./local-shared";
-import { decideLocalStartup } from "@/lib/runtime/localStartup";
+import { decideLocalStartup, normalizeLocalPrismaTcpUrl } from "@/lib/runtime/localStartup";
 
 // Canonical one-command local startup for Internship Pilot (npm run local).
 // Starts/reuses local Prisma Postgres, applies migrations, verifies the DB, then
@@ -21,6 +21,7 @@ import { decideLocalStartup } from "@/lib/runtime/localStartup";
 // Node built-ins from pg/pgpass (`fs`, then `path`) as browser modules.
 
 const production = process.argv.includes("--production");
+const discoveryOnly = process.argv.includes("--discovery-only");
 const nextCli = path.join(REPO_ROOT, "node_modules", "next", "dist", "bin", "next");
 const WORKSPACE_URL = `${BASE_URL}/jobs`;
 const children: ChildProcess[] = [];
@@ -55,11 +56,16 @@ function configureLocalEnvironment(): void {
   if (production) return;
   delete process.env.DATABASE_URL;
   delete process.env.SHADOW_DATABASE_URL;
-  process.env.DATABASE_POOL_MAX = "1";
+  // Three connections per process keeps the full local stack below the Prisma
+  // Dev connection budget while allowing the discovery code's bounded
+  // concurrent waves to use separate protocol sessions. A single shared
+  // session reproduced PostgreSQL 08P01 prepared-statement collisions.
+  process.env.DATABASE_POOL_MAX = "3";
   process.env.INTERNSHIP_PILOT_RUNTIME = "local";
   process.env.DOCUMENT_STORAGE_DRIVER = "local";
   process.env.NEXT_PUBLIC_APP_URL = BASE_URL;
   process.env.BETTER_AUTH_URL = BASE_URL;
+  if (discoveryOnly) process.env.SCHEDULER_SCORING_ENABLED = "false";
   if (!process.env.AI_MATCH_WORKER_CONCURRENCY) process.env.AI_MATCH_WORKER_CONCURRENCY = "1";
 }
 
@@ -89,7 +95,7 @@ async function ensureLocalDatabase(): Promise<void> {
     process.exit(1);
   }
 
-  const databaseUrl = match[0];
+  const databaseUrl = normalizeLocalPrismaTcpUrl(match[0]);
   let port: number;
   try {
     const parsed = new URL(databaseUrl);
@@ -147,7 +153,7 @@ function startChild(
 async function shutdown(code: number): Promise<void> {
   if (stopping) return;
   stopping = true;
-  log("Shutting down website, scheduler, and application worker…");
+  log(`Shutting down website and scheduler${discoveryOnly ? "" : ", and application worker"}…`);
   for (const child of children) {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
   }
@@ -292,7 +298,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   log("✓ Local database verified.");
-  checkOllama();
+  if (!discoveryOnly) checkOllama();
 
   writeLock({
     repoRoot: REPO_ROOT,
@@ -384,8 +390,12 @@ async function main(): Promise<void> {
   web = startWeb();
   log("Starting radar + ATS scheduler worker…");
   scheduler = startScheduler();
-  log("Starting application/browser worker…");
-  worker = startWorker();
+  if (discoveryOnly) {
+    log("Application/browser worker disabled (--discovery-only).");
+  } else {
+    log("Starting application/browser worker…");
+    worker = startWorker();
+  }
   updateLockPids();
 
   log("Waiting for the server to become healthy…");
@@ -415,9 +425,14 @@ async function main(): Promise<void> {
   }
 
   log(`✓ Scheduler/scoring worker PID ${scheduler?.pid ?? "unknown"}.`);
-  log(`Opening Discover at ${WORKSPACE_URL}…`);
-  openBrowser(WORKSPACE_URL);
-  log("Press Ctrl+C to stop the website + scheduler + worker. The local database remains available for your next run.");
+  if (!discoveryOnly) {
+    log(`Opening Discover at ${WORKSPACE_URL}…`);
+    openBrowser(WORKSPACE_URL);
+  }
+  log(
+    `Press Ctrl+C to stop the website + scheduler${discoveryOnly ? "" : " + worker"}. ` +
+    "The local database remains available for your next run.",
+  );
 }
 
 void main();

@@ -4,8 +4,15 @@ export const JOBS_COUNTS_ENDPOINT = `${JOBS_LIST_ENDPOINT}/counts`;
 export type JobsPageResponse<TJob> = {
   jobs: TJob[];
   total: number;
+  allActiveTotal?: number;
   offset: number;
   returned: number;
+  nextOffset?: number | null;
+  hasMore?: boolean;
+  limit?: number;
+  view?: string;
+  profileReady?: boolean;
+  scoreReadinessMessage?: string | null;
   /** The sort the server actually applied (echoed back, already validated). */
   sort?: string;
 };
@@ -110,8 +117,17 @@ export async function fetchJobsPage<TJob>(
   return {
     jobs: payload.jobs,
     total: payload.total,
+    allActiveTotal: typeof payload.allActiveTotal === "number" ? payload.allActiveTotal : undefined,
     offset: typeof payload.offset === "number" ? payload.offset : 0,
     returned: typeof payload.returned === "number" ? payload.returned : payload.jobs.length,
+    nextOffset: typeof payload.nextOffset === "number" ? payload.nextOffset : null,
+    hasMore: typeof payload.hasMore === "boolean" ? payload.hasMore : undefined,
+    limit: typeof payload.limit === "number" ? payload.limit : undefined,
+    view: typeof payload.view === "string" ? payload.view : undefined,
+    profileReady: typeof payload.profileReady === "boolean" ? payload.profileReady : undefined,
+    scoreReadinessMessage: typeof payload.scoreReadinessMessage === "string"
+      ? payload.scoreReadinessMessage
+      : null,
     sort: typeof payload.sort === "string" ? payload.sort : undefined,
   };
 }

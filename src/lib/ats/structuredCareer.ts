@@ -336,7 +336,7 @@ function looksLikePortalNavigation(kind: StructuredPortalKind, link: PortalLink,
   return /\/job\b|\/jobs\b|\/search\b|\/go\b|\b(search|view|open)\s+jobs?\b|career_ns=job_listing_summary|[?&](?:page|startrow)=\d+/i.test(signal);
 }
 
-async function fetchHtml(url: string): Promise<{
+async function fetchHtml(url: string, kind: StructuredPortalKind): Promise<{
   page: { html: string; finalUrl: string } | null;
   status: number | null;
   botWallBlocked: boolean;
@@ -348,7 +348,12 @@ async function fetchHtml(url: string): Promise<{
       signal: AbortSignal.timeout(12_000),
     });
     if (!response.ok) {
-      return { page: null, status: response.status, botWallBlocked: [401, 403, 429].includes(response.status) };
+      // iCIMS answers an automated GET with HTTP 405 "Human Verification"
+      // instead of a 401/403/429 — its own bot-wall signature, documented in
+      // src/lib/sync/freshSignalReasons.ts. Scoped to iCIMS only: a 405 from
+      // another provider is not evidence of the same thing.
+      const botWallStatuses = kind === "icims" ? [401, 403, 405, 429] : [401, 403, 429];
+      return { page: null, status: response.status, botWallBlocked: botWallStatuses.includes(response.status) };
     }
     const contentType = response.headers.get("content-type") ?? "";
     if (contentType && !/html|xhtml|text/i.test(contentType)) {
@@ -404,6 +409,19 @@ export async function probeStructuredPortalJobs(options: {
   const visited = new Set<string>();
   const allowedHosts = new Set<string>();
   const details = new Map<string, string>();
+  // List-page anchor text is an unreliable pre-filter: SuccessFactors in
+  // particular renders many boards' list rows without "intern"/"co-op"
+  // wording anywhere in the raw anchor (Gulfstream Aerospace measured: 131
+  // detail links found, 0 matched the hint, 0 job pages ever fetched — even
+  // though several ARE genuine internships once the real title is read off
+  // the detail page). Hint-matching links are still fetched FIRST — this is
+  // a priority order, not an exclusion filter; the real STUDENT_ROLE_HINT
+  // check on the parsed detail-page title (below) is what actually decides
+  // whether a posting counts, so a non-intern link surviving this stage still
+  // gets correctly dropped once its true title is known.
+  const hintedDetails = new Map<string, string>();
+  const unhintedDetails = new Map<string, string>();
+  const maxDetailScan = maxJobDetails * 4;
   let readableListPages = 0;
   let detailLinksFound = 0;
   let employerMirrorAvailable = false;
@@ -415,7 +433,7 @@ export async function probeStructuredPortalJobs(options: {
     if (visited.has(current)) continue;
     visited.add(current);
 
-    const fetched = await fetchHtml(current);
+    const fetched = await fetchHtml(current, options.kind);
     if (fetched.status !== null) httpStatuses.push(fetched.status);
     botWallBlocked ||= fetched.botWallBlocked;
     const page = fetched.page;
@@ -435,28 +453,52 @@ export async function probeStructuredPortalJobs(options: {
         detailLinksFound += 1;
         if (!hostLooksLikeAts(options.kind, base.hostname)) employerMirrorAvailable = true;
         const hint = `${link.text} ${link.url}`;
-        if (STUDENT_ROLE_HINT.test(hint) && !details.has(link.url)) {
-          details.set(link.url, link.text);
+        if (hintedDetails.has(link.url) || unhintedDetails.has(link.url)) continue;
+        if (STUDENT_ROLE_HINT.test(hint)) {
+          hintedDetails.set(link.url, link.text);
+        } else if (hintedDetails.size + unhintedDetails.size < maxDetailScan) {
+          unhintedDetails.set(link.url, link.text);
         }
         continue;
       }
 
       if (looksLikePortalNavigation(options.kind, link, base) && !queued.has(link.url)) {
         queued.add(link.url);
-        queue.push(link.url);
+        // A category/navigation page whose own label hints at student roles
+        // (e.g. Gulfstream Aerospace's "Entry-level Positions and
+        // Internships") is visited BEFORE generic categories, so its detail
+        // links land inside the bounded per-crawl detail-fetch budget instead
+        // of being crowded out by a large unrelated category (e.g.
+        // "Engineering") that happens to be discovered first.
+        if (STUDENT_ROLE_HINT.test(`${link.text} ${link.url}`)) queue.unshift(link.url);
+        else queue.push(link.url);
       }
     }
   }
 
-  if (readableListPages === 0 && options.throwOnFetchError) {
+  for (const [url, text] of hintedDetails) details.set(url, text);
+  for (const [url, text] of unhintedDetails) {
+    if (details.size >= maxDetailScan) break;
+    details.set(url, text);
+  }
+
+  // A confirmed bot wall on the job SEARCH/LIST endpoint is grounds to report
+  // ATS_BOT_WALL even when an unrelated marketing careers page loaded fine —
+  // e.g. Kimley-Horn's public careers page returns 200, but every iCIMS
+  // "/jobs/search" list page it links to answers 405 (iCIMS's documented
+  // bot-wall response). Reading `readableListPages === 0` alone missed this:
+  // one successful, job-less page was enough to hide a real bot wall behind a
+  // silent zero-postings result.
+  const noUsableListings = readableListPages === 0 || (botWallBlocked && detailLinksFound === 0);
+  if (noUsableListings && options.throwOnFetchError) {
     throw Object.assign(new Error("The configured official careers portal returned no readable page."), {
-      code: "ATS_BOARD_UNREACHABLE",
+      code: botWallBlocked ? "ATS_BOT_WALL" : "ATS_BOARD_UNREACHABLE",
     });
   }
 
   const detailEntries = [...details.entries()].slice(0, maxJobDetails);
   const parsed = await mapWithConcurrency(detailEntries, 5, async ([url, fallbackTitle]) => {
-    const fetched = await fetchHtml(url);
+    const fetched = await fetchHtml(url, options.kind);
     if (fetched.status !== null) httpStatuses.push(fetched.status);
     botWallBlocked ||= fetched.botWallBlocked;
     const page = fetched.page;

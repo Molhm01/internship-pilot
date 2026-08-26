@@ -203,14 +203,42 @@ describe("the lanes are actually wired up", () => {
     return readFile(path.join(process.cwd(), relative), "utf8");
   }
 
-  it("ships a route file for every declared lane", async () => {
+  it("ships a route file for every declared lane, authenticated and pause-aware", async () => {
     for (const lane of CRON_LANES) {
       const source = await repoFile(`src/app/api/cron/job-ingestion/${lane}/route.ts`);
       expect(source, `${lane} lane must authenticate`).toContain("isAuthorizedCronRequest");
-      expect(source, `${lane} lane must take a lease`).toContain("acquireLane");
-      expect(source, `${lane} lane must release its lease`).toContain("releaseLane");
-      expect(source, `${lane} lane must honour the paused switch`).toContain("isSchedulerPaused");
+      // Every lane must honour the paused switch — fresh/standard via the
+      // combined checkPausedAndDue read (pass #4), maintenance via the
+      // original isSchedulerPaused (it still takes a DB lease, so a separate
+      // pause query costs nothing extra relative to its once-a-day cadence).
+      const honoursPause = source.includes("isSchedulerPaused") || source.includes("checkPausedAndDue");
+      expect(honoursPause, `${lane} lane must honour the paused switch`).toBe(true);
     }
+  });
+
+  it("maintenance keeps a DB-backed lease; fresh/standard rely on GitHub Actions concurrency instead", async () => {
+    // Database-usage repair, pass #4: fresh and standard fire every 10/60
+    // minutes, so an acquire+release lease cost real, recurring operations —
+    // removed once GitHub Actions' own `concurrency` groups (see
+    // .github/workflows/live-job-ingestion.yml) started serializing each
+    // lane's invocations, which is what the lease existed to protect against
+    // after Vercel's cron trigger was removed in pass #1. Maintenance runs
+    // once a day, where the same lease costs nothing worth optimizing, and
+    // guards a longer-running, more disruptive-to-overlap job.
+    const maintenance = await repoFile("src/app/api/cron/job-ingestion/maintenance/route.ts");
+    expect(maintenance, "maintenance lane must take a lease").toContain("acquireLane");
+    expect(maintenance, "maintenance lane must release its lease").toContain("releaseLane");
+
+    for (const lane of ["fresh", "standard"] as const) {
+      const source = await repoFile(`src/app/api/cron/job-ingestion/${lane}/route.ts`);
+      expect(source, `${lane} lane must not take a DB-backed lease`).not.toContain("acquireLane");
+      expect(source, `${lane} lane must not release a DB-backed lease`).not.toContain("releaseLane");
+    }
+
+    const workflow = await repoFile(".github/workflows/live-job-ingestion.yml");
+    expect(workflow).toContain("group: ingestion-lane-fresh");
+    expect(workflow).toContain("group: ingestion-lane-standard");
+    expect(workflow).toContain("cancel-in-progress: false");
   });
 
   /** Comments explain what a lane avoids; only executable code is evidence. */
@@ -227,31 +255,44 @@ describe("the lanes are actually wired up", () => {
     }
   });
 
-  it("declares only lane routes in vercel.json, at schedules the Hobby plan allows", async () => {
+  it("declares no Vercel crons — GitHub Actions is the sole production scheduler", async () => {
+    // A QStash */5 recurring schedule and a vercel.json daily cron used to
+    // run job-ingestion/standard and job-ingestion/maintenance on top of
+    // GitHub Actions already driving the same routes — two or three
+    // schedulers overlapping on the same lanes, which was the largest single
+    // driver of the Prisma Postgres Free-plan overage (see the DATABASE
+    // USAGE DIAGNOSTIC / DATABASE EFFICIENCY REPAIR reports). There must
+    // never be a second scheduler for these lanes again.
     const vercel = JSON.parse(await repoFile("vercel.json")) as {
       crons?: { path: string; schedule: string }[];
     };
-    const crons = vercel.crons ?? [];
-    expect(crons.length).toBeGreaterThan(0);
-    // Hobby allows at most two cron jobs, each at most once per day. Declaring
-    // more, or a sub-daily schedule, makes the deployment itself fail.
-    expect(crons.length).toBeLessThanOrEqual(2);
-    for (const cron of crons) {
-      expect(cron.path).toMatch(/^\/api\/cron\/job-ingestion\/(fresh|standard|maintenance)$/);
-      const [minute, hour] = cron.schedule.split(" ");
-      expect(minute, `${cron.path} must not use a sub-hourly minute field`).toMatch(/^\d+$/);
-      expect(hour, `${cron.path} must run at a fixed hour`).toMatch(/^\d+$/);
-    }
+    expect(vercel.crons ?? []).toHaveLength(0);
   });
 
-  it("drives the five-minute fresh lane from the external scheduler", async () => {
+  it("drives the ten-minute fresh lane from the external scheduler", async () => {
     const workflow = await repoFile(".github/workflows/live-job-ingestion.yml");
-    expect(workflow).toContain('cron: "*/5 * * * *"');
+    expect(workflow).toContain('cron: "*/10 * * * *"');
+    // Widened from every 5 minutes as part of the database-usage repair —
+    // still frequent enough for "new job, minutes later", at half the
+    // invocation count.
+    expect(workflow).not.toContain('cron: "*/5 * * * *"');
     expect(workflow).toContain("/api/cron/job-ingestion/fresh");
     expect(workflow).toContain("/api/cron/job-ingestion/standard");
     expect(workflow).toContain("/api/cron/job-ingestion/maintenance");
     // The secret is passed as a bearer token, never interpolated into a URL
     // where it would land in a log line.
     expect(workflow).not.toMatch(/https:\/\/[^\s]*CRON_SECRET/);
+  });
+
+  it("does not re-create a recurring QStash schedule for live-discovery", async () => {
+    // The QStash-based schedule creator used to be a second, independent
+    // 5-minute scheduler for the exact same discovery work GitHub Actions'
+    // "fresh" lane already runs. POST must stay permanently disabled so
+    // nothing can silently re-arm that duplication.
+    const route = await repoFile("src/app/api/system/live-discovery/schedule/route.ts");
+    expect(route).toMatch(/export async function POST\(\)/);
+    const postBody = route.slice(route.indexOf("export async function POST("));
+    expect(postBody).not.toMatch(/qstash\(`\/schedules\/\$\{destination\}`/);
+    expect(postBody).toMatch(/status:\s*410/);
   });
 });

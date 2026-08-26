@@ -6,6 +6,7 @@ import {
   PROFILE_REFRESH_MATCH_PREFIX,
 } from "@/lib/matching/profileFingerprint";
 import { INITIAL_MATCH_TYPE } from "@/lib/matching/initialAiMatchQueue";
+import { backfillBaselineScoresForUser } from "@/lib/matching/baselineScoring";
 
 export type ResumeUploadQueueResult = {
   activeJobs: number;
@@ -26,6 +27,10 @@ export async function queueEntireCatalogForResume(userId: string): Promise<Resum
   if (!revision) {
     return { activeJobs: 0, eligibleJobs: 0, queuedRows: 0, skippedNoDescription: 0 };
   }
+
+  // Numeric coverage is completed before any model queue is built. If Ollama
+  // is offline, Discover remains fully scored with these baseline values.
+  await backfillBaselineScoresForUser(userId);
 
   const jobs = await prisma.job.findMany({
     where: { activeFeed: true },

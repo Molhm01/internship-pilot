@@ -18,9 +18,108 @@ const DEFAULT_BACKENDS = ["http://localhost:3000", "http://127.0.0.1:3000"];
 const EXTENSION_PROTOCOL_VERSION = 2;
 let cachedBase = null;
 let cachedHealth = null;
+const BUNDLE_STORAGE_KEY = "pendingApplicationBundle";
+const APPLICATION_STATES = new Set([
+  "QUEUED", "PREPARING_DOCUMENTS", "DOCUMENTS_READY", "OPENING", "SCANNING",
+  "FILLING", "VALIDATING", "AWAITING_USER", "NAVIGATING", "REVIEW_READY",
+  "BLOCKED", "FAILED",
+]);
 
 function errorText(error) {
   return String(error && error.message ? error.message : error);
+}
+
+function bundleStorage() {
+  return chrome.storage.session || chrome.storage.local;
+}
+
+function safeTransitionMetadata(value) {
+  if (!value || typeof value !== "object") return {};
+  const source = value;
+  return {
+    ...(typeof source.pageNumber === "number" ? { pageNumber: source.pageNumber } : {}),
+    ...(typeof source.filledCount === "number" ? { filledCount: source.filledCount } : {}),
+    ...(typeof source.failedCount === "number" ? { failedCount: source.failedCount } : {}),
+    ...(typeof source.requiredEmptyCount === "number" ? { requiredEmptyCount: source.requiredEmptyCount } : {}),
+    ...(typeof source.uploadedCount === "number" ? { uploadedCount: source.uploadedCount } : {}),
+    ...(Array.isArray(source.questionCategories) ? { questionCategories: source.questionCategories.filter((value) => typeof value === "string").slice(0, 100) } : {}),
+    ...(Array.isArray(source.unresolvedCategories) ? { unresolvedCategories: source.unresolvedCategories.filter((value) => typeof value === "string").slice(0, 100) } : {}),
+    ...(typeof source.errorCode === "string" ? { errorCode: source.errorCode.slice(0, 100) } : {}),
+  };
+}
+
+function validateApplicationBundle(bundle) {
+  if (!bundle || typeof bundle !== "object") return "The application bundle is missing.";
+  if (typeof bundle.websiteJobId !== "string" || !bundle.websiteJobId) return "The bundle has no website job id.";
+  if (typeof bundle.officialApplicationUrl !== "string") return "The bundle has no official application URL.";
+  try {
+    const destination = new URL(bundle.officialApplicationUrl);
+    if (destination.protocol !== "https:" && !(destination.protocol === "http:" && ["localhost", "127.0.0.1"].includes(destination.hostname))) {
+      return "The employer destination is not a safe application URL.";
+    }
+  } catch {
+    return "The employer destination is invalid.";
+  }
+  if (typeof bundle.documentFingerprint !== "string" || !/^[a-f0-9]{64}$/i.test(bundle.documentFingerprint)) {
+    return "The application document fingerprint is missing or invalid.";
+  }
+  if (!bundle.profile || typeof bundle.profile !== "object") return "The canonical application profile is missing.";
+  if (bundle.bundleVersion !== 3 || bundle.profile.version !== 3) return "The website and extension application-bundle versions do not match.";
+  if (!Array.isArray(bundle.documents)) return "The application documents are missing.";
+  const resume = bundle.documents.filter((document) => document && document.kind === "resume");
+  if (resume.length !== 1) return "The bundle must contain exactly one tailored résumé.";
+  for (const document of bundle.documents) {
+    if (!document || document.websiteJobId !== bundle.websiteJobId) return "A document belongs to another job.";
+    if (document.documentFingerprint !== bundle.documentFingerprint) return "A document is stale or belongs to another application.";
+    if (document.qaStatus !== "pass" || document.identityVerified !== true) return "A document did not pass QA and identity verification.";
+    if (document.mimeType !== "application/pdf" || typeof document.contentBase64 !== "string" || document.contentBase64.length === 0) {
+      return "A prepared application document is incomplete.";
+    }
+    if (!Number.isSafeInteger(document.byteLength) || document.byteLength <= 0) return "A document has an invalid byte length.";
+  }
+  return null;
+}
+
+function sameApplication(bundleUrl, pageUrl) {
+  try {
+    const expected = new URL(bundleUrl);
+    const current = new URL(pageUrl);
+    if (expected.origin !== current.origin) return false;
+    const expectedPath = expected.pathname.replace(/\/+$/, "");
+    const currentPath = current.pathname.replace(/\/+$/, "");
+    return currentPath === expectedPath
+      || currentPath.startsWith(`${expectedPath}/`)
+      || expectedPath.startsWith(`${currentPath}/`);
+  } catch {
+    return false;
+  }
+}
+
+async function storedBundle() {
+  const stored = await bundleStorage().get(BUNDLE_STORAGE_KEY);
+  return stored[BUNDLE_STORAGE_KEY] || null;
+}
+
+async function transitionBundle(state, reason, pageUrl, metadata = {}) {
+  if (!APPLICATION_STATES.has(state)) throw new Error(`Unknown application state ${state}.`);
+  const envelope = await storedBundle();
+  if (!envelope) return null;
+  const transition = {
+    state,
+    at: new Date().toISOString(),
+    reason: String(reason || "State updated.").slice(0, 400),
+    pageUrl: String(pageUrl || "").slice(0, 2_000),
+    metadata: safeTransitionMetadata(metadata),
+  };
+  const updated = {
+    ...envelope,
+    state,
+    pageNumber: typeof metadata.pageNumber === "number" ? metadata.pageNumber : envelope.pageNumber,
+    transitions: [...(envelope.transitions || []), transition].slice(-100),
+    updatedAt: transition.at,
+  };
+  await bundleStorage().set({ [BUNDLE_STORAGE_KEY]: updated });
+  return updated;
 }
 
 function isLoopbackBase(value) {
@@ -237,6 +336,62 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       await chrome.storage.local.set({ apiToken: token, backendBaseUrl });
       cachedBase = null;
       sendResponse({ ok: true });
+      return;
+    }
+    if (kind === "store-application-bundle") {
+      const reason = validateApplicationBundle(message.bundle);
+      if (reason) {
+        sendResponse({ ok: false, reason });
+        return;
+      }
+      const now = new Date().toISOString();
+      const bundleId = `application-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      const envelope = {
+        bundleId,
+        bundle: message.bundle,
+        state: "DOCUMENTS_READY",
+        pageNumber: 0,
+        transitions: [
+          { state: "QUEUED", at: now, reason: "Application handoff received.", pageUrl: sender.tab?.url || "", metadata: {} },
+          { state: "PREPARING_DOCUMENTS", at: now, reason: message.bundle.documentsReused ? "Document fingerprint matched; current QA-passed files were reused." : "Stale or missing files were regenerated and passed QA.", pageUrl: sender.tab?.url || "", metadata: {} },
+          { state: "DOCUMENTS_READY", at: now, reason: "Current QA-passed job documents stored.", pageUrl: sender.tab?.url || "", metadata: {} },
+        ],
+        createdAt: now,
+        updatedAt: now,
+      };
+      await bundleStorage().set({ [BUNDLE_STORAGE_KEY]: envelope });
+      sendResponse({
+        ok: true,
+        bundleId,
+        storedDocuments: message.bundle.documents.map((document) => document.kind),
+        storedAt: now,
+      });
+      return;
+    }
+    if (kind === "application-bundle-for-page") {
+      const envelope = await storedBundle();
+      if (!envelope || !sameApplication(envelope.bundle?.officialApplicationUrl, message.pageUrl)) {
+        sendResponse({ ok: true, bundle: null });
+        return;
+      }
+      if (["FAILED"].includes(envelope.state)) {
+        sendResponse({ ok: true, bundle: null });
+        return;
+      }
+      const updated = await transitionBundle("OPENING", "Official employer application opened.", message.pageUrl, {
+        pageNumber: Math.max(1, envelope.pageNumber || 0),
+      });
+      sendResponse({ ok: true, bundle: updated });
+      return;
+    }
+    if (kind === "application-bundle-transition") {
+      const envelope = await storedBundle();
+      if (!envelope || envelope.bundleId !== message.bundleId) {
+        sendResponse({ ok: false, error: "The application bundle is no longer active." });
+        return;
+      }
+      const updated = await transitionBundle(message.state, message.reason, message.pageUrl, message.metadata);
+      sendResponse({ ok: true, state: updated?.state || null });
       return;
     }
     if (kind === "fill-plan") {

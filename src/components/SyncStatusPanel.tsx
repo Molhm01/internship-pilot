@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { startSyncStatusWatch } from "@/lib/sync/syncStatusWatch";
 
 type SyncStatus = {
   lastSyncAt: string | null;
@@ -34,6 +35,8 @@ type SyncStatus = {
   closedCount: number;
   pendingCount: number;
   recentErrorCount: number;
+  computedAt?: string;
+  cacheFresh?: boolean;
 };
 
 type CoverageDiagnostics = {
@@ -62,6 +65,16 @@ const AUTOMATIC_SYNC_CATCHUP_AFTER_MS = 45 * 60 * 1000;
 const AUTOMATIC_SYNC_STALE_AFTER_MS = 75 * 60 * 1000;
 const AUTOMATIC_RECOVERY_COOLDOWN_MS = 10 * 60 * 1000;
 const FRESHNESS_RECOVERY_COOLDOWN_MS = 30 * 60 * 1000;
+
+// Database-usage remediation: this panel originally polled /api/sync/status
+// (a ~20-query endpoint) every 60 seconds in every open tab regardless of
+// visibility, then every 5 minutes while visible (passes #1/#2). Pass #6
+// removed the recurring timer entirely — see src/lib/sync/syncStatusWatch.ts
+// for why a fixed interval kept paying the shared cache's full cold cost
+// (measured at 27 Prisma operations, pass #5) even while genuinely idle, and
+// for the new contract: one check on mount, one check when the tab becomes
+// visible again (if stale), and nothing else until a real event happens.
+const STALE_ON_VISIBLE_AFTER_MS = 5 * 60 * 1000;
 
 type AutomaticAction = "catalog" | "fresh" | null;
 type AutomaticSyncHealth =
@@ -185,8 +198,8 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
   const lastFreshnessRecoveryAttemptAt = useRef(0);
 
   const load = useCallback(
-    async ({ notify = false }: { notify?: boolean } = {}): Promise<SyncStatus | null> => {
-      const res = await fetch("/api/sync/status", { cache: "no-store" });
+    async ({ notify = false, force = false }: { notify?: boolean; force?: boolean } = {}): Promise<SyncStatus | null> => {
+      const res = await fetch(force ? "/api/sync/status?fresh=1" : "/api/sync/status", { cache: "no-store" });
       if (!res.ok) return null;
 
       const next = (await res.json()) as SyncStatus;
@@ -250,25 +263,19 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
       setCoverageError(error instanceof Error ? error.message : "Automatic sync failed.");
     } finally {
       setAutomaticAction(null);
-      await load({ notify: true });
+      await load({ notify: true, force: true });
     }
   }, [load, onSynced]);
 
   useEffect(() => {
-    const checkFreshness = async () => {
-      if (document.visibilityState !== "visible") return;
-      const next = await load({ notify: true });
-      if (next) void runAutomaticCatchup(next);
-    };
-
-    void checkFreshness();
-    const interval = window.setInterval(checkFreshness, 60_000);
-    document.addEventListener("visibilitychange", checkFreshness);
-
-    return () => {
-      window.clearInterval(interval);
-      document.removeEventListener("visibilitychange", checkFreshness);
-    };
+    const watch = startSyncStatusWatch({
+      checkFreshness: async () => {
+        const next = await load({ notify: true });
+        if (next) void runAutomaticCatchup(next);
+      },
+      staleAfterMs: STALE_ON_VISIBLE_AFTER_MS,
+    });
+    return () => watch.stop();
   }, [load, runAutomaticCatchup]);
 
   async function loadCoverageDiagnostics() {
@@ -310,7 +317,7 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
         });
       }
 
-      await Promise.all([load({ notify: true }), loadCoverageDiagnostics()]);
+      await Promise.all([load({ notify: true, force: true }), loadCoverageDiagnostics()]);
     } finally {
       setSyncing(false);
     }
@@ -402,6 +409,12 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
           {healthCopy.label}
         </span>
         <span>{healthCopy.detail}</span>
+        {status?.computedAt && (
+          <span className="text-faint">
+            · status as of {new Date(status.computedAt).toLocaleTimeString()}
+            {status.cacheFresh === false ? " (cached)" : ""}
+          </span>
+        )}
       </div>
 
       {employerSweep && (

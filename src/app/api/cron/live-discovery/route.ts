@@ -4,6 +4,17 @@ import { isSchedulerPaused } from "@/lib/sync/schedulerState";
 import { runLiveDiscoveryCycle } from "@/lib/sync/liveDiscoveryEngine";
 import { hasGeminiApiKey } from "@/lib/gemini";
 
+/**
+ * Authenticated manual/admin trigger only.
+ *
+ * GitHub Actions (.github/workflows/live-job-ingestion.yml) is the single
+ * production scheduler; this route is not on any recurring schedule and must
+ * never re-arm one itself (see src/app/api/system/live-discovery/schedule,
+ * whose recurring-schedule creation is permanently disabled). It stays
+ * available for a one-off authenticated diagnostic run — e.g. `curl` with
+ * CRON_SECRET — without contributing to steady-state database usage.
+ */
+
 export const runtime = "nodejs";
 export const maxDuration = 300;
 

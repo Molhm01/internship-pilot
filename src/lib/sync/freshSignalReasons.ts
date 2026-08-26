@@ -36,8 +36,8 @@ export const FRESH_SIGNAL_REASONS = [
   /**
    * The board served a bot wall instead of its public listing (iCIMS answers
    * automated GETs with HTTP 405 "Human Verification"). Distinct from a fetch
-   * failure because the remedy is different: render the public page once,
-   * rather than simply asking again.
+   * failure because the remedy is different: stop and use a legitimate
+   * employer-owned mirror if one exists, otherwise apply long backoff.
    */
   "BOT_WALL_BLOCKED",
   /**
@@ -102,6 +102,10 @@ export function nextAttemptDelayMs(reason: FreshSignalReason, attempts: number):
   if (PERMANENT_LIKE.has(reason)) {
     const days = Math.min(14, 3 * Math.max(1, attempts));
     return days * 24 * 60 * ONE_MINUTE_MS;
+  }
+  if (reason === "BOT_WALL_BLOCKED") {
+    const hours = Math.min(7 * 24, 12 * 2 ** Math.max(0, attempts - 1));
+    return hours * 60 * ONE_MINUTE_MS;
   }
   const base = isTransientReason(reason) ? 5 : 60;
   const capMinutes = isTransientReason(reason) ? 60 : 24 * 60;

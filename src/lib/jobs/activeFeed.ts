@@ -7,6 +7,11 @@ import {
   isLegacyAutoPromotableDirectSource,
   isTrustedAggregatorSource,
 } from "@/lib/jobs/sourcePolicy";
+import {
+  backfillBaselineScoresForUser,
+  baselineScoreJobForAllEligibleUsers,
+  loadAllApprovedBaselineProfiles,
+} from "@/lib/matching/baselineScoring";
 
 function verificationMethodFor(source: string): string {
   return source === "icims" || source === "successfactors"
@@ -24,6 +29,7 @@ export async function recomputeJobActiveFeed(jobId: string): Promise<boolean> {
   const next = computeActiveFeed(job);
   if (next !== job.activeFeed) {
     await prisma.job.update({ where: { id: jobId }, data: { activeFeed: next } });
+    if (next) await baselineScoreJobForAllEligibleUsers(jobId);
   }
   return next;
 }
@@ -90,6 +96,7 @@ export async function promoteCanonicalDirectJob(
       activeFeed: true,
     },
   });
+  await baselineScoreJobForAllEligibleUsers(match.id);
 }
 
 /**
@@ -163,6 +170,11 @@ export async function reconcileDirectOfficialFeed(): Promise<{
     directVisibilityUpdates += group.inactive;
   }
 
+  if (directVisibilityUpdates > 0) {
+    const profiles = await loadAllApprovedBaselineProfiles();
+    for (const profile of profiles) await backfillBaselineScoresForUser(profile.userId);
+  }
+
   return {
     scanned: jobs.length,
     hiddenAggregators,
@@ -181,6 +193,7 @@ export async function backfillActiveFeed(): Promise<{ scanned: number; updated: 
     const next = computeActiveFeed(job);
     if (next !== job.activeFeed) {
       await prisma.job.update({ where: { id: job.id }, data: { activeFeed: next } });
+      if (next) await baselineScoreJobForAllEligibleUsers(job.id);
       updated += 1;
     }
   }

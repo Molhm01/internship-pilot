@@ -1,4 +1,8 @@
-import { fetchDocumentPdf, type StoredGeneratedDocument } from "@/lib/documents/client";
+import {
+  ensureCurrentApplicationDocuments,
+  fetchDocumentPdf,
+  type StoredGeneratedDocument,
+} from "@/lib/documents/client";
 import {
   isExtensionBridgeAvailable,
   sendApplicationBundle,
@@ -53,12 +57,6 @@ export function applyEligibility(input: ApplyEligibilityInput): ApplyEligibility
   if (!input.officialApplicationUrl) {
     return { ready: false, reason: "The official employer application page has not been resolved yet." };
   }
-  if (!newestValidDocument(input.documents, "resume")) {
-    return { ready: false, reason: "Generate a tailored résumé for this job first." };
-  }
-  if (input.coverLetterRequired && !newestValidDocument(input.documents, "coverLetter")) {
-    return { ready: false, reason: "Generate a tailored cover letter for this job first." };
-  }
   if (!input.bridgeAvailable) {
     return {
       ready: false,
@@ -76,6 +74,9 @@ export type ApplyWithAgentInput = {
   officialApplicationUrl: string;
   documents: readonly StoredGeneratedDocument[];
   coverLetterRequired: boolean;
+  /** User preference; the normal Apply flow prepares a cover letter by default. */
+  coverLetterDesired?: boolean;
+  neverClaimFacts?: string[];
 };
 
 export type ProfileBundlePart = {
@@ -115,7 +116,8 @@ export type ApplyWithAgentDependencies = {
   fetchProfile?: typeof fetchProfileBundlePart;
   probeBridge?: typeof isExtensionBridgeAvailable;
   sendBundle?: typeof sendApplicationBundle;
-  openWindow?: (url: string, target: string, features: string) => unknown;
+  openWindow?: (url: string, target: string, features: string) => Window | null;
+  ensureDocuments?: typeof ensureCurrentApplicationDocuments;
 };
 
 function filenameFor(kind: "resume" | "cover_letter", company: string, jobTitle: string): string {
@@ -134,15 +136,24 @@ async function toBundleDocument(
   kind: "resume" | "cover_letter",
   stored: StoredGeneratedDocument,
   input: ApplyWithAgentInput,
+  fingerprint: string,
   fetchPdf: typeof fetchDocumentPdf,
 ): Promise<BundleDocumentInput> {
+  if (stored.documentFingerprint !== fingerprint) {
+    throw new ExtensionBridgeError("A prepared document did not match this job's current freshness fingerprint.");
+  }
   const blob = await fetchPdf(stored.id);
   return {
+    documentId: stored.id,
+    websiteJobId: input.websiteJobId,
     kind,
     filename: filenameFor(kind, input.company, input.jobTitle),
     mimeType: "application/pdf",
     bytes: await blob.arrayBuffer(),
     generatedAt: stored.createdAt,
+    documentFingerprint: fingerprint,
+    qaStatus: "pass",
+    identityVerified: true,
   };
 }
 
@@ -150,6 +161,7 @@ export type ApplyWithAgentResult = BundleTransferResult & {
   openedUrl: string;
   /** Profile gaps the user should know about; the handoff still succeeded. */
   missingProfileFields: string[];
+  documentsReused: boolean;
 };
 
 export async function applyWithApplicationAgent(
@@ -161,6 +173,17 @@ export async function applyWithApplicationAgent(
   const probeBridge = dependencies.probeBridge ?? isExtensionBridgeAvailable;
   const sendBundle = dependencies.sendBundle ?? sendApplicationBundle;
   const openWindow = dependencies.openWindow ?? ((url, target, features) => window.open(url, target, features));
+  const ensureDocuments = dependencies.ensureDocuments ?? ensureCurrentApplicationDocuments;
+
+  // Reserve the employer tab while the click still has browser user activation.
+  // Document preparation can take long enough that a later window.open would be
+  // popup-blocked. Nothing employer-owned is loaded until the bundle is stored.
+  const applicationWindow = openWindow("about:blank", "_blank", "popup");
+  if (!applicationWindow) {
+    throw new ExtensionBridgeError("The browser blocked the application tab. Allow pop-ups for Internship Pilot and try again.");
+  }
+  try {
+    applicationWindow.opener = null;
 
   const eligibility = applyEligibility({
     officialApplicationUrl: input.officialApplicationUrl,
@@ -170,13 +193,20 @@ export async function applyWithApplicationAgent(
   });
   if (!eligibility.ready) throw new ExtensionBridgeError(eligibility.reason);
 
-  const resume = newestValidDocument(input.documents, "resume");
-  const coverLetter = newestValidDocument(input.documents, "coverLetter");
-  if (!resume) throw new ExtensionBridgeError("Generate a tailored résumé for this job first.");
+  const readiness = await ensureDocuments(
+    input.websiteJobId,
+    input.coverLetterRequired || input.coverLetterDesired !== false,
+  );
+  const resume = newestValidDocument(readiness.documents, "resume");
+  const coverLetter = newestValidDocument(readiness.documents, "coverLetter");
+  if (!resume) throw new ExtensionBridgeError("Automatic document preparation did not produce a QA-passed résumé.");
+  if (input.coverLetterRequired && !coverLetter) {
+    throw new ExtensionBridgeError("Automatic document preparation did not produce the required cover letter.");
+  }
 
   const documents: BundleDocumentInput[] = [
-    await toBundleDocument("resume", resume, input, fetchPdf),
-    ...(coverLetter ? [await toBundleDocument("cover_letter", coverLetter, input, fetchPdf)] : []),
+    await toBundleDocument("resume", resume, input, readiness.fingerprint, fetchPdf),
+    ...(coverLetter ? [await toBundleDocument("cover_letter", coverLetter, input, readiness.fingerprint, fetchPdf)] : []),
   ];
 
   // The profile travels with the documents: one handoff, one consistent view
@@ -189,6 +219,8 @@ export async function applyWithApplicationAgent(
     jobTitle: input.jobTitle,
     jobDescription: input.jobDescription,
     officialApplicationUrl: input.officialApplicationUrl,
+    documentFingerprint: readiness.fingerprint,
+    documentsReused: readiness.reused,
     documents,
     ...(typeof profilePart.bundleVersion === "number"
       ? { bundleVersion: profilePart.bundleVersion }
@@ -199,16 +231,25 @@ export async function applyWithApplicationAgent(
     ...(profilePart.companyRelationship
       ? { companyRelationship: profilePart.companyRelationship }
       : {}),
+    answerContext: {
+      neverClaimFacts: input.neverClaimFacts ?? [],
+      employerSpecificApprovedAnswers: profilePart.companyRelationship ? [profilePart.companyRelationship] : [],
+    },
   };
 
   // Navigation happens only after this resolves. If the extension never
   // acknowledges, the user stays here and is told why.
   const transferred = await sendBundle(bundle);
 
-  openWindow(input.officialApplicationUrl, "_blank", "noopener,noreferrer");
+  applicationWindow.location.replace(input.officialApplicationUrl);
   return {
     ...transferred,
     openedUrl: input.officialApplicationUrl,
     missingProfileFields: profilePart.missingFields ?? [],
+    documentsReused: readiness.reused,
   };
+  } catch (error) {
+    applicationWindow.close();
+    throw error;
+  }
 }

@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { FACT_TYPES } from "@/lib/statuses";
 import { withUser } from "@/lib/auth/session";
 import { scheduleAutomaticScoresForUser } from "@/lib/matching/automaticScoring";
+import { backfillBaselineScoresForUser } from "@/lib/matching/baselineScoring";
 
 /** Résumé facts are always scoped to the signed-in user. */
 export const GET = withUser(async (request, user) => {
@@ -72,6 +73,7 @@ export const POST = withUser(async (request, user) => {
     ),
   );
 
+  await backfillBaselineScoresForUser(user.id);
   queueRefreshAfterProfileChange(user.id);
   return NextResponse.json({ facts: created }, { status: 201 });
 });

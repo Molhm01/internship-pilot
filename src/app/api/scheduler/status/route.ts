@@ -8,11 +8,12 @@
  */
 import { guardSession } from "@/lib/auth/session";
 import { NextResponse } from "next/server";
-import { getSchedulerHealth } from "@/lib/sync/schedulerState";
+import { getCachedSchedulerHealth } from "@/lib/sync/schedulerState";
 
-export async function GET() {
+export async function GET(request: Request) {
   const denied = await guardSession();
   if (denied) return denied;
-  const health = await getSchedulerHealth();
-  return NextResponse.json(health);
+  const force = new URL(request.url).searchParams.get("fresh") === "1";
+  const { health, computedAt } = await getCachedSchedulerHealth({ force });
+  return NextResponse.json({ ...health, computedAt });
 }

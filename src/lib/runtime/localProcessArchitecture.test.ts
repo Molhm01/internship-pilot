@@ -29,7 +29,7 @@ describe("the scheduler worker is a standalone Node entrypoint", () => {
 
   it("starts the scheduler itself", () => {
     expect(source).toContain('from "@/lib/sync/scheduler"');
-    expect(source).toMatch(/^startScheduler\(\);$/m);
+    expect(source).toContain("startScheduler({ scoringEnabled })");
   });
 
   it("does not require Next.js", () => {

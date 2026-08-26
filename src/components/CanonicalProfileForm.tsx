@@ -20,10 +20,17 @@ import { useCallback, useEffect, useState } from "react";
 
 type Profile = Record<string, unknown>;
 
+// Every field below is either PERSISTED (backed by a real column, saved by
+// POST /api/application-profile), or explicitly marked `persisted: false`
+// with a `hint` explaining why — never editable-and-silently-discarded. A
+// `persisted: false` field renders disabled: there is nothing to type into,
+// so there is nothing Save can lose. applicationProfileForUser() (the same
+// projection this form loads) already returns `null` for every one of these,
+// which is the other half of the same contract.
 const TEXT_FIELD_GROUPS: ReadonlyArray<{
   title: string;
   hint?: string;
-  fields: ReadonlyArray<{ name: string; label: string; hint?: string; type?: string }>;
+  fields: ReadonlyArray<{ name: string; label: string; hint?: string; type?: string; persisted?: false }>;
 }> = [
   {
     title: "Legal name",
@@ -32,16 +39,16 @@ const TEXT_FIELD_GROUPS: ReadonlyArray<{
       { name: "legalFirstName", label: "Legal first name" },
       { name: "legalMiddleName", label: "Legal middle name" },
       { name: "legalLastName", label: "Legal last name" },
-      { name: "suffix", label: "Suffix", hint: "Jr., III, and so on" },
+      { name: "suffix", label: "Suffix", hint: "Not saved yet — no storage field exists for a name suffix.", persisted: false },
       { name: "preferredName", label: "Preferred name" },
-      { name: "fullName", label: "Full name on generated documents" },
+      { name: "fullName", label: "Full name on generated documents", hint: "Built automatically from your legal first and last name above.", persisted: false },
     ],
   },
   {
     title: "Contact",
     fields: [
-      { name: "applicationEmail", label: "Application email", hint: "Used to register on employer sites" },
-      { name: "email", label: "Everyday email" },
+      { name: "applicationEmail", label: "Application email", hint: "Used to register on employer sites. Authoritative over Everyday email below." },
+      { name: "email", label: "Everyday email", hint: "Not stored separately — used only to fill Application email above if you leave it blank." },
       { name: "alternateEmail", label: "Alternate email" },
       { name: "phoneCountryCode", label: "Phone country code" },
       { name: "phone", label: "Phone number" },
@@ -56,7 +63,7 @@ const TEXT_FIELD_GROUPS: ReadonlyArray<{
       { name: "addressState", label: "State / province" },
       { name: "addressZip", label: "Postal code" },
       { name: "countryOfResidence", label: "Country" },
-      { name: "metroRegion", label: "Closest metropolitan region", hint: "Overrides your city when a form asks for a metro area" },
+      { name: "metroRegion", label: "Closest metropolitan region", hint: "Not saved yet — no storage field exists for a separate metro region.", persisted: false },
     ],
   },
   {
@@ -64,37 +71,37 @@ const TEXT_FIELD_GROUPS: ReadonlyArray<{
     fields: [
       { name: "linkedin", label: "LinkedIn" },
       { name: "github", label: "GitHub" },
-      { name: "portfolio", label: "Portfolio" },
-      { name: "website", label: "Personal website" },
+      { name: "portfolio", label: "Portfolio", hint: "Authoritative over Personal website below when both are filled in." },
+      { name: "website", label: "Personal website", hint: "Not stored separately — used only to fill Portfolio above if you leave it blank." },
     ],
   },
   {
     title: "Education",
+    hint: "Edits your primary/current education entry. Add additional entries in the \"Additional education\" section below.",
     fields: [
       { name: "school", label: "School" },
-      { name: "previousSchool", label: "Previous school" },
+      { name: "previousSchool", label: "Previous school", hint: "Add a second entry in the \"Additional education\" section below instead — this form edits only your primary entry.", persisted: false },
       { name: "degreeType", label: "Degree currently pursuing" },
-      { name: "highestDegreeAwarded", label: "Highest degree already awarded", hint: "A different question from the one above" },
+      { name: "highestDegreeAwarded", label: "Highest degree already awarded", hint: "Not saved yet — only one \"degree\" field exists per education entry.", persisted: false },
       { name: "educationLevel", label: "Education level" },
       { name: "major", label: "Major" },
       { name: "minor", label: "Minor" },
       { name: "educationStartDate", label: "Start month/year", hint: "YYYY-MM" },
       { name: "graduationDate", label: "Graduation month/year", hint: "YYYY-MM" },
-      { name: "gpa", label: "GPA" },
-      { name: "gpaScale", label: "GPA scale" },
+      { name: "gpa", label: "GPA", hint: "Include the scale if it isn't out of 4.0, e.g. \"3.8/4.0\"." },
+      { name: "gpaScale", label: "GPA scale", hint: "Not saved yet — include the scale in GPA above instead.", persisted: false },
     ],
   },
   {
     title: "Availability and compensation",
     fields: [
       { name: "earliestStartDate", label: "Earliest available date", hint: "YYYY-MM-DD" },
-      { name: "internshipTermAvailability", label: "Availability term", hint: 'e.g. "Summer 2027"' },
-      { name: "salaryMinimum", label: "Salary minimum" },
+      { name: "internshipTermAvailability", label: "Availability term", hint: "Not saved yet — no storage field exists for a separate availability term.", persisted: false },
+      { name: "salaryMinimum", label: "Salary minimum", hint: "Not saved yet — state a figure in \"Salary answer used verbatim\" below instead.", persisted: false },
       { name: "salaryAnswerPreference", label: "Salary answer used verbatim" },
-      { name: "workAuthorization", label: "Work authorization" },
       { name: "securityClearanceStatus", label: "Security clearance status" },
       { name: "referralSource", label: "How you usually hear about jobs", hint: 'Answers "How did you hear about us?"' },
-      { name: "preferredUsername", label: "Preferred username on employer sites" },
+      { name: "preferredUsername", label: "Preferred username on employer sites", hint: "Not saved yet — no storage field exists for a preferred username.", persisted: false },
     ],
   },
 ];
@@ -103,11 +110,14 @@ const SELECT_FIELDS: ReadonlyArray<{
   name: string;
   label: string;
   hint?: string;
+  persisted?: false;
   options: ReadonlyArray<{ value: string; label: string }>;
 }> = [
   {
     name: "preferredWebsiteField",
     label: "Which link answers a single “Website” box",
+    hint: "Not saved yet — no storage field exists for this preference.",
+    persisted: false,
     options: [
       { value: "", label: "Not answered" },
       { value: "linkedin", label: "LinkedIn" },
@@ -130,6 +140,8 @@ const SELECT_FIELDS: ReadonlyArray<{
   {
     name: "salaryStrategy",
     label: "Salary strategy",
+    hint: "Not saved yet — express this in \"Salary answer used verbatim\" instead.",
+    persisted: false,
     options: [
       { value: "", label: "Not answered" },
       { value: "negotiable", label: "Say it is negotiable" },
@@ -140,7 +152,8 @@ const SELECT_FIELDS: ReadonlyArray<{
   {
     name: "employerPortalStrategy",
     label: "Employer portal strategy",
-    hint: "What to do when an employer site wants a login before the application",
+    hint: "Not saved yet — no storage field exists for this preference.",
+    persisted: false,
     options: [
       { value: "", label: "Always ask me" },
       { value: "prefer_guest", label: "Prefer applying as a guest" },
@@ -150,22 +163,30 @@ const SELECT_FIELDS: ReadonlyArray<{
   },
 ];
 
-const TRISTATE_FIELDS: ReadonlyArray<{ name: string; label: string; hint?: string }> = [
+const TRISTATE_FIELDS: ReadonlyArray<{ name: string; label: string; hint?: string; persisted?: false }> = [
+  // An explicit tri-state, never inferred from free text — this directly
+  // answers the legal question ApplicationPreferences.legallyAuthorizedToWork
+  // stores. There is deliberately no free-text "Work authorization" box
+  // anywhere in this form; the human-readable version of this answer is
+  // derived read-only, from this field, by applicationProfileForUser().
+  { name: "legallyAuthorizedToWork", label: "Legally authorized to work in the United States?" },
   { name: "willingToRelocate", label: "Willing to relocate" },
   { name: "requiresSponsorship", label: "Requires visa sponsorship" },
-  { name: "clearanceEligible", label: "Eligible for a security clearance" },
+  { name: "clearanceEligible", label: "Eligible for a security clearance", hint: "Not saved yet — use the Security clearance status text field instead.", persisted: false },
   { name: "hasDriversLicense", label: "Has a driver's licence" },
-  { name: "meetsMinimumAge", label: "Meets the minimum age" },
-  { name: "noMiddleName", label: "I have no middle name" },
+  { name: "meetsMinimumAge", label: "Meets the minimum age", hint: "Not saved yet — no storage field exists for this answer.", persisted: false },
+  { name: "noMiddleName", label: "I have no middle name", hint: "Not saved yet — leaving Legal middle name blank is currently indistinguishable from not answering.", persisted: false },
   {
     name: "marketingTextConsent",
     label: "Consents to promotional text messages",
-    hint: "Never assumed. Left unanswered, the box stays unchecked.",
+    hint: "Not saved yet — no storage field exists for this consent.",
+    persisted: false,
   },
   {
     name: "wantsAccountCreationHelp",
     label: "Let the extension help create employer accounts",
-    hint: "The extension still asks for one explicit confirmation before it creates anything.",
+    hint: "Not saved yet — the extension still asks for one explicit confirmation before it creates anything.",
+    persisted: false,
   },
 ];
 
@@ -177,9 +198,9 @@ const SENSITIVE_FIELDS: ReadonlyArray<{ name: string; label: string }> = [
   { name: "pronouns", label: "Pronouns" },
 ];
 
-const LIST_FIELDS: ReadonlyArray<{ name: string; label: string; hint: string }> = [
-  { name: "locationPreferences", label: "Preferred locations", hint: "Comma separated" },
-  { name: "relevantCoursework", label: "Relevant coursework", hint: "Comma separated" },
+const LIST_FIELDS: ReadonlyArray<{ name: string; label: string; hint: string; persisted?: false }> = [
+  { name: "locationPreferences", label: "Preferred locations", hint: "Not saved yet — no storage field exists for this list.", persisted: false },
+  { name: "relevantCoursework", label: "Relevant coursework", hint: "Comma separated. Saved to your primary education entry." },
 ];
 
 function stringValue(profile: Profile, name: string): string {
@@ -201,6 +222,38 @@ function listValue(profile: Profile, name: string): string {
 function triValue(profile: Profile, name: string): string {
   const value = profile[name];
   return typeof value === "boolean" ? (value ? "yes" : "no") : "";
+}
+
+// Every persisted field this form submits, by how it round-trips through the
+// server. "email" and "website" are deliberately excluded — they are
+// fallback-only sources for applicationEmail/portfolio (see the API route),
+// not independently persisted, so they would never equal what comes back.
+const TEXT_COMPARE_FIELDS = TEXT_FIELD_GROUPS.flatMap((group) => group.fields)
+  .filter((field) => field.persisted !== false && field.name !== "email" && field.name !== "website")
+  .map((field) => field.name);
+const SELECT_COMPARE_FIELDS = SELECT_FIELDS.filter((field) => field.persisted !== false).map((field) => field.name);
+const TRISTATE_COMPARE_FIELDS = TRISTATE_FIELDS.filter((field) => field.persisted !== false).map((field) => field.name);
+const LIST_COMPARE_FIELDS = LIST_FIELDS.filter((field) => field.persisted !== false).map((field) => field.name);
+
+/**
+ * True only when every field this form actually submitted for persistence
+ * comes back unchanged from the server. This is what catches a save that
+ * returned 200 against a server already mid-restart, or any other silent
+ * partial write — a case a bare `response.ok` check cannot see, and exactly
+ * the failure mode that let a real profile save go unnoticed.
+ */
+function submittedFieldsPersisted(submitted: Profile, persisted: Profile): string[] {
+  const mismatches: string[] = [];
+  for (const name of [...TEXT_COMPARE_FIELDS, ...SELECT_COMPARE_FIELDS]) {
+    if (stringValue(submitted, name).trim() !== stringValue(persisted, name).trim()) mismatches.push(name);
+  }
+  for (const name of TRISTATE_COMPARE_FIELDS) {
+    if (triValue(submitted, name) !== triValue(persisted, name)) mismatches.push(name);
+  }
+  for (const name of LIST_COMPARE_FIELDS) {
+    if (listValue(submitted, name) !== listValue(persisted, name)) mismatches.push(name);
+  }
+  return mismatches;
 }
 
 export default function CanonicalProfileForm() {
@@ -236,6 +289,9 @@ export default function CanonicalProfileForm() {
     event.preventDefault();
     setStatus("saving");
     setError(null);
+    // Snapshot exactly what is being submitted, before any server round trip,
+    // so it can be checked against what the server reports back as persisted.
+    const submitted = profile;
     try {
       const body: Record<string, unknown> = { ...profile };
       // Lists travel as arrays; the server is what turns them back into JSON.
@@ -250,8 +306,20 @@ export default function CanonicalProfileForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (!response.ok) throw new Error("The profile could not be saved.");
-      await load();
+      if (!response.ok) throw new Error("The profile could not be saved. Nothing was changed.");
+      // The save response already carries the freshly persisted projection —
+      // reading it back (rather than trusting the 200 alone) is what proves
+      // the write actually landed, not merely that a request was accepted.
+      const data = (await response.json()) as { profile: Profile | null; gaps?: string[] };
+      const persisted = data.profile ?? {};
+      const mismatches = submittedFieldsPersisted(submitted, persisted);
+      if (mismatches.length > 0) {
+        throw new Error(
+          `Save did not take effect for: ${mismatches.join(", ")}. Please retry — nothing was confirmed saved.`,
+        );
+      }
+      setProfile(persisted);
+      setGaps(data.gaps ?? []);
       setStatus("saved");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -291,10 +359,13 @@ export default function CanonicalProfileForm() {
                   type={field.type ?? "text"}
                   value={stringValue(profile, field.name)}
                   onChange={(event) => set(field.name, event.target.value)}
-                  className="input mt-1 w-full"
+                  disabled={field.persisted === false}
+                  className="input mt-1 w-full disabled:cursor-not-allowed disabled:opacity-60"
                 />
                 {field.hint ? (
-                  <span className="mt-1 block text-xs text-tertiary">{field.hint}</span>
+                  <span className={`mt-1 block text-xs ${field.persisted === false ? "text-caution" : "text-tertiary"}`}>
+                    {field.hint}
+                  </span>
                 ) : null}
               </label>
             ))}
@@ -312,7 +383,8 @@ export default function CanonicalProfileForm() {
                 name={field.name}
                 value={stringValue(profile, field.name)}
                 onChange={(event) => set(field.name, event.target.value)}
-                className="input mt-1 w-full"
+                disabled={field.persisted === false}
+                className="input mt-1 w-full disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {field.options.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -321,7 +393,9 @@ export default function CanonicalProfileForm() {
                 ))}
               </select>
               {field.hint ? (
-                <span className="mt-1 block text-xs text-tertiary">{field.hint}</span>
+                <span className={`mt-1 block text-xs ${field.persisted === false ? "text-caution" : "text-tertiary"}`}>
+                  {field.hint}
+                </span>
               ) : null}
             </label>
           ))}
@@ -342,9 +416,12 @@ export default function CanonicalProfileForm() {
                     ),
                   )
                 }
-                className="input mt-1 w-full"
+                disabled={field.persisted === false}
+                className="input mt-1 w-full disabled:cursor-not-allowed disabled:opacity-60"
               />
-              <span className="mt-1 block text-xs text-tertiary">{field.hint}</span>
+              <span className={`mt-1 block text-xs ${field.persisted === false ? "text-caution" : "text-tertiary"}`}>
+                {field.hint}
+              </span>
             </label>
           ))}
         </div>
@@ -359,14 +436,17 @@ export default function CanonicalProfileForm() {
                 onChange={(event) =>
                   set(field.name, event.target.value === "" ? null : event.target.value === "yes")
                 }
-                className="input mt-1 w-full"
+                disabled={field.persisted === false}
+                className="input mt-1 w-full disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <option value="">Not answered</option>
                 <option value="yes">Yes</option>
                 <option value="no">No</option>
               </select>
               {field.hint ? (
-                <span className="mt-1 block text-xs text-tertiary">{field.hint}</span>
+                <span className={`mt-1 block text-xs ${field.persisted === false ? "text-caution" : "text-tertiary"}`}>
+                  {field.hint}
+                </span>
               ) : null}
             </label>
           ))}

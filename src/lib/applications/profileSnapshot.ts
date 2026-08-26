@@ -260,6 +260,8 @@ export type ProfileRow = {
   salaryMinimum: string | null;
   marketingTextConsent: boolean | null;
   workAuthorization: string | null;
+  /** The raw tri-state answer `workAuthorization` above is derived from. */
+  legallyAuthorizedToWork: boolean | null;
   requiresSponsorship: boolean | null;
   clearanceEligible: boolean | null;
   securityClearanceStatus: string | null;

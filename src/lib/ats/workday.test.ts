@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { listWorkdayJobs, parseWorkdayConfiguration, probeWorkdayJobs } from "@/lib/ats/workday";
+import { fetchWorkdayJobDetail, listWorkdayJobs, parseWorkdayConfiguration, probeWorkdayJobs, workdayExternalPathFromUrl } from "@/lib/ats/workday";
 
 type Call = { url: string; body: unknown };
 
@@ -127,6 +127,76 @@ describe("Workday board listing", () => {
     const probe = await probeWorkdayJobs("micron.wd1/External", null, "Micron", (title) => /intern/i.test(title));
     expect(probe.totalAvailableJobs).toBe(2718);
     expect(probe.paginationVerified).toBe(true);
-    expect(probe.jobs[0]?.postedAt?.toISOString()).toBe("2026-08-22T00:00:00.000Z");
+    expect(probe.jobs[0]?.postedAt).toBeNull();
+    expect(probe.jobs[0]?.postedAtText).toBe("Posted Yesterday");
+  });
+
+  it("never treats Workday startDate as posting evidence", async () => {
+    const calls: Call[] = [];
+    vi.stubGlobal("fetch", bigTenantFetch(calls));
+    const detail = await fetchWorkdayJobDetail(
+      "micron.wd1/External",
+      null,
+      "/job/Boise/Intern-Yield_JR109076",
+    );
+    expect(detail).toMatchObject({
+      description: "Real employer job description.",
+      postedAt: null,
+      postedAtText: "Posted Yesterday",
+    });
+  });
+
+  it("preserves an explicit Workday posting timestamp and full JD", async () => {
+    vi.stubGlobal("fetch", (async () => jsonResponse({
+      jobPostingInfo: {
+        jobDescription: "<p>Responsibilities and qualifications from the official detail.</p>",
+        datePosted: "2026-08-23T14:25:00-04:00",
+        startDate: "2027-06-01",
+      },
+    })) as unknown as typeof fetch);
+    const detail = await fetchWorkdayJobDetail("acme.wd5/Students", null, "/job/intern-1");
+    expect(detail).toMatchObject({
+      description: "Responsibilities and qualifications from the official detail.",
+      postedAt: null,
+      postedAtText: "2026-08-23T14:25:00-04:00",
+    });
+  });
+
+  it("REGRESSION: extracts Workday's own externalPath out of the public job URL", () => {
+    // A job discovered via probeWorkdayJobs stores Workday's own externalPath
+    // as sourceJobId. A job discovered via a third-party aggregator (Simplify,
+    // Zapply, ApplyGuy, Dreamwork, ...) has THAT service's id there instead —
+    // a different identifier scheme, not a broken Workday path.
+    expect(workdayExternalPathFromUrl(
+      "https://geaerospace.wd5.myworkdayjobs.com/GE_ExternalSite/job/Dayton/Systems-Engineering-Intern_R5030140-1",
+      "GE_ExternalSite",
+    )).toBe("/job/Dayton/Systems-Engineering-Intern_R5030140-1");
+  });
+
+  it("REGRESSION: handles a locale segment inserted before the site (Blackstone: /zh-CN/{site}/job/...)", () => {
+    expect(workdayExternalPathFromUrl(
+      "https://blackstone.wd1.myworkdayjobs.com/zh-CN/Blackstone_Campus_Careers/job/New-York/XMLNAME-2027-Data-Science-Summer-Analyst_44862",
+      "Blackstone_Campus_Careers",
+    )).toBe("/job/New-York/XMLNAME-2027-Data-Science-Summer-Analyst_44862");
+  });
+
+  it("returns null when the URL does not belong to the given site", () => {
+    expect(workdayExternalPathFromUrl("https://acme.wd5.myworkdayjobs.com/OtherSite/job/x", "External")).toBeNull();
+    expect(workdayExternalPathFromUrl("not-a-url", "External")).toBeNull();
+  });
+
+  it("REGRESSION: hydrates detail from the URL when sourceJobId is an aggregator id, not a Workday path", async () => {
+    vi.stubGlobal("fetch", (async () => jsonResponse({
+      jobPostingInfo: {
+        jobDescription: "<p>Real Workday job description reached via URL fallback.</p>",
+        datePosted: "2026-08-20T09:00:00-04:00",
+      },
+    })) as unknown as typeof fetch);
+    const detail = await fetchWorkdayJobDetail(
+      "geaerospace.wd5/GE_ExternalSite",
+      "https://geaerospace.wd5.myworkdayjobs.com/GE_ExternalSite/job/Dayton/Systems-Engineering-Intern_R5030140-1",
+      "zapply:5dac8c01", // an aggregator id — not a Workday externalPath
+    );
+    expect(detail).toMatchObject({ description: "Real Workday job description reached via URL fallback." });
   });
 });

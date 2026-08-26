@@ -144,8 +144,17 @@ describe("runMatchForJob", () => {
         jobId: job.id,
         matchScore: 82,
         eligibilityStatus: "Pass",
+        scoreSource: "AI_REFINED",
+        scoreProfileRevision: expect.stringMatching(/^[0-9a-f]{64}$/),
+        scoreJobFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
       }),
-      update: expect.objectContaining({ matchScore: 82, eligibilityStatus: "Pass" }),
+      update: expect.objectContaining({
+        matchScore: 82,
+        eligibilityStatus: "Pass",
+        scoreSource: "AI_REFINED",
+        scoreProfileRevision: expect.stringMatching(/^[0-9a-f]{64}$/),
+        scoreJobFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+      }),
     }));
     expect(transaction).toHaveBeenCalledOnce();
     expect(result).toMatchObject({ id: "match-1", jobId: job.id, score: 82 });

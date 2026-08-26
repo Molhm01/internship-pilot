@@ -104,7 +104,7 @@ describe("bulk INITIAL AI Match scheduling", () => {
     expect(scheduleInitialAiMatch).toHaveBeenCalledTimes(3);
   });
 
-  it("uses only active jobs without a valid denormalized or canonical score", async () => {
+  it("queues active jobs that have a baseline but still need AI refinement, newest first", async () => {
     jobCount.mockResolvedValue(0);
     jobFindMany.mockResolvedValue([]);
     await scheduleAllUnscoredActiveJobs(TEST_USER);
@@ -112,14 +112,14 @@ describe("bulk INITIAL AI Match scheduling", () => {
     expect(jobFindMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
         activeFeed: true,
-        AND: expect.arrayContaining([
-          // Scoped to this user: "unscored" is a fact about a person and a
-          // job, not about the shared posting.
-          expect.objectContaining({
-            matchResults: { none: { userId: TEST_USER, score: { gte: 0, lte: 100 } } },
-          }),
+        OR: expect.arrayContaining([
+          { userStates: { some: { userId: TEST_USER, scoreSource: { not: "AI_REFINED" } } } },
         ]),
       }),
+      orderBy: [
+        { sourcePostedAt: { sort: "desc", nulls: "last" } },
+        { id: "desc" },
+      ],
     }));
     expect(scheduleInitialAiMatch).not.toHaveBeenCalled();
   });

@@ -1,19 +1,137 @@
 import { prisma } from "@/lib/db";
 
-const PAUSE_KEY = "scheduler:paused";
+// Exported (rather than module-private) so src/lib/cron/tickGate.ts can read
+// these AppSetting rows in the SAME query as its own due-gate keys — see the
+// DATABASE EFFICIENCY PASS #4 report for why a combined read matters for the
+// fresh/standard lane's fixed per-tick cost.
+export const PAUSE_KEY = "scheduler:paused";
+export const PAUSE_METADATA_KEY = "scheduler:pause:metadata";
+const HEARTBEAT_KEY = "scheduler:worker:heartbeat";
 const TICK_KEY_PREFIX = "scheduler:tick:";
 
-export async function isSchedulerPaused(): Promise<boolean> {
-  const setting = await prisma.appSetting.findUnique({ where: { key: PAUSE_KEY } });
-  return setting?.value === "true";
+export type SchedulerPauseMetadata = {
+  paused: boolean;
+  source: string;
+  reason: string;
+  changedAt: string;
+  expiresAt: string | null;
+};
+
+export type SchedulerHeartbeat = {
+  startedAt: string;
+  lastSeenAt: string;
+  pid: number;
+  runtime: string;
+};
+
+function parseJson<T>(value: string | null | undefined): T | null {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return null;
+  }
 }
 
-export async function setSchedulerPaused(paused: boolean): Promise<void> {
-  await prisma.appSetting.upsert({
-    where: { key: PAUSE_KEY },
-    update: { value: String(paused) },
-    create: { key: PAUSE_KEY, value: String(paused) },
+export function pauseIsActive(
+  storedValue: string | null | undefined,
+  metadata: SchedulerPauseMetadata | null,
+  now = new Date(),
+): boolean {
+  if (storedValue !== "true") return false;
+  if (!metadata?.expiresAt) return true;
+  const expiresAt = Date.parse(metadata.expiresAt);
+  return !Number.isFinite(expiresAt) || expiresAt > now.getTime();
+}
+
+export function heartbeatIsHealthy(
+  heartbeat: SchedulerHeartbeat | null,
+  now = new Date(),
+  staleAfterMs = 45_000,
+): boolean {
+  if (!heartbeat) return false;
+  const lastSeenAt = Date.parse(heartbeat.lastSeenAt);
+  return Number.isFinite(lastSeenAt) && now.getTime() - lastSeenAt <= staleAfterMs;
+}
+
+export async function getSchedulerPauseState(): Promise<{
+  paused: boolean;
+  metadata: SchedulerPauseMetadata | null;
+}> {
+  // Keep these sequential: pause checks sit on every lane entry and do not
+  // benefit from occupying two of the local stack's deliberately small pool.
+  const setting = await prisma.appSetting.findUnique({ where: { key: PAUSE_KEY } });
+  const metadataSetting = await prisma.appSetting.findUnique({ where: { key: PAUSE_METADATA_KEY } });
+  const metadata = parseJson<SchedulerPauseMetadata>(metadataSetting?.value);
+  return { paused: pauseIsActive(setting?.value, metadata), metadata };
+}
+
+export async function isSchedulerPaused(): Promise<boolean> {
+  const state = await getSchedulerPauseState();
+  if (!state.paused && state.metadata?.expiresAt && state.metadata.paused) {
+    await setSchedulerPaused(false, {
+      source: "scheduler",
+      reason: "temporary_pause_expired",
+    });
+  }
+  return state.paused;
+}
+
+export async function setSchedulerPaused(
+  paused: boolean,
+  context: { source?: string; reason?: string; expiresAt?: Date | null } = {},
+): Promise<void> {
+  const metadata: SchedulerPauseMetadata = {
+    paused,
+    source: context.source ?? "unknown",
+    reason: context.reason ?? (paused ? "unspecified_pause" : "unspecified_resume"),
+    changedAt: new Date().toISOString(),
+    expiresAt: context.expiresAt?.toISOString() ?? null,
+  };
+  await prisma.$transaction(async (tx) => {
+    await tx.appSetting.upsert({
+      where: { key: PAUSE_KEY },
+      update: { value: String(paused) },
+      create: { key: PAUSE_KEY, value: String(paused) },
+    });
+    await tx.appSetting.upsert({
+      where: { key: PAUSE_METADATA_KEY },
+      update: { value: JSON.stringify(metadata) },
+      create: { key: PAUSE_METADATA_KEY, value: JSON.stringify(metadata) },
+    });
   });
+}
+
+export async function recordSchedulerHeartbeat(startedAt: string): Promise<void> {
+  const heartbeat: SchedulerHeartbeat = {
+    startedAt,
+    lastSeenAt: new Date().toISOString(),
+    pid: process.pid,
+    runtime: process.env.INTERNSHIP_PILOT_RUNTIME ?? "unknown",
+  };
+  await prisma.appSetting.upsert({
+    where: { key: HEARTBEAT_KEY },
+    update: { value: JSON.stringify(heartbeat) },
+    create: { key: HEARTBEAT_KEY, value: JSON.stringify(heartbeat) },
+  });
+}
+
+export const DISCOVERY_QUALITY_COHORT_KEY = "discoveryQuality:cohortStartedAt";
+
+/** Preserve the first instrumentation instant; restarts must not reset SLO data. */
+export async function ensureDiscoveryQualityCohortStarted(at: Date = new Date()): Promise<Date> {
+  const existing = await prisma.appSetting.findUnique({ where: { key: DISCOVERY_QUALITY_COHORT_KEY } });
+  if (existing) return new Date(JSON.parse(existing.value) as string);
+  try {
+    await prisma.appSetting.create({
+      data: { key: DISCOVERY_QUALITY_COHORT_KEY, value: JSON.stringify(at.toISOString()) },
+    });
+    return at;
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "P2002")) throw error;
+    const raced = await prisma.appSetting.findUniqueOrThrow({ where: { key: DISCOVERY_QUALITY_COHORT_KEY } });
+    return new Date(JSON.parse(raced.value) as string);
+  }
 }
 
 export type TickInfo = {
@@ -82,15 +200,75 @@ export async function recordTickResult(
   });
 }
 
-export async function getSchedulerHealth(): Promise<{ paused: boolean; ticks: Record<string, TickInfo> }> {
-  const paused = await isSchedulerPaused();
+type SchedulerHealth = {
+  paused: boolean;
+  pause: SchedulerPauseMetadata | null;
+  worker: (SchedulerHeartbeat & { healthy: boolean }) | null;
+  ticks: Record<string, TickInfo>;
+};
+
+async function computeSchedulerHealth(): Promise<SchedulerHealth> {
+  const pauseState = await getSchedulerPauseState();
   const settings = await prisma.appSetting.findMany({
-    where: { key: { startsWith: TICK_KEY_PREFIX } },
+    where: { OR: [{ key: { startsWith: TICK_KEY_PREFIX } }, { key: HEARTBEAT_KEY }] },
   });
   const ticks: Record<string, TickInfo> = {};
+  let heartbeat: SchedulerHeartbeat | null = null;
   for (const s of settings) {
+    if (s.key === HEARTBEAT_KEY) {
+      heartbeat = parseJson<SchedulerHeartbeat>(s.value);
+      continue;
+    }
     const name = s.key.slice(TICK_KEY_PREFIX.length);
     ticks[name] = JSON.parse(s.value) as TickInfo;
   }
-  return { paused, ticks };
+  return {
+    paused: pauseState.paused,
+    pause: pauseState.metadata,
+    worker: heartbeat ? { ...heartbeat, healthy: heartbeatIsHealthy(heartbeat) } : null,
+    ticks,
+  };
+}
+
+export async function getSchedulerHealth(): Promise<SchedulerHealth> {
+  return computeSchedulerHealth();
+}
+
+// In-process cache only (no DB-backed layer): scheduler health is read by a
+// single admin-facing panel, not fanned out across every browser tab like
+// catalog health, so a short in-instance TTL is enough to collapse a burst of
+// requests without adding another cross-instance cache row to maintain.
+// Matches the panel's own 5-minute, visibility-aware poll interval (database-
+// usage repair pass #2) — a shorter TTL bought nothing beyond "many requests
+// within the same instance's warm lifetime, within this window", which a
+// single 5-minute-interval panel essentially never produces.
+const SCHEDULER_HEALTH_TTL_MS = 5 * 60 * 1000;
+let cachedSchedulerHealth: { computedAt: number; value: SchedulerHealth } | null = null;
+let schedulerHealthInFlight: Promise<SchedulerHealth> | null = null;
+
+/**
+ * Cached scheduler health for the `/api/scheduler/status` panel.
+ *
+ * Before this cache, every 30-second poll from `SchedulerHealthPanel` (per
+ * open browser tab) recomputed this from three Prisma queries. The panel now
+ * polls far less often and only while visible, but the cache stays as a
+ * second line of defense against any caller that polls tighter than that.
+ */
+export async function getCachedSchedulerHealth(
+  options: { force?: boolean } = {},
+): Promise<{ health: SchedulerHealth; computedAt: string }> {
+  const now = Date.now();
+  if (!options.force && cachedSchedulerHealth && now - cachedSchedulerHealth.computedAt < SCHEDULER_HEALTH_TTL_MS) {
+    return { health: cachedSchedulerHealth.value, computedAt: new Date(cachedSchedulerHealth.computedAt).toISOString() };
+  }
+  if (schedulerHealthInFlight) {
+    const value = await schedulerHealthInFlight;
+    return { health: value, computedAt: new Date(cachedSchedulerHealth?.computedAt ?? now).toISOString() };
+  }
+  schedulerHealthInFlight = computeSchedulerHealth().finally(() => {
+    schedulerHealthInFlight = null;
+  });
+  const value = await schedulerHealthInFlight;
+  cachedSchedulerHealth = { computedAt: now, value };
+  return { health: value, computedAt: new Date(now).toISOString() };
 }

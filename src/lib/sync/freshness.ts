@@ -112,14 +112,47 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
+// Age-bucket backoff (database-usage repair, pass #2): without a floor, a
+// small active catalog gets fully re-verified on every tick forever, which
+// is wasted work for a posting that was just confirmed open minutes ago.
+// Recent postings still get no floor at all — they are the ones most likely
+// to be filled or pulled quickly, so they should surface to the front of
+// this query as often as the tick allows. Older, more stable postings get a
+// floor that grows with age, so this query naturally spends its `take`
+// budget on jobs that actually need re-checking.
+const RECENT_POSTING_CUTOFF_MS = 7 * 24 * 60 * 60 * 1000; // <7d old: no floor
+const MID_AGE_POSTING_CUTOFF_MS = 21 * 24 * 60 * 60 * 1000; // 7-21d old: 6h floor
+const MID_AGE_RECHECK_FLOOR_MS = 6 * 60 * 60 * 1000;
+const STABLE_RECHECK_FLOOR_MS = 24 * 60 * 60 * 1000; // >21d old: 24h floor
+
 export async function runFreshnessVerificationBatch(
   limit = 10,
 ): Promise<{ checked: number; open: number; closed: number; unknown: number }> {
+  const now = new Date();
+  const recentCutoff = new Date(now.getTime() - RECENT_POSTING_CUTOFF_MS);
+  const midAgeCutoff = new Date(now.getTime() - MID_AGE_POSTING_CUTOFF_MS);
+  const midAgeFloor = new Date(now.getTime() - MID_AGE_RECHECK_FLOOR_MS);
+  const stableFloor = new Date(now.getTime() - STABLE_RECHECK_FLOOR_MS);
+
   const jobs = await prisma.job.findMany({
     where: {
       activeFeed: true,
       verificationStatus: AVAILABILITY.OFFICIAL_VERIFIED,
       officialApplicationUrl: { not: null },
+      OR: [
+        // Recent posting (or unknown posted date): eligible every tick.
+        { OR: [{ sourcePostedAt: null }, { sourcePostedAt: { gte: recentCutoff } }] },
+        // Mid-age posting: re-verify at most every 6h.
+        {
+          sourcePostedAt: { lt: recentCutoff, gte: midAgeCutoff },
+          OR: [{ lastVerifiedAt: null }, { lastVerifiedAt: { lt: midAgeFloor } }],
+        },
+        // Stable/older posting: re-verify at most every 24h.
+        {
+          sourcePostedAt: { lt: midAgeCutoff },
+          OR: [{ lastVerifiedAt: null }, { lastVerifiedAt: { lt: stableFloor } }],
+        },
+      ],
     },
     orderBy: [
       { lastVerifiedAt: { sort: "asc", nulls: "first" } },

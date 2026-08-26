@@ -44,10 +44,12 @@ export type JobCardData = {
   scoringState?: string | null;
   matchScore?: number | null;
   eligibilityStatus?: string | null;
+  scoreSource?: "BASELINE" | "AI_REFINED" | string | null;
+  freshnessLabel?: "NEW" | "RECENT" | "NEWLY_DISCOVERED" | null;
   // Historical MatchResults may still be present in the API payload for audit
   // and job-detail use. The card deliberately ignores them: current display
-  // state lives in UserJobState and is cleared as soon as a replacement resume
-  // becomes active.
+  // state lives in UserJobState and is atomically replaced by a current-input
+  // baseline as soon as a profile or JD revision changes.
   matchResults?: { score: number; eligibility: string }[];
 };
 
@@ -67,6 +69,7 @@ export function JobCard({ job, className }: { job: JobCardData; className?: stri
   const automaticMatchStatus = initialMatchUiStatus(job.scoringState, Boolean(latestMatch));
   const automaticWorkActive = automaticMatchStatus === "Scoring"
     || automaticMatchStatus === "Preparing job details";
+  const freshnessBadge = job.freshnessLabel ?? null;
 
   return (
     <article
@@ -86,9 +89,15 @@ export function JobCard({ job, className }: { job: JobCardData; className?: stri
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {latestMatch ? (
-              <div className="flex items-center gap-1.5" title="ATS resume-to-job match">
-                <span className="text-[9px] font-semibold uppercase tracking-[0.08em] text-tertiary">ATS</span>
-                <MatchScore score={latestMatch.score} size="sm" />
+              <div className="flex items-center gap-1.5" title="Candidate-to-job match">
+                <span className="text-[9px] font-semibold uppercase tracking-[0.08em] text-tertiary">
+                  {job.scoreSource === "AI_REFINED" ? "AI Match" : "Baseline"}
+                </span>
+                <MatchScore
+                  score={latestMatch.score}
+                  size="sm"
+                  label={job.scoreSource === "AI_REFINED" ? "AI Match" : "Baseline match"}
+                />
               </div>
             ) : automaticMatchStatus ? (
               <Badge
@@ -132,6 +141,14 @@ export function JobCard({ job, className }: { job: JobCardData; className?: stri
         </dl>
 
         <div className="mt-2.5 flex flex-wrap items-center gap-1">
+          {freshnessBadge && (
+            <Badge
+              tone={freshnessBadge === "NEW" ? "accent" : "info"}
+              title={freshnessBadge === "NEWLY_DISCOVERED" ? "Posting date unavailable" : undefined}
+            >
+              {freshnessBadge === "NEWLY_DISCOVERED" ? "Newly discovered" : freshnessBadge}
+            </Badge>
+          )}
           <TrackerStatusBadge status={job.status} />
           {job.verificationStatus && <AvailabilityBadge status={job.verificationStatus} />}
         </div>

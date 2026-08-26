@@ -67,14 +67,16 @@ export type PostedLabel = {
  * stale record ends up looking like a fresh one.
  */
 export function postedLabel(job: PostedAgeSource, now: Date = new Date()): PostedLabel {
-  const posted = job.sourcePostedAt ?? job.postingDate ?? null;
+  const posted = job.sourcePostedAt === undefined
+    ? job.postingDate ?? null
+    : job.sourcePostedAt;
   const age = formatSourceAge(posted, now);
 
   if (!age) {
     return {
       text: job.sourcePostedText
         ? `Posting date unknown (source said "${job.sourcePostedText}")`
-        : "Posting date unknown",
+        : "Posting date unavailable",
       unknown: true,
     };
   }

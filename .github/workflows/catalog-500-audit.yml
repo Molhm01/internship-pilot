@@ -1,9 +1,16 @@
 name: Production catalog health
 
+# Database-usage repair pass #2: this used to run hourly against
+# /api/health/catalog, which is exactly the endpoint every open Jobs-page tab
+# also polls. Reduced to every 4 hours (6 runs/day instead of 24) — catalog
+# depth and freshness targets do not meaningfully regress within a few hours,
+# and a real outage is still caught well within a business day. Failure
+# detection itself is unchanged: this still fails loudly (non-200, active
+# count below target) on every run, just less often.
 on:
   workflow_dispatch:
   schedule:
-    - cron: "17 * * * *"
+    - cron: "17 */4 * * *"
 
 permissions:
   contents: read

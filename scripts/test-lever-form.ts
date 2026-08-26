@@ -19,7 +19,7 @@ const PROFILE = {
   school: "University of California, Berkeley", previousSchool: null,
   addressStreet: "123 University Ave", addressCity: "Berkeley", addressState: "CA", addressZip: "94720",
   countryOfResidence: "United States", willingToRelocate: true, locationPreferences: ["San Francisco, CA"],
-  internshipTermAvailability: "Summer 2027", salaryAnswerPreference: "Negotiable",
+  internshipTermAvailability: "Summer 2027", earliestStartDate: null, salaryAnswerPreference: "Negotiable",
   workAuthorization: "U.S. Citizen", requiresSponsorship: false, clearanceEligible: null,
   eeoGender: null, eeoRaceEthnicity: null, eeoVeteranStatus: null, eeoDisabilityStatus: null,
 };

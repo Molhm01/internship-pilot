@@ -1,6 +1,58 @@
 import { prisma } from "@/lib/db";
 import { applicationProfileForUser } from "@/lib/profile/applicationProfile";
+import { companyKey } from "./profileSnapshot";
 import type { FillContext } from "./types";
+
+function parseStringList(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The evidence longAnswer.ts is allowed to draw from: every approved
+ * Experience/Project entry (the exact same "approved" fields
+ * ProfileEntriesSection writes), plus this specific employer's relationship
+ * facts. Fetched fresh per run rather than cached, same as the rest of
+ * FillContext — the agent must never fill from a stale copy of what the user
+ * approved.
+ */
+export async function longAnswerFactsForUser(
+  userId: string,
+  company: string,
+): Promise<Pick<FillContext, "approvedExperiences" | "approvedProjects" | "companyRelationship">> {
+  const [experiences, projects, relationship] = await Promise.all([
+    prisma.experience.findMany({ where: { userId }, orderBy: { sortOrder: "asc" } }),
+    prisma.project.findMany({ where: { userId }, orderBy: { sortOrder: "asc" } }),
+    prisma.companyRelationshipFact.findUnique({
+      where: { userId_companyKey: { userId, companyKey: companyKey(company) } },
+    }),
+  ]);
+  return {
+    approvedExperiences: experiences.map((entry) => ({
+      employer: entry.employer,
+      title: entry.title,
+      approvedBullets: parseStringList(entry.approvedBullets),
+    })),
+    approvedProjects: projects.map((entry) => ({
+      name: entry.name,
+      description: entry.description,
+      approvedSkills: parseStringList(entry.approvedSkills),
+    })),
+    companyRelationship: relationship
+      ? {
+          hasReferral: relationship.hasReferral,
+          referralName: relationship.referralName,
+          referralRelationship: relationship.referralRelationship,
+          familyMemberEmployed: relationship.familyMemberEmployed,
+        }
+      : null,
+  };
+}
 
 type ProfileRow = NonNullable<Awaited<ReturnType<typeof applicationProfileForUser>>>;
 
@@ -40,6 +92,7 @@ export function fillContextProfile(profile: ProfileRow): FillContext["profile"] 
     willingToRelocate: profile.willingToRelocate,
     locationPreferences,
     internshipTermAvailability: profile.internshipTermAvailability,
+    earliestStartDate: profile.earliestStartDate,
     salaryAnswerPreference: profile.salaryAnswerPreference,
     workAuthorization: profile.workAuthorization,
     requiresSponsorship: profile.requiresSponsorship,

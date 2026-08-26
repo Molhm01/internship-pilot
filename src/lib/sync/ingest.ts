@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import type { Prisma } from "@/generated/prisma/client";
 import type { RawInternListJob } from "@/lib/sync/internListAdapter";
 import type { AtsJob } from "@/lib/ats/types";
 import {
@@ -19,6 +20,12 @@ import {
   stripTrackingParameters,
 } from "@/lib/applications/officialDestination";
 import { scheduleInitialAiMatchForAllUsers } from "@/lib/matching/initialAiMatchQueue";
+import {
+  baselineStateData,
+  baselineScoreJobForAllEligibleUsers,
+  calculateBaselineScore,
+  loadAllApprovedBaselineProfiles,
+} from "@/lib/matching/baselineScoring";
 import type { InternshipClassification } from "@/lib/sync/internshipClassifier";
 import {
   employerAtsProvenance,
@@ -377,14 +384,45 @@ async function upsertNormalizedJob(
           : {}),
       },
     });
+    if ((descriptionChanged || canonicalPromotion) && (existing.activeFeed || canonicalPromotion)) {
+      // A changed JD or newly activated canonical posting immediately replaces
+      // any stale AI display value with the deterministic current-input score.
+      // The durable model queue is scheduled only after that numeric score is
+      // safe to show.
+      await baselineScoreJobForAllEligibleUsers(existing.id);
+      await scheduleInitialAiMatchForAllUsers(existing.id, { startWorker: false });
+    }
     return changed ? "updated" : "unchanged";
   }
 
   const disciplineTags = classifyDisciplines(input.title, input.description);
   const { min: compMinHourly, max: compMaxHourly } = parseCompensation(input.compensation);
+  const activeFeed = computeActiveFeed({
+    source: input.source,
+    verificationStatus: profile.verificationStatus,
+    company: input.company,
+  });
+  const scoringInput = {
+    title: input.title,
+    company: input.company,
+    location: input.location,
+    workplaceType: input.workplaceType,
+    internshipTerm: input.internshipTerm,
+    description: input.description,
+    disciplineTags: JSON.stringify(disciplineTags),
+    sophomoreEligible: classifySophomoreEligible(input.description),
+    graduationYears: JSON.stringify(classifyGraduationYears(input.description)),
+    sponsorship: classifySponsorship(input.sponsorshipRaw),
+    citizenshipOrClearance: classifyCitizenshipOrClearance(input.description),
+    season: classifySeason(input.internshipTerm),
+  };
+  const approvedProfiles = activeFeed ? await loadAllApprovedBaselineProfiles() : [];
+  const initialUserStates = approvedProfiles.map((candidate) => ({
+    userId: candidate.userId,
+    ...baselineStateData(calculateBaselineScore(candidate, scoringInput)),
+  }));
 
-  const created = await prisma.job.create({
-    data: {
+  const jobData = {
       title: input.title,
       company: input.company,
       location: input.location,
@@ -423,27 +461,36 @@ async function upsertNormalizedJob(
       classificationReason: input.classificationReason ?? null,
       // Visibility is decided centrally by source policy. Never by whether an
       // AI score or a tailored document exists.
-      activeFeed: computeActiveFeed({
-        source: input.source,
-        verificationStatus: profile.verificationStatus,
-        company: input.company,
-      }),
-      disciplineTags: JSON.stringify(disciplineTags),
-      sophomoreEligible: classifySophomoreEligible(input.description),
-      graduationYears: JSON.stringify(classifyGraduationYears(input.description)),
-      sponsorship: classifySponsorship(input.sponsorshipRaw),
-      citizenshipOrClearance: classifyCitizenshipOrClearance(input.description),
+      activeFeed,
+      disciplineTags: scoringInput.disciplineTags,
+      sophomoreEligible: scoringInput.sophomoreEligible,
+      graduationYears: scoringInput.graduationYears,
+      sponsorship: scoringInput.sponsorship,
+      citizenshipOrClearance: scoringInput.citizenshipOrClearance,
       compMinHourly,
       compMaxHourly,
-      season: classifySeason(input.internshipTerm),
+      season: scoringInput.season,
       distanceMilesFromClifton: distanceFromCliftonMiles(input.location),
-    },
-  });
+  } satisfies Prisma.JobUncheckedCreateInput;
+  const created = initialUserStates.length > 0
+    ? await prisma.$transaction(async (tx) => {
+        // Keep the two writes sequential inside one explicit transaction.
+        // Prisma adapter-pg currently executes parts of nested relation writes
+        // concurrently on one pg transaction client, which can corrupt the
+        // unnamed prepared statement and surface PostgreSQL 08P01. This keeps
+        // the atomic visibility invariant without using that nested-write path.
+        const job = await tx.job.create({ data: jobData });
+        await tx.userJobState.createMany({
+          data: initialUserStates.map((state) => ({ ...state, jobId: job.id })),
+        });
+        return job;
+      })
+    : await prisma.job.create({ data: jobData });
   try {
     // Discovery may enqueue optional downstream scoring, but it must never
     // start model work in the crawler process. A separately scheduled worker
     // owns that queue; fresh official jobs become visible immediately.
-    if (options.scheduleInitialMatch !== false) {
+    if (activeFeed && options.scheduleInitialMatch !== false) {
       await scheduleInitialAiMatchForAllUsers(created.id, { startWorker: false });
     }
   } catch (error) {

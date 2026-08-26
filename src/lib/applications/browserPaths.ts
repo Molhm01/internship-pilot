@@ -10,11 +10,11 @@ import path from "node:path";
  */
 export function applicationProfilePath(): string {
   const configured = process.env.APPLICATION_BROWSER_PROFILE_DIR ?? "data/browser-profile";
-  return path.resolve(process.cwd(), configured);
+  return path.resolve(/* turbopackIgnore: true */ process.cwd(), configured);
 }
 
 /** Absolute path of the unpacked Manifest V3 extension the worker loads. */
 export function applicationExtensionPath(): string {
   const configured = process.env.INTERNSHIP_PILOT_EXTENSION_DIR ?? path.join("extension", "dist");
-  return path.resolve(process.cwd(), configured);
+  return path.resolve(/* turbopackIgnore: true */ process.cwd(), configured);
 }

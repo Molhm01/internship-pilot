@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   decideLocalStartup,
+  normalizeLocalPrismaTcpUrl,
   orphanRecoveryTarget,
   stoppablePids,
   type LocalStartupProbe,
@@ -33,6 +34,26 @@ import {
 
 const REPO = "C:/Users/dev/Internship-AI";
 const OTHER_REPO = "C:/Users/dev/some-other-app";
+
+describe("local Prisma URL normalization", () => {
+  it("keeps Prisma's dynamic port while forcing Windows localhost onto IPv4", () => {
+    expect(
+      normalizeLocalPrismaTcpUrl(
+        "postgres://postgres:postgres@localhost:54391/template1?sslmode=disable&connection_limit=10",
+        "win32",
+      ),
+    ).toBe(
+      "postgres://postgres:postgres@127.0.0.1:54391/template1?sslmode=disable&connection_limit=10",
+    );
+  });
+
+  it("does not rewrite non-Windows or non-loopback database hosts", () => {
+    const local = "postgres://postgres:postgres@localhost:54391/template1?sslmode=disable";
+    const remote = "postgres://user:secret@db.example.test:5432/app?sslmode=require";
+    expect(normalizeLocalPrismaTcpUrl(local, "linux")).toBe(local);
+    expect(normalizeLocalPrismaTcpUrl(remote, "win32")).toBe(remote);
+  });
+});
 
 function identity(overrides: Partial<LocalInstanceIdentity> = {}): LocalInstanceIdentity {
   return {

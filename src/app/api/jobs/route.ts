@@ -2,17 +2,34 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { TRACKER_STATUSES } from "@/lib/statuses";
 import { computeActiveFeed } from "@/lib/jobs/sourcePolicy";
+import { sourcesForBucket } from "@/lib/jobs/sourceFilterBuckets";
 import type { Prisma } from "@/generated/prisma/client";
 import {
   destinationPersistenceData,
   resolveOfficialJobDestination,
 } from "@/lib/applications/officialDestination";
-import { scheduleInitialAiMatch } from "@/lib/matching/initialAiMatchQueue";
+import { scheduleInitialAiMatchForAllUsers } from "@/lib/matching/initialAiMatchQueue";
 import { withUser } from "@/lib/auth/session";
-import { jobOrderBy, parseJobSort, sortJobs } from "@/lib/jobs/jobSort";
+import { jobOrderBy, parseJobSort } from "@/lib/jobs/jobSort";
 import { jobsQueryErrorDevDetail, jobsQueryErrorLog } from "@/lib/jobs/jobsQueryError";
 import { parseSourcePostedAt } from "@/lib/sync/sourceDate";
 import { manualEntryVerification } from "@/lib/jobs/manualEntry";
+import {
+  discoverFreshnessLabel,
+  KNOWN_POSTED_FRESH_WINDOW_MS,
+  UNKNOWN_DATE_DISCOVERED_WINDOW_MS,
+} from "@/lib/jobs/freshness";
+import {
+  baselineStateData,
+  calculateBaselineScore,
+  loadApprovedBaselineProfile,
+  loadAllApprovedBaselineProfiles,
+  backfillBaselineScoresForUser,
+} from "@/lib/matching/baselineScoring";
+
+const DEFAULT_JOBS_PAGE_SIZE = 50;
+const MAX_JOBS_PAGE_SIZE = 100;
+const PROFILE_NOT_READY_MESSAGE = "Complete your profile to activate job matching.";
 
 function parseListParam(value: string | null): string[] {
   return value ? value.split(",").map((v) => v.trim()).filter(Boolean) : [];
@@ -39,6 +56,9 @@ function withUserState<T extends { userStates?: unknown[] }>(job: T) {
         notes: string | null;
         matchScore: number | null;
         eligibilityStatus: string | null;
+        scoreSource: string | null;
+        scoreProfileRevision: string | null;
+        scoreJobFingerprint: string | null;
       }
     | undefined;
   const rest = { ...(job as T & { userStates?: unknown[] }) };
@@ -48,6 +68,9 @@ function withUserState<T extends { userStates?: unknown[] }>(job: T) {
     status: state?.applicationStatus ?? "DISCOVERED",
     matchScore: state?.matchScore ?? null,
     eligibilityStatus: state?.eligibilityStatus ?? null,
+    scoreSource: state?.scoreSource ?? null,
+    scoreProfileRevision: state?.scoreProfileRevision ?? null,
+    scoreJobFingerprint: state?.scoreJobFingerprint ?? null,
     saved: state?.saved ?? false,
     hidden: state?.hidden ?? false,
     notes: state?.notes ?? null,
@@ -56,7 +79,41 @@ function withUserState<T extends { userStates?: unknown[] }>(job: T) {
 
 async function getJobsResponse(req: Request, userId: string) {
   const { searchParams } = new URL(req.url);
+  const profile = await loadApprovedBaselineProfile(userId);
+  const allActiveTotal = await prisma.job.count({ where: { activeFeed: true } });
+  if (!profile) {
+    return NextResponse.json(
+      {
+        jobs: [],
+        total: 0,
+        allActiveTotal,
+        offset: 0,
+        returned: 0,
+        nextOffset: null,
+        hasMore: false,
+        sort: parseJobSort(searchParams.get("sort")),
+        view: (searchParams.get("view") ?? "fresh").toLowerCase(),
+        profileReady: false,
+        scoreReadinessMessage: PROFILE_NOT_READY_MESSAGE,
+      },
+      { headers: { "cache-control": "no-store" } },
+    );
+  }
+  const missingCurrentScores = await prisma.job.count({
+    where: {
+      activeFeed: true,
+      OR: [
+        { userStates: { none: { userId } } },
+        { userStates: { some: { userId, matchScore: null } } },
+        { userStates: { some: { userId, scoreProfileRevision: null } } },
+        { userStates: { some: { userId, scoreProfileRevision: { not: profile.revision } } } },
+      ],
+    },
+  });
+  if (missingCurrentScores > 0) await backfillBaselineScoresForUser(userId);
   const location = searchParams.get("location");
+  const company = searchParams.get("company");
+  const source = searchParams.get("source");
   const status = searchParams.get("status");
   const internshipTerm = searchParams.get("internshipTerm");
   const duration = searchParams.get("duration");
@@ -81,15 +138,26 @@ async function getJobsResponse(req: Request, userId: string) {
   // NOT by verificationStatus. Trusted-aggregator listings appear here even
   // while their official destination is still "verification pending".
   const feed = (searchParams.get("feed") ?? "active").toLowerCase();
+  const requestedView = (searchParams.get("view") ?? "fresh").toLowerCase();
+  const view = requestedView === "all" || requestedView === "older" ? requestedView : "fresh";
   // newest (default) | oldest | match | discovered. Anything unrecognized falls
   // back to newest rather than erroring — a bad link must not break the feed.
   const sort = parseJobSort(searchParams.get("sort"));
 
   const where: Prisma.JobWhereInput = {};
+  const andFilters: Prisma.JobWhereInput[] = [];
   // Case-insensitive by request. SQLite's LIKE ignored ASCII case for free;
   // PostgreSQL's does not, and a filter for "remote" that stops matching
   // "Remote" reads as a broken feed rather than a changed database.
   if (location) where.location = { contains: location, mode: "insensitive" };
+  if (company) where.company = { contains: company, mode: "insensitive" };
+  if (source) {
+    const bucketSources = sourcesForBucket(source);
+    // An unrecognized bucket key filters to nothing rather than silently
+    // falling back to "all sources" — a stale/garbled query param must not
+    // look like a working filter that happens to match everything.
+    where.source = bucketSources ? { in: bucketSources } : { in: [] };
+  }
   // Tracker status is this user's, so the filter is a constraint on their
   // state row rather than on the shared job.
   if (status) where.userStates = { some: { userId, applicationStatus: status } };
@@ -130,7 +198,8 @@ async function getJobsResponse(req: Request, userId: string) {
   //    shows the rest that aren't officially verified, feed=all shows all.
   if (verificationStatus.length > 0) {
     where.verificationStatus = { in: verificationStatus };
-  } else if (feed === "active") {
+  }
+  if (feed === "active") {
     where.activeFeed = true;
   } else if (feed === "needsreview" || feed === "needs-review") {
     where.activeFeed = false;
@@ -138,13 +207,52 @@ async function getJobsResponse(req: Request, userId: string) {
   }
   // feed === "all": no visibility constraint.
 
+  if (feed === "active") {
+    const now = Date.now();
+    if (view === "fresh") {
+      andFilters.push({
+        OR: [
+          { sourcePostedAt: { gte: new Date(now - KNOWN_POSTED_FRESH_WINDOW_MS), lte: new Date(now) } },
+          {
+            sourcePostedAt: null,
+            firstSeenAt: { gte: new Date(now - UNKNOWN_DATE_DISCOVERED_WINDOW_MS), lte: new Date(now) },
+          },
+        ],
+      });
+    } else if (view === "older") {
+      where.sourcePostedAt = {
+        gt: new Date(now - 30 * 24 * 60 * 60 * 1000),
+        lt: new Date(now - 7 * 24 * 60 * 60 * 1000),
+      };
+    }
+  }
+
   if (maxDistanceMiles) {
     const max = parseFloat(maxDistanceMiles);
-    where.OR = [
-      { distanceMilesFromClifton: { lte: max } },
-      ...(includeRemoteRegardlessOfDistance ? [{ workplaceType: "Remote" as const }] : []),
-    ];
+    andFilters.push({
+      OR: [
+        { distanceMilesFromClifton: { lte: max } },
+        ...(includeRemoteRegardlessOfDistance ? [{ workplaceType: "Remote" as const }] : []),
+      ],
+    });
   }
+  if (disciplines.length > 0) {
+    andFilters.push({
+      OR: disciplines.map((discipline) => ({
+        disciplineTags: { contains: `"${discipline}"` },
+      })),
+    });
+  }
+  if (graduationYear) {
+    andFilters.push({
+      OR: [
+        { graduationYears: null },
+        { graduationYears: "[]" },
+        { graduationYears: { contains: String(parseInt(graduationYear, 10)) } },
+      ],
+    });
+  }
+  if (andFilters.length > 0) where.AND = andFilters;
 
   // Newest SOURCE POSTING first — never newest row-insert first. Ordering is
   // by Job.sourcePostedAt so a bulk import of month-old postings cannot jump
@@ -153,52 +261,112 @@ async function getJobsResponse(req: Request, userId: string) {
   // The default feed still never drops jobs for lacking an AI match score,
   // official verification, or an ATS mirror — visibility is governed solely by
   // activeFeed above.
-  const rows = await prisma.job.findMany({
-    where,
-    orderBy: jobOrderBy(sort),
-    include: {
-      // Scoped, both of them. An unscoped include on a shared row is the
-      // quietest way to leak: the query looks right and the payload carries
-      // every other applicant's score.
-      matchResults: { where: { userId }, orderBy: { createdAt: "desc" }, take: 1 },
-      userStates: { where: { userId }, take: 1 },
-    },
-  });
-  let jobs = rows.map(withUserState);
+  const offsetParam = parseInt(searchParams.get("offset") ?? "0", 10);
+  const offset = Number.isFinite(offsetParam) && offsetParam > 0 ? offsetParam : 0;
+  const requestedLimit = parseInt(searchParams.get("limit") ?? String(DEFAULT_JOBS_PAGE_SIZE), 10);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.max(1, Math.min(MAX_JOBS_PAGE_SIZE, requestedLimit))
+    : DEFAULT_JOBS_PAGE_SIZE;
+  let jobs;
+  if (sort === "match") {
+    const states = await prisma.userJobState.findMany({
+      where: { userId, job: where, matchScore: { gte: 0, lte: 100 } },
+      orderBy: [
+        { matchScore: { sort: "desc", nulls: "last" } },
+        { job: { sourcePostedAt: { sort: "desc", nulls: "last" } } },
+        { jobId: "desc" },
+      ],
+      skip: offset,
+      take: limit,
+      include: {
+        job: {
+          include: {
+            matchResults: { where: { userId }, orderBy: { createdAt: "desc" }, take: 1 },
+          },
+        },
+      },
+    });
+    jobs = states.map((stateRow) => {
+      const { job, ...state } = stateRow;
+      return withUserState({ ...job, userStates: [state] });
+    });
+  } else {
+    const rows = await prisma.job.findMany({
+      where,
+      orderBy: jobOrderBy(sort),
+      skip: offset,
+      take: limit,
+      include: {
+        matchResults: { where: { userId }, orderBy: { createdAt: "desc" }, take: 1 },
+        userStates: { where: { userId }, take: 1 },
+      },
+    });
+    jobs = rows.map(withUserState);
+  }
 
   // Fields stored as JSON strings are filtered in-memory — the dataset here
   // is small (a personal job board, not a production job search engine).
-  if (disciplines.length > 0) {
-    jobs = jobs.filter((job) => {
-      const tags: string[] = job.disciplineTags ? JSON.parse(job.disciplineTags) : [];
-      return disciplines.some((d) => tags.includes(d));
-    });
-  }
-  if (graduationYear) {
-    const year = parseInt(graduationYear, 10);
-    jobs = jobs.filter((job) => {
-      const years: number[] = job.graduationYears ? JSON.parse(job.graduationYears) : [];
-      return years.length === 0 || years.includes(year);
-    });
-  }
+  // JSON-backed filters were translated into SQL above, before pagination.
 
   // Final ordering is applied here, over the full filtered set and BEFORE
   // pagination, so every page of the feed is a slice of one consistent order.
   // Two rules cannot be expressed in a single SQL ORDER BY and are enforced
   // here instead: unknown posting dates always sort last, and sourceRowIndex
   // only breaks ties among jobs from the newest sync run.
-  jobs = sortJobs(jobs, sort);
+  // Database ordering is stable and is applied before skip/take.
 
   // Pagination: `total` is the full matching count so the UI can page/scroll
   // to EVERY record. Absent limit ⇒ return everything (no hidden hard cap).
-  const total = jobs.length;
-  const offsetParam = parseInt(searchParams.get("offset") ?? "0", 10);
-  const limitParam = searchParams.get("limit");
-  const offset = Number.isFinite(offsetParam) && offsetParam > 0 ? offsetParam : 0;
-  const paged = limitParam ? jobs.slice(offset, offset + Math.max(0, parseInt(limitParam, 10))) : jobs.slice(offset);
+  // A direct database/editor change can bypass ingestion hooks. Validate this
+  // bounded page against the full JD fingerprint before serialization so a
+  // stale AI score becomes a baseline, never a stale personalized result.
+  if (feed === "active") {
+    const refreshed = new Map<string, ReturnType<typeof baselineStateData>>();
+    const writes = jobs.flatMap((job) => {
+      const baseline = calculateBaselineScore(profile, job);
+      if (job.scoreJobFingerprint === baseline.jobFingerprint) return [];
+      const data = baselineStateData(baseline);
+      refreshed.set(job.id, data);
+      return prisma.userJobState.upsert({
+        where: { userId_jobId: { userId, jobId: job.id } },
+        create: { userId, jobId: job.id, ...data },
+        update: data,
+      });
+    });
+    if (writes.length > 0) {
+      await prisma.$transaction(writes);
+      jobs = jobs.map((job) => {
+        const data = refreshed.get(job.id);
+        return data ? { ...job, ...data } : job;
+      });
+    }
+  }
+  jobs = jobs.map((job) => ({
+    ...job,
+    freshnessLabel: discoverFreshnessLabel(job),
+  }));
+
+  const total = await prisma.job.count({ where });
+  if (feed === "active" && jobs.some((job) => !Number.isInteger(job.matchScore))) {
+    throw new Error("ACTIVE_JOB_SCORE_INVARIANT_VIOLATION");
+  }
+  const nextOffset = offset + jobs.length < total ? offset + jobs.length : null;
 
   return NextResponse.json(
-    { jobs: paged, total, offset, returned: paged.length, sort },
+    {
+      jobs,
+      total,
+      allActiveTotal,
+      offset,
+      returned: jobs.length,
+      nextOffset,
+      hasMore: nextOffset !== null,
+      limit,
+      sort,
+      view,
+      profileReady: true,
+      scoreReadinessMessage: null,
+    },
     { headers: { "cache-control": "no-store" } },
   );
 }
@@ -281,6 +449,30 @@ export const POST = withUser(async (req, user) => {
     officialApplicationUrl: destination.officialApplicationUrl ?? null,
     enteredAt: now,
   });
+  const activeFeed = computeActiveFeed({
+    source: "manual",
+    verificationStatus: manualVerification.verificationStatus,
+    company: company.trim(),
+  });
+  const profiles = activeFeed ? await loadAllApprovedBaselineProfiles() : [];
+  const scoringInput = {
+    title: title.trim(),
+    company: company.trim(),
+    location: body.location?.trim() || null,
+    internshipTerm: body.internshipTerm?.trim() || null,
+    description: description.trim(),
+  };
+  const initialStates: Prisma.UserJobStateUncheckedCreateWithoutJobInput[] = profiles.map((candidate) => ({
+    userId: candidate.userId,
+    ...(candidate.userId === user.id ? { applicationStatus: body.status || "DISCOVERED" } : {}),
+    ...baselineStateData(calculateBaselineScore(candidate, scoringInput)),
+  }));
+  if (!profiles.some((candidate) => candidate.userId === user.id)) {
+    initialStates.push({
+      userId: user.id,
+      applicationStatus: body.status || "DISCOVERED",
+    });
+  }
 
   const job = await prisma.job.create({
     data: {
@@ -310,23 +502,15 @@ export const POST = withUser(async (req, user) => {
       source: "manual",
       // Manually-entered jobs are trusted by construction, so they belong in
       // the Active feed (unless the company reads as a demo/fixture).
-      activeFeed: computeActiveFeed({
-        source: "manual",
-        verificationStatus: manualVerification.verificationStatus,
-        company: company.trim(),
-      }),
+      activeFeed,
+      userStates: {
+        create: initialStates,
+      },
     },
   });
 
-  // The person who added it gets the tracker state they asked for.
-  await prisma.userJobState.upsert({
-    where: { userId_jobId: { userId: user.id, jobId: job.id } },
-    create: { userId: user.id, jobId: job.id, applicationStatus: body.status || "DISCOVERED" },
-    update: { applicationStatus: body.status || "DISCOVERED" },
-  });
-
   try {
-    await scheduleInitialAiMatch(job.id, user.id);
+    await scheduleInitialAiMatchForAllUsers(job.id, { startWorker: false });
   } catch (error) {
     console.error("[api/jobs] initial AI Match scheduling failed", {
       jobId: job.id,

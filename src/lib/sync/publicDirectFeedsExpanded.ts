@@ -259,10 +259,30 @@ export async function runExpandedPublicDirectFeedDiscovery(
   const boundedLimit = Math.max(1, Math.min(limit, 600));
   const source = await fetchExpandedDirectCandidates();
 
-  const activeRows = await prisma.job.findMany({
-    where: { activeFeed: true, officialApplicationUrl: { not: null } },
-    select: { officialApplicationUrl: true },
-  });
+  // Bounded, targeted existing-record lookup (database-usage repair, pass
+  // #3): this used to load every active job's officialApplicationUrl —
+  // effectively the whole catalog — just to build an in-memory membership
+  // set. Only the URLs the CURRENT feed actually offers can possibly match,
+  // so this queries for exactly those, scaling with candidate count (bounded
+  // to 600) rather than catalog size. Both the raw and canonicalized form of
+  // each candidate URL are included in the lookup: the stored column isn't
+  // guaranteed to be in fully-canonical form (tracking-param stripping
+  // happens on write, but not every canonicalization step does), so
+  // querying only the canonical form could occasionally miss an
+  // already-active row. The worst case of a rare miss here is a harmless
+  // redundant re-upsert (idempotent), not a duplicate or lost job.
+  const candidateUrlVariants = new Set<string>();
+  for (const candidate of source.candidates) {
+    candidateUrlVariants.add(candidate.officialUrl);
+    const canonical = canonicalizeJobUrl(candidate.officialUrl);
+    if (canonical) candidateUrlVariants.add(canonical);
+  }
+  const activeRows = candidateUrlVariants.size > 0
+    ? await prisma.job.findMany({
+        where: { activeFeed: true, officialApplicationUrl: { in: [...candidateUrlVariants] } },
+        select: { officialApplicationUrl: true },
+      })
+    : [];
   const activeUrls = new Set(
     activeRows
       .map((row) => canonicalizeJobUrl(row.officialApplicationUrl))

@@ -13,6 +13,49 @@ export class ApplicationNavigationError extends Error {
   }
 }
 
+/**
+ * Thrown instead of navigating when LOCAL_DIAGNOSTIC_MODE=true and the
+ * target is not a local/mock-ATS destination. Added after a local diagnostic
+ * session's own "Apply" test accidentally drove the real application worker
+ * to a live employer's careers site (Seagate) — LOCAL_DIAGNOSTIC_MODE is the
+ * guard that makes that impossible to repeat.
+ */
+export class DiagnosticExternalNavigationBlockedError extends Error {
+  readonly code = "diagnostic_external_navigation_blocked";
+  constructor(public readonly attemptedUrl: string) {
+    super(
+      `diagnostic_external_navigation_blocked: LOCAL_DIAGNOSTIC_MODE is enabled and "${attemptedUrl}" is not a localhost/127.0.0.1/mock-ATS destination. The application agent will not navigate a real browser to it.`,
+    );
+    this.name = "DiagnosticExternalNavigationBlockedError";
+  }
+}
+
+/**
+ * Destinations LOCAL_DIAGNOSTIC_MODE permits: the dev server itself
+ * (localhost/127.0.0.1 on any port, which is where /mock-ats/*.html and the
+ * app's own pages are served) and nothing else. This is intentionally an
+ * allowlist, not a denylist of known ATS domains — a denylist only blocks
+ * URLs someone thought to list.
+ */
+function isLocalDiagnosticAllowedUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  return (
+    (parsed.protocol === "http:" || parsed.protocol === "https:")
+    && (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1")
+  );
+}
+
+function assertNavigationAllowed(url: string): void {
+  if (process.env.LOCAL_DIAGNOSTIC_MODE === "true" && !isLocalDiagnosticAllowedUrl(url)) {
+    throw new DiagnosticExternalNavigationBlockedError(url);
+  }
+}
+
 export type ApplicationFormInspection = {
   listingUrl: string;
   finalUrl: string;
@@ -47,6 +90,7 @@ export async function navigateToApplicationForm(
   atsType: AtsType,
   onPageLoaded?: (detail: string) => Promise<void>,
 ): Promise<ApplicationFormInspection> {
+  assertNavigationAllowed(officialApplyUrl);
   const currentUrl = page.url();
   if (currentUrl && currentUrl !== "about:blank") {
     try {

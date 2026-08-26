@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { jobsQueryErrorDevDetail, jobsQueryErrorLog } from "@/lib/jobs/jobsQueryError";
 import { withUser } from "@/lib/auth/session";
+import { approvedProfileRevision } from "@/lib/matching/profileFingerprint";
+import { backfillBaselineScoresForUser } from "@/lib/matching/baselineScoring";
 
 // Authoritative, always-fresh counts for the Jobs header. Computed directly
 // from stored state so the numbers can never drift from what the feed returns.
@@ -16,6 +18,22 @@ import { withUser } from "@/lib/auth/session";
  * through it, and are computed from their own state rows.
  */
 async function getJobCountsResponse(userId: string) {
+  const revision = await approvedProfileRevision(userId);
+  const profileReady = Boolean(revision);
+  if (revision) {
+    const missingCurrentScores = await prisma.job.count({
+      where: {
+        activeFeed: true,
+        OR: [
+          { userStates: { none: { userId } } },
+          { userStates: { some: { userId, matchScore: null } } },
+          { userStates: { some: { userId, scoreProfileRevision: null } } },
+          { userStates: { some: { userId, scoreProfileRevision: { not: revision.hash } } } },
+        ],
+      },
+    });
+    if (missingCurrentScores > 0) await backfillBaselineScoresForUser(userId);
+  }
   const [
     active,
     officiallyVerified,
@@ -28,6 +46,8 @@ async function getJobCountsResponse(userId: string) {
     scoring,
     eligibilityPass,
     eligibilityFail,
+    baselineScored,
+    aiRefined,
     total,
   ] = await Promise.all([
     prisma.job.count({ where: { activeFeed: true } }),
@@ -60,6 +80,12 @@ async function getJobCountsResponse(userId: string) {
     prisma.job.count({
       where: { activeFeed: true, userStates: { some: { userId, eligibilityStatus: "Fail" } } },
     }),
+    prisma.job.count({
+      where: { activeFeed: true, userStates: { some: { userId, scoreSource: "BASELINE" } } },
+    }),
+    prisma.job.count({
+      where: { activeFeed: true, userStates: { some: { userId, scoreSource: "AI_REFINED" } } },
+    }),
     prisma.job.count(),
   ]);
   return NextResponse.json(
@@ -75,6 +101,9 @@ async function getJobCountsResponse(userId: string) {
       scoring,
       eligibilityPass,
       eligibilityFail,
+      baselineScored,
+      aiRefined,
+      profileReady,
       total,
     },
     { headers: { "cache-control": "no-store" } },

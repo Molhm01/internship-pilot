@@ -143,16 +143,17 @@ export function compareJobs(a: SortableJob, b: SortableJob, sort: JobSort, lates
     if (byPosted !== 0) return byPosted;
   }
 
-  // 2. the source's own row order, but only within the newest sync run.
-  const rowA = rowIndexInLatestSync(a, latestRunId);
-  const rowB = rowIndexInLatestSync(b, latestRunId);
-  if (rowA !== rowB) return rowA - rowB;
-
-  // 3. when we first saw it.
+  // 2. when we first saw it. Unknown-date Fresh jobs remain below every known
+  // source date, then sort newest-discovered first within that group.
   const byDiscovery = sort === "oldest"
     ? compareAscNullsLast(discoveredAt(a), discoveredAt(b))
     : compareDescNullsLast(discoveredAt(a), discoveredAt(b));
   if (byDiscovery !== 0) return byDiscovery;
+
+  // 3. the source's own row order, but only within the newest sync run.
+  const rowA = rowIndexInLatestSync(a, latestRunId);
+  const rowB = rowIndexInLatestSync(b, latestRunId);
+  if (rowA !== rowB) return rowA - rowB;
 
   // 4. stable, deterministic tie-break so pagination can never repeat or skip.
   if (a.id === b.id) return 0;
@@ -186,8 +187,8 @@ export function jobOrderBy(sort: JobSort) {
     case "oldest":
       return [
         { sourcePostedAt: { sort: "asc" as const, nulls: "last" as const } },
-        { sourceRowIndex: "asc" as const },
         { firstSeenAt: "asc" as const },
+        { sourceRowIndex: "asc" as const },
         { id: "asc" as const },
       ];
     case "match":
@@ -205,8 +206,8 @@ export function jobOrderBy(sort: JobSort) {
     default:
       return [
         { sourcePostedAt: { sort: "desc" as const, nulls: "last" as const } },
-        { sourceRowIndex: "asc" as const },
         { firstSeenAt: "desc" as const },
+        { sourceRowIndex: "asc" as const },
         { id: "desc" as const },
       ];
   }

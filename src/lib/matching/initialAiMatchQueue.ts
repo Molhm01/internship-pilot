@@ -6,6 +6,7 @@ import { hasUsableJobDescription } from "@/lib/matchWorkflow";
 import {
   approvedProfileRevision,
   profileHashFromRefreshMatchType,
+  profileRefreshMatchType,
   PROFILE_REFRESH_MATCH_PREFIX,
 } from "@/lib/matching/profileFingerprint";
 
@@ -16,6 +17,35 @@ export const INITIAL_MATCH_MAX_ATTEMPTS = 3;
 export const INITIAL_MATCH_RETRY_DELAYS_MS = [60_000, 5 * 60_000] as const;
 export const DEFAULT_AI_MATCH_WORKER_CONCURRENCY = 2;
 export const AI_MATCH_MIN_FREE_MEMORY_PER_WORKER_BYTES = 4 * 1024 ** 3;
+
+/** 0 is highest priority; unknown dates are deliberately last. */
+export function aiQueueFreshnessBucket(
+  sourcePostedAt: Date | string | null | undefined,
+  now = new Date(),
+): 0 | 1 | 2 | 3 | 4 | 5 {
+  if (!sourcePostedAt) return 5;
+  const posted = sourcePostedAt instanceof Date ? sourcePostedAt : new Date(sourcePostedAt);
+  if (Number.isNaN(posted.getTime())) return 5;
+  const ageMs = Math.max(0, now.getTime() - posted.getTime());
+  if (ageMs < 24 * 60 * 60 * 1000) return 0;
+  if (ageMs < 72 * 60 * 60 * 1000) return 1;
+  if (ageMs <= 7 * 24 * 60 * 60 * 1000) return 2;
+  if (ageMs <= 14 * 24 * 60 * 60 * 1000) return 3;
+  return 4;
+}
+
+export function compareAiQueueFreshness(
+  a: { sourcePostedAt?: Date | string | null; id?: string },
+  b: { sourcePostedAt?: Date | string | null; id?: string },
+  now = new Date(),
+): number {
+  const bucket = aiQueueFreshnessBucket(a.sourcePostedAt, now) - aiQueueFreshnessBucket(b.sourcePostedAt, now);
+  if (bucket !== 0) return bucket;
+  const aMs = a.sourcePostedAt ? new Date(a.sourcePostedAt).getTime() : -Infinity;
+  const bMs = b.sourcePostedAt ? new Date(b.sourcePostedAt).getTime() : -Infinity;
+  if (aMs !== bMs) return bMs - aMs;
+  return (b.id ?? "").localeCompare(a.id ?? "");
+}
 
 type InitialMatchState =
   | "PENDING"
@@ -29,6 +59,7 @@ export type InitialMatchScheduleResult = {
   reason:
     | "SCHEDULED"
     | "JOB_NOT_FOUND"
+    | "JOB_NOT_ACTIVE"
     | "ALREADY_SCORED"
     | "ALREADY_SCHEDULED"
     | "JOB_DESCRIPTION_INSUFFICIENT"
@@ -127,6 +158,7 @@ export async function scheduleInitialAiMatch(
       where: { id: jobId },
       select: {
         id: true,
+        activeFeed: true,
         description: true,
         jobResponsibilities: true,
         jobQualifications: true,
@@ -139,12 +171,17 @@ export async function scheduleInitialAiMatch(
         userStates: {
           where: { userId },
           take: 1,
-          select: { matchScore: true },
+          select: { matchScore: true, scoreSource: true },
         },
         initialAiMatchJobs: {
-          where: { userId, matchType: INITIAL_MATCH_TYPE },
-          take: 1,
-          select: { id: true, state: true },
+          where: {
+            userId,
+            OR: [
+              { matchType: INITIAL_MATCH_TYPE },
+              { matchType: { startsWith: PROFILE_REFRESH_MATCH_PREFIX } },
+            ],
+          },
+          select: { id: true, state: true, matchType: true },
         },
       },
     }),
@@ -152,14 +189,28 @@ export async function scheduleInitialAiMatch(
   ]);
 
   if (!job) return { scheduled: false, reason: "JOB_NOT_FOUND" };
+  if (!job.activeFeed) return { scheduled: false, reason: "JOB_NOT_ACTIVE" };
   const existingScore = job.userStates[0]?.matchScore ?? null;
+  const existingSource = job.userStates[0]?.scoreSource ?? null;
+  const validExistingScore = Number.isInteger(existingScore)
+    && existingScore! >= 0
+    && existingScore! <= 100;
   if (
-    job.matchResults.length > 0
-    || (Number.isInteger(existingScore) && existingScore! >= 0 && existingScore! <= 100)
+    (existingSource === "AI_REFINED" && validExistingScore)
+    || (job.matchResults.length > 0 && existingSource !== "BASELINE")
+    || (validExistingScore && existingSource === null)
   ) {
     return { scheduled: false, reason: "ALREADY_SCORED" };
   }
-  const existingWork = job.initialAiMatchJobs[0];
+  if (approvedFactCount === 0) return { scheduled: false, reason: "PROFILE_FACTS_MISSING" };
+  const refreshRevision = job.matchResults.length > 0
+    ? await approvedProfileRevision(userId)
+    : null;
+  const matchType = refreshRevision
+    ? profileRefreshMatchType(refreshRevision.hash)
+    : INITIAL_MATCH_TYPE;
+  const existingWork = job.initialAiMatchJobs.find((item) =>
+    item.matchType === matchType || (matchType === INITIAL_MATCH_TYPE && !item.matchType));
   if (existingWork && !(
     options.retryFailed
     && ["RETRYABLE_FAILED", "PERMANENT_FAILED"].includes(existingWork.state)
@@ -169,7 +220,6 @@ export async function scheduleInitialAiMatch(
   if (!hasUsableJobDescription(job)) {
     return { scheduled: false, reason: "JOB_DESCRIPTION_INSUFFICIENT" };
   }
-  if (approvedFactCount === 0) return { scheduled: false, reason: "PROFILE_FACTS_MISSING" };
 
   try {
     const queuedAt = new Date();
@@ -190,7 +240,7 @@ export async function scheduleInitialAiMatch(
         data: {
           userId,
           jobId,
-          matchType: INITIAL_MATCH_TYPE,
+          matchType,
           state: "PENDING",
           attemptCount: 0,
           nextAttemptAt: queuedAt,
@@ -214,7 +264,7 @@ export async function scheduleInitialAiMatch(
     throw error;
   }
 
-  progress("scheduled", { jobId, userId, matchType: INITIAL_MATCH_TYPE });
+  progress("scheduled", { jobId, userId, matchType });
   if (options.startWorker !== false) triggerInitialAiMatchWorker();
   return { scheduled: true, reason: "SCHEDULED" };
 }
@@ -331,8 +381,18 @@ export async function processNextInitialAiMatch(now = new Date()): Promise<boole
       ],
       state: { in: ["PENDING", "RETRYABLE_FAILED"] },
       nextAttemptAt: { lte: now },
+      job: { activeFeed: true },
     },
-    orderBy: [{ nextAttemptAt: "asc" }, { createdAt: "asc" }],
+    // sourcePostedAt DESC is a strict refinement of the required freshness
+    // buckets (<24h, <72h, <=7d, 8-14d, older, unknown). Crucially it precedes
+    // queue creation/retry time, so historical backlog can never starve a job
+    // posted minutes ago.
+    orderBy: [
+      { job: { sourcePostedAt: { sort: "desc", nulls: "last" } } },
+      { nextAttemptAt: "asc" },
+      { createdAt: "asc" },
+      { id: "asc" },
+    ],
     select: {
       id: true,
       userId: true,

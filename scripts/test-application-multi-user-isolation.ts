@@ -2,6 +2,7 @@ import "dotenv/config";
 import { prisma } from "@/lib/db";
 import { applicationActiveKey, enqueueApplication } from "@/lib/applications/queue";
 import { setApplicationMode } from "@/lib/applications/settings";
+import { computeDocumentFingerprint } from "@/lib/documents/documentFingerprint";
 
 const EMAIL_A = "application-isolation-a@example.test";
 const EMAIL_B = "application-isolation-b@example.test";
@@ -47,6 +48,14 @@ async function makePrivateInputs(userId: string, jobId: string, score: number, s
       origin: "MANUAL",
     },
   });
+  // enqueueApplication only reuses a document whose stored fingerprint still
+  // matches the CURRENT freshness fingerprint (see
+  // src/lib/documents/applicationReadiness.ts); a document inserted without
+  // one is indistinguishable from a stale one and is never reused. Computing
+  // the real fingerprint here — after the match this fixture just created —
+  // is what makes this an "intentionally approved current job-scoped
+  // document" rather than a fixture the production contract would reject.
+  const fingerprint = await computeDocumentFingerprint(jobId, userId);
   const resume = await prisma.generatedDocument.create({
     data: {
       userId,
@@ -59,6 +68,7 @@ async function makePrivateInputs(userId: string, jobId: string, score: number, s
       identityVerified: true,
       bulletIdsUsed: "[]",
       matchResultId: match.id,
+      documentFingerprint: fingerprint,
     },
   });
   return { match, resume };

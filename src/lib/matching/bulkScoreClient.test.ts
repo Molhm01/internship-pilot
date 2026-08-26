@@ -84,62 +84,130 @@ describe("bulk score client", () => {
     expect(onError).toHaveBeenCalledWith("Unscored jobs could not be queued. Please try again.");
   });
 
-  it("polls only while work is active and never overlaps status requests", async () => {
+  it("checks once immediately, then polls only while work is active", async () => {
     vi.useFakeTimers();
     const visibility = new TestVisibility();
     let resolveFirst!: (value: typeof activeStatus) => void;
     const fetchStatus = vi.fn()
       .mockImplementationOnce(() => new Promise<typeof activeStatus>((resolve) => { resolveFirst = resolve; }))
       .mockResolvedValueOnce(idleStatus);
-    const cleanup = startBulkScoreStatusPolling({
+    const watch = startBulkScoreStatusPolling({
       fetchStatus,
       onStatus: vi.fn(),
       visibility,
     });
 
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(fetchStatus).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(20_000);
+    // The very first check fires immediately on setup — no wasted "wait one
+    // interval before the first request" delay, and no separate one-shot
+    // effect needed on top of this watch (pass #5 removed exactly that
+    // duplicate fetch from the Jobs page).
+    await Promise.resolve();
     expect(fetchStatus).toHaveBeenCalledOnce();
     resolveFirst(activeStatus);
     await Promise.resolve();
+
+    // Active (queued/running > 0): keeps polling at the active interval.
     await vi.advanceTimersByTimeAsync(5_000);
     expect(fetchStatus).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(20_000);
+    // That second call resolved idle — no further timer should be scheduled.
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(fetchStatus).toHaveBeenCalledTimes(2);
-    cleanup();
+    watch.stop();
   });
 
-  it("stops polling in hidden tabs and cleans up on unmount", async () => {
+  it("idle schedules NOTHING — zero recurring requests until recheck() or visibility fires (pass #5)", async () => {
+    // Pass #3 slowed idle polling from 15s to 2 minutes; pass #5 removes
+    // idle polling entirely. An open tab with nothing to score must cost
+    // zero database traffic on its own — not "less traffic", zero — until
+    // something the caller considers a meaningful event calls recheck().
+    vi.useFakeTimers();
+    const visibility = new TestVisibility();
+    const fetchStatus = vi.fn().mockResolvedValue(idleStatus);
+    const watch = startBulkScoreStatusPolling({
+      fetchStatus,
+      onStatus: vi.fn(),
+      visibility,
+      intervalMs: 15_000,
+    });
+
+    await Promise.resolve();
+    expect(fetchStatus).toHaveBeenCalledOnce();
+    // No timer was scheduled after an idle result — advancing any amount of
+    // time must never produce another request on its own.
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+    expect(fetchStatus).toHaveBeenCalledOnce();
+
+    // An explicit recheck() (the caller's job to wire into real "meaningful
+    // events" — a sync completing, a job being added, ...) does one more
+    // check, and — since still idle — schedules nothing further either.
+    await watch.recheck();
+    expect(fetchStatus).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+    expect(fetchStatus).toHaveBeenCalledTimes(2);
+    watch.stop();
+  });
+
+  it("the tab becoming visible again triggers exactly one recheck, not a resumed poll loop", async () => {
+    vi.useFakeTimers();
+    const visibility = new TestVisibility();
+    const fetchStatus = vi.fn().mockResolvedValue(idleStatus);
+    const watch = startBulkScoreStatusPolling({
+      fetchStatus,
+      onStatus: vi.fn(),
+      visibility,
+    });
+    await Promise.resolve();
+    expect(fetchStatus).toHaveBeenCalledOnce();
+
+    visibility.setHidden(true);
+    visibility.setHidden(false);
+    await Promise.resolve();
+    expect(fetchStatus).toHaveBeenCalledTimes(2);
+    // Still idle after the visibility-triggered check — no timer left running.
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    expect(fetchStatus).toHaveBeenCalledTimes(2);
+    watch.stop();
+  });
+
+  it("stops checking in hidden tabs and cleans up on unmount", async () => {
     vi.useFakeTimers();
     const visibility = new TestVisibility();
     const fetchStatus = vi.fn().mockResolvedValue(activeStatus);
-    const cleanup = startBulkScoreStatusPolling({
+    visibility.setHidden(true);
+    const watch = startBulkScoreStatusPolling({
       fetchStatus,
       onStatus: vi.fn(),
       visibility,
     });
 
-    visibility.setHidden(true);
     await vi.advanceTimersByTimeAsync(15_000);
     expect(fetchStatus).not.toHaveBeenCalled();
     visibility.setHidden(false);
     await Promise.resolve();
     expect(fetchStatus).toHaveBeenCalledOnce();
-    cleanup();
+    watch.stop();
     await vi.advanceTimersByTimeAsync(15_000);
     expect(fetchStatus).toHaveBeenCalledOnce();
   });
 
-  it("does not trigger bulk scoring on Jobs page load", () => {
-    // Scoring is queued server-side; the page only watches the queue. Opening
-    // Jobs must never schedule work, so what this guards is the absence of any
-    // POST to the scheduling endpoint from the page itself.
+  it("does not trigger bulk scoring on Jobs page load — only from the manual 'Score all unscored' button click", () => {
+    // Scoring is queued server-side and the page only watches the queue by
+    // default; opening Jobs must never schedule work on its own. A manual
+    // recovery button was added for a stuck/failed queue (product
+    // requirement: restore Score all unscored), so what this guards now is
+    // narrower than "the string never appears": the scheduling call must
+    // live inside its own click-handler function, never inside a page-load
+    // useEffect.
     const source = readFileSync(resolve(process.cwd(), "src/app/(app)/jobs/page.tsx"), "utf8");
     expect(source).toContain("fetchBulkScoreStatus");
     expect(source).toContain("startBulkScoreStatusPolling");
-    expect(source).not.toContain("requestScoreAllUnscored");
-    expect(source).not.toContain("/api/jobs/score-unscored");
+    expect(source).toContain("async function handleScoreAllUnscored");
+    expect(source).toContain("onClick={() => void handleScoreAllUnscored()}");
+
+    // Exactly the two pre-existing effects (initial load, and the bulk-status
+    // watch) — a regression here would mean a THIRD effect was added, which
+    // is the shape an accidental auto-trigger-on-mount would take.
+    expect(source.split("useEffect(").length - 1).toBe(2);
   });
 
   it("rejects malformed scheduling responses", async () => {

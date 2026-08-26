@@ -1,7 +1,6 @@
 import { prisma } from "@/lib/db";
-import { hasUsableJobDescription, matchJobDescriptionText } from "@/lib/matchWorkflow";
+import { hasUsableJobDescription } from "@/lib/matchWorkflow";
 import { scheduleAllUnscoredActiveJobs } from "@/lib/matching/bulkInitialMatch";
-import { normalizeMatchDescription } from "@/lib/matching/input";
 import {
   initialAiMatchWorkerConcurrency,
   processNextInitialAiMatch,
@@ -9,12 +8,15 @@ import {
 } from "@/lib/matching/initialAiMatchQueue";
 import {
   approvedProfileRevision,
-  fingerprintJobDescription,
   originMatchesJobDescription,
   originMatchesProfile,
   profileRefreshMatchType,
   PROFILE_REFRESH_MATCH_PREFIX,
 } from "@/lib/matching/profileFingerprint";
+import {
+  backfillBaselineScoresForUser,
+  fingerprintJobScoringInput,
+} from "@/lib/matching/baselineScoring";
 
 const VALID_SCORE = { gte: 0, lte: 100 } as const;
 
@@ -44,12 +46,9 @@ export async function scheduleProfileRefreshesForUser(
 ): Promise<ProfileRefreshScheduleResult> {
   const revision = await approvedProfileRevision(userId);
   if (!revision) {
-    // With no approved evidence there is no defensible current score. Preserve
-    // MatchResult history, but remove the denormalized current result.
-    await prisma.userJobState.updateMany({
-      where: { userId },
-      data: { matchScore: null, eligibilityStatus: null, matchedAt: null },
-    });
+    // With no approved evidence there is no defensible personalized score.
+    // The API returns the single profile-readiness block and no job cards; it
+    // never destroys historical values merely to represent that UI state.
     return {
       userId,
       profileHash: null,
@@ -84,12 +83,26 @@ export async function scheduleProfileRefreshesForUser(
       activeFeed: true,
       matchResults: { some: { userId, score: VALID_SCORE } },
     },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    orderBy: [
+      { sourcePostedAt: { sort: "desc", nulls: "last" } },
+      { id: "desc" },
+    ],
     select: {
       id: true,
       description: true,
       jobResponsibilities: true,
       jobQualifications: true,
+      title: true,
+      company: true,
+      location: true,
+      workplaceType: true,
+      internshipTerm: true,
+      disciplineTags: true,
+      sophomoreEligible: true,
+      graduationYears: true,
+      sponsorship: true,
+      citizenshipOrClearance: true,
+      season: true,
       userStates: {
         where: { userId },
         take: 1,
@@ -119,7 +132,7 @@ export async function scheduleProfileRefreshesForUser(
     const currentStateIsValid = validCurrentScore(job.userStates[0]?.matchScore);
     const usableDescription = hasUsableJobDescription(job);
     const currentDescriptionHash = usableDescription
-      ? fingerprintJobDescription(normalizeMatchDescription(matchJobDescriptionText(job)))
+      ? fingerprintJobScoringInput(job)
       : null;
     const scoreInputsAreCurrent = Boolean(
       currentDescriptionHash
@@ -134,15 +147,6 @@ export async function scheduleProfileRefreshesForUser(
     if (!usableDescription) {
       skippedNoDescription += 1;
       continue;
-    }
-
-    // Do not leave a stale score visible while the current JD/profile pair is
-    // being refreshed. MatchResult history stays untouched for audit/history.
-    if (currentStateIsValid && !scoreInputsAreCurrent) {
-      await prisma.userJobState.updateMany({
-        where: { userId, jobId: job.id },
-        data: { matchScore: null, eligibilityStatus: null, matchedAt: null },
-      });
     }
 
     const existing = job.initialAiMatchJobs[0];
@@ -222,6 +226,7 @@ export async function scheduleProfileRefreshesForUser(
 }
 
 export type AutomaticUserScheduleResult = {
+  baselineScored: number;
   initialQueued: number;
   refreshQueued: number;
 };
@@ -234,12 +239,19 @@ export type AutomaticUserScheduleResult = {
 export async function scheduleAutomaticScoresForUser(
   userId: string,
 ): Promise<AutomaticUserScheduleResult> {
+  // This synchronous local-CPU pass is the display invariant. AI work is
+  // optional refinement and is scheduled only after every active row is safe.
+  const baseline = await backfillBaselineScoresForUser(userId);
   const [initial, refresh] = await Promise.all([
     // Automatic maintenance does not revive terminal failures every 30 min.
     scheduleAllUnscoredActiveJobs(userId, { retryFailed: false }),
     scheduleProfileRefreshesForUser(userId, { retryFailed: false }),
   ]);
-  return { initialQueued: initial.queued, refreshQueued: refresh.queued };
+  return {
+    baselineScored: baseline.baselineWritten,
+    initialQueued: initial.queued,
+    refreshQueued: refresh.queued,
+  };
 }
 
 export type AutomaticScoringPreparation = {

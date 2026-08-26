@@ -78,9 +78,9 @@ export function MatchScore({
           TONE_TEXT[tone],
         )}
       >
-        {Math.round(clamped)}
+        {Math.round(clamped)}%
       </span>
-      <span className="sr-only">ATS Match score {score} of 100</span>
+      <span className="sr-only">Match score {score} percent</span>
     </span>
   );
 }

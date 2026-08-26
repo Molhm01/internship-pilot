@@ -22,6 +22,7 @@ import {
 } from "@/lib/jobs/jobsApi";
 import {
   fetchBulkScoreStatus,
+  runBulkScoreScheduling,
   startBulkScoreStatusPolling,
 } from "@/lib/matching/bulkScoreClient";
 import type { BulkInitialMatchStatus } from "@/lib/matching/bulkInitialMatch";
@@ -57,10 +58,18 @@ type JobCounts = {
   scoring: number;
   eligibilityPass: number;
   eligibilityFail: number;
+  baselineScored: number;
+  aiRefined: number;
+  profileReady: boolean;
   total: number;
 };
 
-const PAGE_SIZE = 60;
+const PAGE_SIZE = 50;
+type DiscoverView = "fresh" | "all" | "older";
+
+function parseDiscoverView(value: string | null): DiscoverView {
+  return value === "all" || value === "older" ? value : "fresh";
+}
 
 // useSearchParams makes this subtree client-rendered, so it must sit inside a
 // Suspense boundary for the rest of the route to prerender (Next.js App Router
@@ -82,6 +91,8 @@ export default function JobsPage() {
 function JobsPageContent() {
   const [jobs, setJobs] = useState<JobCardData[]>([]);
   const [total, setTotal] = useState(0);
+  const [profileReady, setProfileReady] = useState(true);
+  const [scoreReadinessMessage, setScoreReadinessMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -94,6 +105,8 @@ function JobsPageContent() {
   const [countsError, setCountsError] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [bulkStatus, setBulkStatus] = useState<BulkInitialMatchStatus | null>(null);
+  const [scoreAllPending, setScoreAllPending] = useState(false);
+  const [scoreAllError, setScoreAllError] = useState<string | null>(null);
   const lastSettledCount = useRef<number | null>(null);
 
   // The selected sort lives in the URL, not in component state, so it survives
@@ -104,6 +117,7 @@ function JobsPageContent() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const sort: JobSort = parseJobSort(searchParams.get("sort"));
+  const discoverView = parseDiscoverView(searchParams.get("view"));
 
   const setSort = useCallback((next: JobSort) => {
     const params = new URLSearchParams(searchParams.toString());
@@ -112,12 +126,21 @@ function JobsPageContent() {
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
   }, [pathname, router, searchParams]);
 
+  const setDiscoverView = useCallback((next: DiscoverView) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === "fresh") params.delete("view");
+    else params.set("view", next);
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }, [pathname, router, searchParams]);
+
   const queryFor = useMemo(() => (offset: number) => {
     const params = applyJobSort(buildJobsQuery(filters), sort);
+    if (discoverView !== "fresh") params.set("view", discoverView);
     params.set("limit", String(PAGE_SIZE));
     params.set("offset", String(offset));
     return params;
-  }, [filters, sort]);
+  }, [discoverView, filters, sort]);
 
   const loadCounts = useCallback(async () => {
     setCountsError(null);
@@ -139,6 +162,8 @@ function JobsPageContent() {
       ) as JobCardData[];
       setJobs(uniqueJobs);
       setTotal(data.total);
+      setProfileReady(data.profileReady !== false);
+      setScoreReadinessMessage(data.scoreReadinessMessage ?? null);
     } catch (err) {
       setJobs([]);
       setTotal(0);
@@ -176,33 +201,53 @@ function JobsPageContent() {
     if (changed) void Promise.all([loadJobs(), loadCounts()]);
   }, [loadCounts, loadJobs]);
 
-  const refreshBulkStatus = useCallback(async () => {
-    const status = await fetchBulkScoreStatus();
-    applyBulkStatus(status);
-    return status;
-  }, [applyBulkStatus]);
-
   useEffect(() => {
     void loadJobs();
     void loadCounts();
   }, [loadJobs, loadCounts]);
 
-  useEffect(() => {
-    // Queue telemetry is supplemental. A temporary status-count failure should
-    // never become a red page-level error while scoring continues server-side.
-    void refreshBulkStatus().catch(() => undefined);
-  }, [refreshBulkStatus]);
-
   // Automatic scoring can start on the server after this page was already
-  // opened. Keep a cheap status watch alive while the tab is visible so a new
-  // queue is noticed without a manual reload; cards/counts are re-fetched only
-  // when work actually settles.
-  useEffect(() => startBulkScoreStatusPolling({
-    fetchStatus: fetchBulkScoreStatus,
-    onStatus: applyBulkStatus,
-    intervalMs: 15_000,
-    keepWatchingWhenIdle: true,
-  }), [applyBulkStatus]);
+  // opened, so a status watch is worth keeping — but idle (nothing queued or
+  // running, the common case) now schedules NOTHING: zero timers, zero
+  // recurring requests, until something below calls `recheck()` (database-
+  // usage repair, pass #5 — a fixed idle-poll interval, even a slow one, was
+  // still a database cost paid indefinitely to "maybe" discover work that
+  // usually doesn't exist). This single effect replaces what used to be two
+  // separate ones (a one-shot mount fetch AND a polling watch, each firing
+  // its own initial request — a duplicate fetch this pass also removed).
+  // Active scoring (queued/running > 0) still polls every 15s until it
+  // drains on its own.
+  const bulkWatchRef = useRef<ReturnType<typeof startBulkScoreStatusPolling> | null>(null);
+  useEffect(() => {
+    const watch = startBulkScoreStatusPolling({
+      fetchStatus: fetchBulkScoreStatus,
+      onStatus: applyBulkStatus,
+      intervalMs: 15_000,
+    });
+    bulkWatchRef.current = watch;
+    return () => {
+      bulkWatchRef.current = null;
+      watch.stop();
+    };
+  }, [applyBulkStatus]);
+
+  // Manual/emergency fallback: normal operation schedules scoring
+  // automatically in the background (see JobCard's scoring-badge comment),
+  // but a stuck or failed queue needs a way to explicitly retry without
+  // waiting for the next automatic pass. Reuses the exact same optimized
+  // bulk-scoring queue POST /api/jobs/score-unscored already schedules —
+  // this button does not introduce a second scoring path.
+  async function handleScoreAllUnscored() {
+    if (scoreAllPending || scoringActive) return;
+    setScoreAllError(null);
+    await runBulkScoreScheduling({
+      setScheduling: setScoreAllPending,
+      onSuccess: async () => {
+        await bulkWatchRef.current?.recheck();
+      },
+      onError: setScoreAllError,
+    });
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -222,6 +267,10 @@ function JobsPageContent() {
       setForm(emptyForm);
       setShowForm(false);
       await Promise.all([loadJobs(), loadCounts()]);
+      // A newly-added job is exactly the kind of state-changing action that
+      // should re-check scoring progress once, rather than the watch having
+      // to already be polling to notice it.
+      void bulkWatchRef.current?.recheck();
     } finally {
       setSubmitting(false);
     }
@@ -241,7 +290,7 @@ function JobsPageContent() {
     <PageBody>
       <PageHeader
         title="Discover"
-        description="Every legitimate discovered internship in one feed, ordered by when the source says it was posted. Upload one resume and ATS matching runs automatically as job descriptions become available."
+        description="Recent official postings plus newly discovered jobs whose posting date is unavailable. Every job gets an immediate baseline match."
         meta={
           counts && (
             <>
@@ -265,6 +314,18 @@ function JobsPageContent() {
               <Plus className="size-3.5" aria-hidden />
               Add job
             </Button>
+            {(bulkStatus?.totalUnscored ?? 0) > 0 && (
+              <Button
+                size="md"
+                onClick={() => void handleScoreAllUnscored()}
+                disabled={scoreAllPending || scoringActive}
+                title="Scoring runs automatically in the background; use this only if unscored jobs are stuck."
+              >
+                {scoreAllPending || scoringActive
+                  ? `Scoring… (${bulkStatus?.queued ?? 0} queued, ${bulkStatus?.running ?? 0} running)`
+                  : `Score all unscored (${bulkStatus?.totalUnscored ?? 0})`}
+              </Button>
+            )}
           </>
         }
       />
@@ -276,8 +337,9 @@ function JobsPageContent() {
             <Metric label="Verified" value={counts.officiallyVerified.toLocaleString()} tone="positive" />
             <Metric label="Source listed" value={counts.sourceListed.toLocaleString()} tone="info" />
             <Metric label="Pending" value={counts.verificationPending.toLocaleString()} tone="caution" />
-            <Metric label="Scored" value={counts.scored.toLocaleString()} />
-            <Metric label="Unscored" value={counts.unscored.toLocaleString()} tone="caution" />
+            {counts.profileReady && <Metric label="Scored" value={counts.scored.toLocaleString()} />}
+            {counts.profileReady && <Metric label="Baseline" value={counts.baselineScored.toLocaleString()} />}
+            {counts.profileReady && <Metric label="AI refined" value={counts.aiRefined.toLocaleString()} />}
             <Metric label="Eligible" value={counts.eligibilityPass.toLocaleString()} tone="positive" />
             <Metric label="Ineligible" value={counts.eligibilityFail.toLocaleString()} tone="critical" />
             <Metric label="Closed" value={counts.closedConfirmed.toLocaleString()} tone="critical" />
@@ -289,6 +351,12 @@ function JobsPageContent() {
       {countsError && (
         <Notice tone="caution" className="mb-4">
           Job summary unavailable: {countsError}
+        </Notice>
+      )}
+
+      {scoreAllError && (
+        <Notice tone="caution" className="mb-4">
+          Score all unscored: {scoreAllError}
         </Notice>
       )}
 
@@ -308,6 +376,22 @@ function JobsPageContent() {
       )}
 
       <div className="mb-4 flex flex-wrap items-center gap-2 border-y border-hairline py-2">
+        <div className="flex items-center gap-1" aria-label="Discover view">
+          {([
+            ["fresh", "Fresh"],
+            ["all", "All Active"],
+            ["older", "Older · 8–30 days"],
+          ] as const).map(([value, label]) => (
+            <Button
+              key={value}
+              size="sm"
+              variant={discoverView === value ? "primary" : "ghost"}
+              onClick={() => setDiscoverView(value)}
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
         <label className="flex items-center gap-2 text-micro font-medium uppercase tracking-[0.075em] text-tertiary">
           Sort
           <Select
@@ -393,7 +477,14 @@ function JobsPageContent() {
       )}
 
       <div className="mb-4 space-y-3">
-        <SyncStatusPanel onSynced={loadJobs} />
+        <SyncStatusPanel
+          onSynced={() => {
+            void loadJobs();
+            // A completed sync can have queued new scoring work — another
+            // state-changing action worth one recheck.
+            void bulkWatchRef.current?.recheck();
+          }}
+        />
         <SchedulerHealthPanel />
       </div>
 
@@ -406,7 +497,13 @@ function JobsPageContent() {
         />
       )}
 
-      {viewState === "loading" ? (
+      {!profileReady && !fetchError && (
+        <Notice tone="info" className="mb-4">
+          {scoreReadinessMessage ?? "Complete your profile to activate job matching."}
+        </Notice>
+      )}
+
+      {!profileReady && viewState !== "loading" ? null : viewState === "loading" ? (
         <SkeletonRows rows={6} />
       ) : viewState === "error" ? null : viewState === "empty" ? (
         <EmptyState

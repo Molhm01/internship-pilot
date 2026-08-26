@@ -16,9 +16,12 @@ import {
 } from "@/lib/matching/input";
 import {
   fingerprintApprovedFacts,
-  fingerprintJobDescription,
   scoreOriginForProfile,
 } from "@/lib/matching/profileFingerprint";
+import {
+  AI_REFINED_SCORE_SOURCE,
+  fingerprintJobScoringInput,
+} from "@/lib/matching/baselineScoring";
 import { isCloudRuntime } from "@/lib/runtime/deployment";
 
 export class MatchError extends Error {
@@ -132,6 +135,13 @@ export async function runMatchForJob(
       description: true,
       jobResponsibilities: true,
       jobQualifications: true,
+      disciplineTags: true,
+      sophomoreEligible: true,
+      graduationYears: true,
+      sponsorship: true,
+      citizenshipOrClearance: true,
+      season: true,
+      workplaceType: true,
     },
   });
   timing(jobId, "database_job_read", performance.now() - jobReadStartedAt);
@@ -169,7 +179,7 @@ export async function runMatchForJob(
 
   const promptStartedAt = performance.now();
   const description = normalizeMatchDescription(matchJobDescriptionText(job));
-  const jobDescriptionHash = fingerprintJobDescription(description);
+  const jobDescriptionHash = fingerprintJobScoringInput(job);
   const effectiveOrigin = scoreOriginForProfile(
     options.origin ?? "MANUAL",
     profileHash,
@@ -303,11 +313,19 @@ export async function runMatchForJob(
           matchScore: grounded.matchScore,
           eligibilityStatus: grounded.eligibility,
           matchedAt: new Date(),
+          scoreSource: AI_REFINED_SCORE_SOURCE,
+          scoreProfileRevision: profileHash,
+          scoreJobFingerprint: jobDescriptionHash,
+          scoreExplanation: null,
         },
         update: {
           matchScore: grounded.matchScore,
           eligibilityStatus: grounded.eligibility,
           matchedAt: new Date(),
+          scoreSource: AI_REFINED_SCORE_SOURCE,
+          scoreProfileRevision: profileHash,
+          scoreJobFingerprint: jobDescriptionHash,
+          scoreExplanation: null,
         },
       }),
     ]);
