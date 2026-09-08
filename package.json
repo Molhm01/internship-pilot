@@ -9,6 +9,7 @@
     "local:stop": "tsx scripts/local-stop.ts",
     "dev:web": "next dev",
     "build": "next build",
+    "vercel-build": "node scripts/vercel-build.mjs",
     "build:webpack": "next build --webpack",
     "start": "tsx scripts/start-all.ts --production",
     "start:web": "next start",
