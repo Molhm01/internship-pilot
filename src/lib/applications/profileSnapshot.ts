@@ -260,6 +260,7 @@ export type ProfileRow = {
   salaryMinimum: string | null;
   marketingTextConsent: boolean | null;
   workAuthorization: string | null;
+  legallyAuthorizedToWork: boolean | null;
   requiresSponsorship: boolean | null;
   clearanceEligible: boolean | null;
   securityClearanceStatus: string | null;
@@ -823,4 +824,4 @@ export function missingProfileFields(row: ProfileRow): string[] {
     ["Application email for employer accounts", Boolean(text(row.applicationEmail))],
   ];
   return checks.filter(([, present]) => !present).map(([label]) => label);
-}
+          }
