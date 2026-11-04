@@ -44,7 +44,7 @@ function currentScore(job: JobCardData): number | null {
 }
 
 /** Dashboard values come from the same current per-user state as Discover. */
-export function DashboardClient() {
+export function DashboardClient({ scoringConfigured = true }: { scoringConfigured?: boolean }) {
   const [counts, setCounts] = useState<JobCounts | null>(null);
   const [recent, setRecent] = useState<JobCardData[]>([]);
   const [strong, setStrong] = useState<JobCardData[]>([]);
@@ -211,10 +211,14 @@ export function DashboardClient() {
           {counts && counts.unscored > 0 && (
             <Panel tone="caution">
               <p className="text-small font-medium text-primary">
-                {counts.unscored.toLocaleString()} internships are awaiting a current ATS score
+                {scoringConfigured
+                  ? `${counts.unscored.toLocaleString()} internships are awaiting a current ATS score`
+                  : `${counts.unscored.toLocaleString()} internships do not have an ATS score yet`}
               </p>
               <p className="mt-1 text-small text-secondary">
-                Matching is automatic. Internship Pilot is scoring queued jobs and preparing missing official job descriptions in the background.
+                {scoringConfigured
+                  ? "Matching is automatic. Internship Pilot is scoring queued jobs and preparing missing official job descriptions in the background."
+                  : "Automatic scoring is paused because hosted AI matching is not configured on this deployment. Discovery keeps running and new internships keep arriving. Scores resume once an API key is configured; with the local desktop agent, matching runs on your own machine."}
               </p>
               <Link
                 href="/jobs"
