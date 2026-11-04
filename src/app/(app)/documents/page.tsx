@@ -27,8 +27,9 @@ type Profile = {
   internshipTermAvailability: string | null;
   salaryAnswerPreference: string | null;
   workAuthorization: string | null;
+  legallyAuthorizedToWork: boolean | null;
   requiresSponsorship: boolean | null;
-  clearanceEligible: boolean | null;
+  securityClearanceStatus: string | null;
   eeoGender: string | null;
   eeoRaceEthnicity: string | null;
   eeoVeteranStatus: string | null;
@@ -79,8 +80,9 @@ const emptyProfile: Profile = {
   internshipTermAvailability: "",
   salaryAnswerPreference: "",
   workAuthorization: "",
+  legallyAuthorizedToWork: null,
   requiresSponsorship: null,
-  clearanceEligible: null,
+  securityClearanceStatus: "",
   eeoGender: "",
   eeoRaceEthnicity: "",
   eeoVeteranStatus: "",
@@ -170,8 +172,9 @@ export default function DocumentsPage() {
         internshipTermAvailability: profileData.profile.internshipTermAvailability ?? "",
         salaryAnswerPreference: profileData.profile.salaryAnswerPreference ?? "",
         workAuthorization: profileData.profile.workAuthorization ?? "",
+        legallyAuthorizedToWork: profileData.profile.legallyAuthorizedToWork ?? null,
         requiresSponsorship: profileData.profile.requiresSponsorship ?? null,
-        clearanceEligible: profileData.profile.clearanceEligible ?? null,
+        securityClearanceStatus: profileData.profile.securityClearanceStatus ?? "",
         eeoGender: profileData.profile.eeoGender ?? "",
         eeoRaceEthnicity: profileData.profile.eeoRaceEthnicity ?? "",
         eeoVeteranStatus: profileData.profile.eeoVeteranStatus ?? "",
@@ -461,12 +464,16 @@ export default function DocumentsPage() {
           clearance, or demographic question.
         </p>
         <form onSubmit={saveProfile} className="grid grid-cols-2 gap-4">
-          <Field label="Work authorization (e.g. U.S. Citizen, F-1 OPT/CPT)">
-            <input
-              value={profile.workAuthorization ?? ""}
-              onChange={(e) => setProfile({ ...profile, workAuthorization: e.target.value })}
+          <Field label="Work authorization">
+            <select
+              value={triStateValue(profile.legallyAuthorizedToWork)}
+              onChange={(e) => setProfile({ ...profile, legallyAuthorizedToWork: triStateParse(e.target.value) })}
               className="input"
-            />
+            >
+              <option value="">Ask me each time</option>
+              <option value="yes">Authorized to work in the United States</option>
+              <option value="no">Not currently authorized to work in the United States</option>
+            </select>
           </Field>
           <Field label="Do you require visa sponsorship?">
             <select
@@ -481,13 +488,13 @@ export default function DocumentsPage() {
           </Field>
           <Field label="Eligible for security clearance?">
             <select
-              value={triStateValue(profile.clearanceEligible)}
-              onChange={(e) => setProfile({ ...profile, clearanceEligible: triStateParse(e.target.value) })}
+              value={profile.securityClearanceStatus ?? ""}
+              onChange={(e) => setProfile({ ...profile, securityClearanceStatus: e.target.value })}
               className="input"
             >
               <option value="">Ask me each time</option>
-              <option value="yes">Yes</option>
-              <option value="no">No</option>
+              <option value="Eligible">Eligible</option>
+              <option value="Not eligible">Not eligible</option>
             </select>
           </Field>
           <div />
