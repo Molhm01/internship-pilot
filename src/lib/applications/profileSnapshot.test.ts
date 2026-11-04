@@ -45,6 +45,7 @@ function row(overrides: Partial<ProfileRow> = {}): ProfileRow {
     salaryMinimum: null,
     marketingTextConsent: null,
     workAuthorization: null,
+    legallyAuthorizedToWork: null,
     requiresSponsorship: null,
     clearanceEligible: null,
     securityClearanceStatus: null,
