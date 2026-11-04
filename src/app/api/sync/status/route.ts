@@ -8,6 +8,7 @@ import { guardSession } from "@/lib/auth/session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getLiveDiscoveryHealth } from "@/lib/sync/liveDiscoveryEngine";
+import { hasGeminiApiKey } from "@/lib/gemini";
 
 const ACTIVE_TARGET = 500;
 const FRESH_24H_TARGET = 25;
@@ -92,5 +93,6 @@ export async function GET() {
     closedCount,
     pendingCount,
     recentErrorCount,
+    aiScoringConfigured: hasGeminiApiKey(),
   });
 }
