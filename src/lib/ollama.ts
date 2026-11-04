@@ -1,6 +1,6 @@
 import { isCloudRuntime, LOCAL_ONLY_FEATURES } from "@/lib/runtime/deployment";
 
-const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? "http://localhost:11434";
+const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL?.trim() || "http://localhost:11434";
 
 /**
  * Ollama runs on the user's own computer. `localhost:11434` therefore means
@@ -38,8 +38,8 @@ function assertLocalAiReachable(): void {
   }
 }
 export const OLLAMA_CHAT_ENDPOINT = `${OLLAMA_BASE_URL}/api/chat`;
-export const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "qwen3.5:9b";
-export const OLLAMA_VISION_MODEL = process.env.OLLAMA_VISION_MODEL ?? OLLAMA_MODEL;
+export const OLLAMA_MODEL = process.env.OLLAMA_MODEL?.trim() || "qwen3.5:9b";
+export const OLLAMA_VISION_MODEL = process.env.OLLAMA_VISION_MODEL?.trim() || OLLAMA_MODEL;
 
 export type OllamaImageMetadata = {
   width: number;
@@ -390,4 +390,4 @@ export async function ollamaGenerateJSON<T = unknown>(
 
 export function __setOllamaFetchForTests(fetcher: typeof fetch | null) {
   ollamaFetch = fetcher ?? ((...args) => fetch(...args));
-}
+  }
