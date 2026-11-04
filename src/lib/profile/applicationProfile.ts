@@ -111,6 +111,9 @@ export async function applicationProfileForUser(userId: string): Promise<Profile
           ? "Not currently authorized to work in the United States"
           : null,
     requiresSponsorship: preferences?.requiresSponsorshipNow ?? null,
+    // The explicit yes/no the workAuthorization sentence above is derived from,
+    // exposed so the answers form can edit the source of truth directly.
+    legallyAuthorizedToWork: preferences?.legallyAuthorizedToWork ?? null,
     clearanceEligible: null,
     securityClearanceStatus: preferences?.securityClearanceStatus ?? null,
     // Demographics are used only where the user explicitly chose an answer.
