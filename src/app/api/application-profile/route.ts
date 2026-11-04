@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { missingProfileFields } from "@/lib/applications/profileSnapshot";
 import { applicationProfileForUser } from "@/lib/profile/applicationProfile";
-import { savePersonal, saveApplicationPreferences } from "@/lib/profile/service";
+import { savePersonal, saveApplicationPreferences, saveSensitivePreferences } from "@/lib/profile/service";
 import { withUser } from "@/lib/auth/session";
 
 /**
@@ -69,6 +69,17 @@ export const POST = withUser(async (req, user) => {
     securityClearanceStatus: body.securityClearanceStatus,
     usualJobSource: body.referralSource,
     requiresSponsorshipNow: body.requiresSponsorship,
+    legallyAuthorizedToWork: body.legallyAuthorizedToWork,
+  });
+
+  // The answers form also carries the EEO/demographic fields. Without this
+  // call they were accepted with a 200 and silently discarded.
+  await saveSensitivePreferences(user.id, {
+    gender: body.eeoGender,
+    raceEthnicity: body.eeoRaceEthnicity,
+    veteranStatus: body.eeoVeteranStatus,
+    disabilityStatus: body.eeoDisabilityStatus,
+    pronouns: body.pronouns,
   });
 
   return NextResponse.json({ profile: await applicationProfileForUser(user.id) });
