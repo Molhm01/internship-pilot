@@ -1,5 +1,7 @@
 import { isCloudRuntime, LOCAL_ONLY_FEATURES } from "@/lib/runtime/deployment";
 
+// Blank or whitespace-only OLLAMA_* values (for example a placeholder set in a
+// hosting dashboard) must fall back to the defaults, so trim and treat empty as unset.
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL?.trim() || "http://localhost:11434";
 
 /**
@@ -390,4 +392,4 @@ export async function ollamaGenerateJSON<T = unknown>(
 
 export function __setOllamaFetchForTests(fetcher: typeof fetch | null) {
   ollamaFetch = fetcher ?? ((...args) => fetch(...args));
-  }
+}
