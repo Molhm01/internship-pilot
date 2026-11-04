@@ -34,6 +34,7 @@ type SyncStatus = {
   closedCount: number;
   pendingCount: number;
   recentErrorCount: number;
+  aiScoringConfigured?: boolean;
 };
 
 type CoverageDiagnostics = {
@@ -403,6 +404,16 @@ export default function SyncStatusPanel({ onSynced }: { onSynced: () => void }) 
         </span>
         <span>{healthCopy.detail}</span>
       </div>
+
+      {status && status.aiScoringConfigured === false && (
+        <div className="basis-full rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-secondary">
+          <span className="font-semibold text-primary">AI matching paused:</span>{" "}
+          hosted scoring is not configured on this deployment, so jobs stay unscored for now.
+          Discovery, tracking, and alerts keep running normally. Scores resume automatically once a
+          Gemini API key is added to the hosting settings; when self-hosted with the desktop agent,
+          matching runs on your own machine instead.
+        </div>
+      )}
 
       {employerSweep && (
         <div className="basis-full rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs leading-5 text-secondary">
