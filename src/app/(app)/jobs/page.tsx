@@ -241,7 +241,7 @@ function JobsPageContent() {
     <PageBody>
       <PageHeader
         title="Discover"
-        description="Every legitimate discovered internship in one feed, ordered by when the source says it was posted. Upload one resume and ATS matching runs automatically as job descriptions become available."
+        description="Every legitimate discovered internship in one feed, ordered by when the source says it was posted. Upload one resume and ATS matching runs as job descriptions become available (automatic once AI matching is configured)."
         meta={
           counts && (
             <>
