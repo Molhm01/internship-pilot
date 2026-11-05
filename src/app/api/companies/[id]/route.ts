@@ -2,7 +2,7 @@
  * Shared data, but not public data.
  *
  * Every handler in this file operates on the global catalogue rather than on
- * one person's rows, so there is no owner to filter by â but a signed-out
+ * one person's rows, so there is no owner to filter by — but a signed-out
  * request still has no business here, and the proxy's cookie check is not an
  * authorization layer. The session is verified on the server, per request.
  */
@@ -29,7 +29,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     data.monitoringStatus = body.monitoringStatus;
   }
   // Explicit user approval to activate scheduled checking for a company not
-  // sourced from the CSV allowlist (e.g. one found via Nearby Firms) â the
+  // sourced from the CSV allowlist (e.g. one found via Nearby Firms) — the
   // strict two-source discovery boundary otherwise leaves it inactive.
   if (typeof body.allowlisted === "boolean") {
     data.allowlisted = body.allowlisted;
