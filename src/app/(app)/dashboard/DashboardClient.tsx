@@ -144,7 +144,11 @@ export function DashboardClient({ scoringConfigured = true }: { scoringConfigure
             ) : strong.length === 0 ? (
               <EmptyState
                 title="No strong matches yet"
-                description="Upload your resume once. Internship Pilot scores jobs automatically as their job descriptions become available."
+                description={
+                  scoringConfigured
+                    ? "Upload your resume once. Internship Pilot scores jobs automatically as their job descriptions become available."
+                    : "Upload your resume once. Hosted AI matching is currently paused on this deployment - jobs will be scored here once an API key is configured, or on your own machine with the local desktop agent."
+                }
                 action={
                   <Link
                     href="/profile"
