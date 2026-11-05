@@ -14,7 +14,7 @@ The application runs in two places at once and the split is the whole point:
 
 A variable in the "Local Agent only" or "Local development only" row has no
 useful effect when set on Vercel. Setting them there is harmless but
-misleading — the deployed server detects that it is not the user's machine and
+misleading â the deployed server detects that it is not the user's machine and
 declines the loopback call rather than attempting it.
 
 ## Classification
@@ -26,13 +26,14 @@ declines the loopback call rather than attempting it.
 | `BETTER_AUTH_URL` | Vercel production | **Yes** in production | Canonical origin for authentication and the OAuth callback. Falls back to `VERCEL_PROJECT_PRODUCTION_URL`/`VERCEL_URL`, then `http://localhost:3000`. Set explicitly: the per-deployment `VERCEL_URL` is the wrong redirect target for a stable Google client. | No |
 | `GOOGLE_CLIENT_ID` | Vercel production, optional | No | Google OAuth client. Without it *and* the secret, "Continue with Google" is not shown. | No |
 | `GOOGLE_CLIENT_SECRET` | Vercel production, optional | No | The other half of the Google OAuth client. | **Yes** |
-| `NEXT_PUBLIC_APP_URL` | Vercel production | **Yes** in production | Canonical public origin. Drives `metadataBase` and the default Gmail OAuth callback. Falls back to `VERCEL_PROJECT_PRODUCTION_URL` / `VERCEL_URL`, then to `http://localhost:3000` in development only. | No — deliberately public |
+| `NEXT_PUBLIC_APP_URL` | Vercel production | **Yes** in production | Canonical public origin. Drives `metadataBase` and the default Gmail OAuth callback. Falls back to `VERCEL_PROJECT_PRODUCTION_URL` / `VERCEL_URL`, then to `http://localhost:3000` in development only. | No â deliberately public |
 | `BLOB_READ_WRITE_TOKEN` | Vercel production | **Yes** when storage is `vercel-blob` | Vercel Blob store credential. Injected automatically once a Blob store is connected. | **Yes** |
 | `DOCUMENT_STORAGE_DRIVER` | Optional, either side | No | `local` or `vercel-blob`. Defaults from the runtime: local installs write to disk, cloud deployments to Blob. | No |
 | `INTERNSHIP_PILOT_RUNTIME` | Optional, either side | No | `local` or `cloud`, overriding detection. Only needed for a self-hosted server that genuinely shares a machine with the user's Agent and Ollama. | No |
 | `DATABASE_POOL_MAX` | Optional, either side | No | Postgres connections per instance. Default 5. | No |
 | `DATABASE_CONNECT_TIMEOUT_MS` | Optional, either side | No | Connection acquisition timeout in ms. Default 15000. | No |
 | `CRON_SECRET` | Vercel production | **Yes** for hosted job ingestion | Authorizes every hosted ingestion lane (`/api/cron/job-ingestion/{fresh,standard,maintenance}`) and the legacy combined route. Sent as a Bearer token by Vercel Cron and by the GitHub Actions scheduler. | **Yes** |
+| `CATALOGUE_ADMIN_EMAILS` | Vercel production | **Yes** for catalogue administration | Comma-separated list of account emails allowed to add, edit, pause, delete, or re-check shared catalogue companies (allowlist with admin fallback). When unset, every catalogue mutation fails closed with 503. | **Yes** |
 | `CRON_JOB_BATCH_SIZE` | Vercel production, optional | No | Number of due companies checked per hosted cron invocation. Defaults to 8 and is capped at 25. | No |
 | `OLLAMA_BASE_URL` | Local development only | No | Local model server. Default `http://localhost:11434`. On a cloud runtime a loopback value is recognised as unreachable and reported as **Local AI offline**; a non-loopback value the deployment can actually reach is used normally. | No |
 | `OLLAMA_MODEL` | Local development only | No | Chat model name. Default `qwen3.5:9b`. | No |
@@ -40,7 +41,7 @@ declines the loopback call rather than attempting it.
 | `AI_MATCH_*` | Local development only | No | AI Match concurrency, timeouts, context and prediction budgets. | No |
 | `TYPST_BIN` | Local development only | No | Path to the Typst CLI that compiles tailored PDFs. Typst is a native binary and does not exist on a serverless host, so document generation is local-only. | No |
 | `GENERATED_OUTPUT_DIR` | Local development only | No | Where generated PDFs land under the local storage driver. Default `data/generated`. | No |
-| `RESUME_STORAGE_DIR` | Local development only | No | Where uploaded résumés land under the local storage driver. Default `data/resumes`. | No |
+| `RESUME_STORAGE_DIR` | Local development only | No | Where uploaded rÃ©sumÃ©s land under the local storage driver. Default `data/resumes`. | No |
 | `LOCAL_DOCUMENT_STORAGE_ROOT` | Local development only | No | Root that local storage keys resolve inside. Default: the repository. Keys that escape it are refused. | No |
 | `GMAIL_CLIENT_ID` | Optional, Vercel + local | No | Google OAuth client id. Without it Gmail tracking stays off and everything else works. | No |
 | `GMAIL_CLIENT_SECRET` | Optional, Vercel + local | No | Google OAuth client secret. | **Yes** |
@@ -102,9 +103,9 @@ daily batch:
 
 | Lane | Route | Work | Target cadence |
 | --- | --- | --- | --- |
-| A — fresh | `/api/cron/job-ingestion/fresh` | fresh radar signals resolved to official employer postings, priority crawl of a known employer's board, Tier-A structured ATS boards that are due, minimal freshness verification | ~5 minutes |
-| B — standard | `/api/cron/job-ingestion/standard` | Tier-B structured boards that are due, public direct-employer feeds, Intern List resolution, ordinary freshness verification | 20–30 minutes |
-| C — maintenance | `/api/cron/job-ingestion/maintenance` | whole-registry sweep including Custom/API employers, broad technical feeds, deep reverification, feed reconciliation and cleanup | daily |
+| A â fresh | `/api/cron/job-ingestion/fresh` | fresh radar signals resolved to official employer postings, priority crawl of a known employer's board, Tier-A structured ATS boards that are due, minimal freshness verification | ~5 minutes |
+| B â standard | `/api/cron/job-ingestion/standard` | Tier-B structured boards that are due, public direct-employer feeds, Intern List resolution, ordinary freshness verification | 20â30 minutes |
+| C â maintenance | `/api/cron/job-ingestion/maintenance` | whole-registry sweep including Custom/API employers, broad technical feeds, deep reverification, feed reconciliation and cleanup | daily |
 
 Every lane authenticates with `CRON_SECRET`, takes an exclusive lease so two
 invocations can never overlap, holds a hard runtime budget, and touches neither
@@ -112,7 +113,7 @@ Ollama, ATS scoring, nor a browser. Discovery **queues** scoring; it never runs
 it. A newly discovered official job enters Discover as soon as it is ingested,
 without waiting for a score, a description hydration, or any AI step.
 
-### Platform limitation — cron frequency
+### Platform limitation â cron frequency
 
 The Vercel **Hobby** plan allows at most two cron jobs, each at most once per
 day. It therefore cannot express the five-minute fresh lane. `vercel.json`
@@ -121,7 +122,7 @@ declares only the two daily lanes the plan permits, and
 with the same `CRON_SECRET`.
 
 GitHub's own scheduling floor is five minutes, and scheduled runs are queued
-rather than guaranteed on time — a tick can be late or dropped under load. That
+rather than guaranteed on time â a tick can be late or dropped under load. That
 is the honest ceiling of the current fallback, not a five-minute guarantee.
 
 On a Vercel plan with minute-level cron, move all three lanes into
@@ -147,3 +148,4 @@ no change:
 `CRON_COMPANY_SWEEP_LIMIT`, `CRON_COMPANY_SWEEP_CONCURRENCY`,
 `CRON_MASS_TECHNICAL_LIMIT`. Every one is clamped to a safe range in code, so
 a bad value degrades the lane rather than breaking it.
+| `CATALOGUE_ADMIN_EMAILS` | Vercel production | **Yes** for catalogue administration | Comma-separated list of account emails allowed to add, edit, pause, delete, or re-check shared catalogue companies (allowlist with admin fallback). When unset, every catalogue mutation fails closed with 503. | **Yes** |
