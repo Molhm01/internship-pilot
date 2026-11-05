@@ -30,6 +30,7 @@ export type CompanyCheckResult = {
   closedCount: number;
   durationMs: number;
   error?: string;
+  diagnostic?: string | null;
 };
 
 export type CompanySweepResult = {
@@ -179,7 +180,7 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
   }
 
   try {
-    const { jobs, supported, notModified, etag, lastModified, contentHash, totalAvailableJobs, paginationVerified } = await listJobsForCompany({
+    const { jobs, supported, notModified, etag, lastModified, contentHash, totalAvailableJobs, paginationVerified, diagnostic } = await listJobsForCompany({
       name: company.name,
       atsType,
       atsIdentifier,
@@ -255,6 +256,7 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
       durationMs,
       configState,
       paginationVerified: paginationVerified ?? false,
+      ...(!supported && diagnostic ? { errorCode: "ATS_FEED_UNREACHABLE" } : {}),
       ...quality,
     });
 
@@ -269,6 +271,7 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
       engineeringInternshipsFound: relevant.length,
       missingCount: delta.missing,
       closedCount: delta.closed,
+      diagnostic: diagnostic ?? null,
       durationMs,
     };
   } catch (err) {
