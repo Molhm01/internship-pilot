@@ -14,7 +14,7 @@ export type StructuredPortalProbe = {
 };
 
 const USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 const STUDENT_ROLE_HINT = /\b(intern(?:ship)?s?|co-?ops?|undergrads?|undergraduates?|students?)\b/i;
 
@@ -46,15 +46,15 @@ export function stripPortalHtml(value: string): string {
  * downstream comparison: the radar signal says "AI Intern - Recycling", the
  * board says "Title: AI Intern- Recycling", and the extra token drags the
  * similarity under the accept bar so the employer's own posting is rejected.
- * Measured on CMC, where all three postings read "Title: …".
+ * Measured on CMC, where all three postings read "Title: â¦".
  *
- * Only a leading label is removed, and only one — a job genuinely called
+ * Only a leading label is removed, and only one â a job genuinely called
  * "Title Insurance Intern" keeps its name.
  */
 export function normalizePostingTitle(value: string): string {
   return value
-    .replace(/^\s*(?:job\s+|requisition\s+|position\s+)?title\s*[:\-–]\s*/i, "")
-    .replace(/^\s*position\s*[:\-–]\s*/i, "")
+    .replace(/^\s*(?:job\s+|requisition\s+|position\s+)?title\s*[:\-â]\s*/i, "")
+    .replace(/^\s*position\s*[:\-â]\s*/i, "")
     .trim();
 }
 
