@@ -90,7 +90,7 @@ describe("lane time budgeting", () => {
   it("does not report a lane as ok when a contained step failed", () => {
     // Containing a step failure keeps one bad employer board from losing the
     // whole invocation. Reporting ok anyway would make a broken registry sweep
-    // indistinguishable from a clean one in the cron log — which is exactly
+    // indistinguishable from a clean one in the cron log â which is exactly
     // what a first measured maintenance run did.
     expect(
       laneOutcome({
@@ -166,7 +166,7 @@ describe("tiered due selection", () => {
 describe("one bad employer never loses the whole sweep", () => {
   it("records a thrown employer check as an error result and keeps going", async () => {
     // A measured maintenance run lost an entire 340-employer sweep when a
-    // single bookkeeping write failed with PostgreSQL 08P01 — a pooled
+    // single bookkeeping write failed with PostgreSQL 08P01 â a pooled
     // prepared-statement collision that had nothing to do with the employer
     // being checked. checkCompany catches board errors but not that one.
     const result = await checkCompanySafely({ id: "company-1", name: "Acme" }, async () => {
@@ -244,9 +244,17 @@ describe("the lanes are actually wired up", () => {
     }
   });
 
-  it("drives the five-minute fresh lane from the external scheduler", async () => {
+  it("drives the fresh lane from the external scheduler on a cadence GitHub delivers", async () => {
     const workflow = await repoFile(".github/workflows/live-job-ingestion.yml");
-    expect(workflow).toContain('cron: "*/5 * * * *"');
+    // A five-minute schedule lost ~90% of its fires in practice (observed
+    // 2026-11-04/05), so the fresh lane runs at off-peak minutes three times
+    // an hour instead. Sub-hourly is fine here â GitHub's floor is five
+    // minutes â but the cron strings must stay off the contended top of the
+    // hour and match the per-job `if` gates.
+    expect(workflow).toContain('cron: "9,29,49 * * * *"');
+    expect(workflow).toContain("github.event.schedule == '9,29,49 * * * *'");
+    expect(workflow).toContain('cron: "16,46 * * * *"');
+    expect(workflow).toContain("github.event.schedule == '16,46 * * * *'");
     expect(workflow).toContain("/api/cron/job-ingestion/fresh");
     expect(workflow).toContain("/api/cron/job-ingestion/standard");
     expect(workflow).toContain("/api/cron/job-ingestion/maintenance");
