@@ -213,3 +213,28 @@ export function laneOutcome(steps: Record<string, { error?: string | null }>): {
     .map(([name]) => name);
   return { ok: failedSteps.length === 0, failedSteps };
 }
+
+/**
+ * Service-supported scheduler markers (documented by Vercel): a real Vercel
+ * cron invocation always sends user-agent "vercel-cron/1.0" plus an
+ * "x-vercel-cron-schedule" header carrying the cron expression. These markers
+ * identify the invocation origin for the durable run record; they are NOT
+ * authentication - the Bearer CRON_SECRET check above stays the only gate.
+ */
+export type CronInvocationOrigin = "vercel-scheduler" | "authorized-external";
+
+export function cronInvocationOrigin(request: Request): {
+  origin: CronInvocationOrigin;
+  schedule: string | null;
+} {
+  const userAgent = request.headers.get("user-agent") ?? "";
+  const schedule = request.headers.get("x-vercel-cron-schedule");
+  if (userAgent.startsWith("vercel-cron/") && schedule) {
+    return { origin: "vercel-scheduler", schedule };
+  }
+  return { origin: "authorized-external", schedule: null };
+}
+
+export function cronLaneSource(lane: string, origin: CronInvocationOrigin): string {
+  return `cron:${lane}:${origin}`;
+}
