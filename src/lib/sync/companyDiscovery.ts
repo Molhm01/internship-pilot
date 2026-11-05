@@ -258,7 +258,9 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
         atsIdentifier,
         lastCheckedAt: new Date(),
         nextCheckAt: nextCheckTimeFor(effectivePriority({ ...company, engineeringActivityTier: activityTier }, atsType), 0, atsType),
-        ...(notModified ? {} : { activeInternshipCount: relevant.length }),
+        // Only a validated read may move the visible count. An unsupported or
+        // unreadable page must not zero out last-known coverage.
+        ...(notModified || !supported ? {} : { activeInternshipCount: relevant.length }),
         lastCheckStatus: supported ? "success" : "unsupported",
         lastCheckError: null,
         consecutiveFailures: 0,
