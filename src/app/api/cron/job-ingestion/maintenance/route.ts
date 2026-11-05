@@ -14,6 +14,7 @@ import {
   unauthorizedCronResponse,
 } from "@/lib/cron/lane";
 import { isSchedulerPaused } from "@/lib/sync/schedulerState";
+import { recoverStaleSyncRuns } from "@/lib/sync/syncRuns";
 import { runCompanyDiscoverySweep } from "@/lib/sync/companyDiscovery";
 import { runMassTechnicalFeedDiscovery } from "@/lib/sync/massTechnicalFeeds";
 import { runFreshnessVerificationBatch } from "@/lib/sync/freshness";
@@ -84,6 +85,9 @@ async function run(request: Request) {
   }
 
   const log = await prisma.syncLog.create({ data: { source: runSource, status: "running" } });
+  // This row was just created, so recovery below can never touch it; it only
+  // closes rows whose functions provably died past the stale threshold.
+  const staleRecovered = await recoverStaleSyncRuns().catch(() => 0);
   const budget = new LaneBudget(BUDGET_MS);
 
   try {
@@ -166,6 +170,7 @@ async function run(request: Request) {
         massTechnical: massTechnical.value ?? null,
         freshness: freshness.value ?? null,
         prunedLiveDiscoveryEvents: pruned.value ?? 0,
+        staleSyncRunsRecovered: staleRecovered,
         steps,
       },
       { headers: { "cache-control": "no-store" } },
