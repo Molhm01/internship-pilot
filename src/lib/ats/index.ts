@@ -39,6 +39,7 @@ export type ListJobsResult = {
   totalAvailableJobs?: number;
   paginationVerified?: boolean;
   notModified?: boolean;
+  diagnostic?: string;
   etag?: string | null;
   lastModified?: string | null;
   contentHash?: string | null;
@@ -114,7 +115,8 @@ export async function listJobsForCompany(company: CompanyForListing): Promise<Li
         // "careers-home" front ends) client-render the whole list, so a zero
         // here can mean "unreadable shell", not "no openings". Check the
         // site's own JSON feed before believing the board is empty.
-        const jibe = await listIcimsJibeJobs(company.careersUrl, company.name);
+        const jibeDiag: { note?: string } = {};
+        const jibe = await listIcimsJibeJobs(company.careersUrl, company.name, jibeDiag);
         if (jibe && jibe.length > 0) {
           return { jobs: jibe, supported: true, totalAvailableJobs: jibe.length, paginationVerified: true };
         }
@@ -125,7 +127,7 @@ export async function listJobsForCompany(company: CompanyForListing): Promise<Li
         }
         // JS shell and no readable feed: honest "cannot check automatically"
         // rather than a false-success zero.
-        return { jobs: [], supported: false };
+        return { jobs: [], supported: false, ...(jibeDiag.note ? { diagnostic: jibeDiag.note } : {}) };
       }
     case "eightfold":
       if (!id) return { jobs: [], supported: false };
