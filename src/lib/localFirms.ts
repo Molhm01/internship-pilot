@@ -1,6 +1,4 @@
 import { prisma } from "@/lib/db";
-import { isCatalogueAdmin } from "@/lib/auth/catalogueAdmin";
-import { currentUser } from "@/lib/auth/session";
 import { classifyLocation, DEFAULT_RADIUS_MILES, haversineMiles } from "@/lib/geo/geofilter";
 
 export { haversineMiles };
@@ -14,7 +12,7 @@ export function trustedDistanceForLocation(location: string | null, storedDistan
   return { distanceMiles: c.distanceMiles, trusted: true, reason: c.precision === "state" ? "Location resolved to the stated state; coordinates use the state centroid" : "Location stated on an exact LIVE_JOB_VERIFIED posting; coordinates use the verified city center" };
 }
 
-export async function buildLocalFirms(radiusMiles: number) {
+export async function buildLocalFirms(radiusMiles: number, opts?: { writeDiagnostics?: boolean }) {
   const radius = [25, 50, 100, 150].includes(radiusMiles) ? radiusMiles : DEFAULT_RADIUS_MILES;
   const [companies, jobs] = await Promise.all([
     prisma.company.findMany({ where: { allowlisted: true, source: { in: ["csv", "manual", "intern-list-approved"] } }, orderBy: { name: "asc" } }),
@@ -34,7 +32,7 @@ export async function buildLocalFirms(radiusMiles: number) {
     const bucket: "local" | "outside" | "unknown" = best ? best.c.bucket : "unknown";
     const isRemote = Boolean(best && best.c.precision === "remote");
     const reason = bucket === "unknown"
-      ? "Location not yet verified â placed in Location Unknown, never counted as local"
+      ? "Location not yet verified Ã¢ÂÂ placed in Location Unknown, never counted as local"
       : isRemote
         ? "Remote location on an exact verified posting"
         : `Computed ${best?.c.distanceMiles} miles from Clifton, NJ using ${best?.c.precision}-level coordinates`;
@@ -70,12 +68,11 @@ export async function buildLocalFirms(radiusMiles: number) {
     lastCompletedScan: new Date().toISOString(),
     errors: [] as string[],
   };
-  // Shared owner-facing diagnostics: only the catalogue owner (session
-  // callers) or trusted server-side callers with no session (cron/sync) may
-  // refresh it. Arbitrary signed-in users still get full search results but
-  // cannot overwrite shared diagnostics.
-  const diagnosticsUser = await currentUser();
-  if (!diagnosticsUser || (await isCatalogueAdmin())) {
+  // Shared owner-facing diagnostics are written only when the caller passes
+  // explicit write authorization: the owner (verified session + allowlist)
+  // from the routes, or the CRON_SECRET-guarded scheduler. Absent session is
+  // NOT treated as authorization.
+  if (opts?.writeDiagnostics === true) {
     await prisma.appSetting.upsert({ where: { key: "localFirmsDiagnostics" }, update: { value: JSON.stringify(diagnostics) }, create: { key: "localFirmsDiagnostics", value: JSON.stringify(diagnostics) } });
   }
   return { center: "Clifton, New Jersey", radiusMiles: radius, firms, outsideRadius, locationUnknown, diagnostics };
