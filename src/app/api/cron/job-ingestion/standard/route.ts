@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { prisma } from "@/lib/db";
 import {
   LaneBudget,
   acquireLane,
@@ -53,6 +54,11 @@ async function run() {
   const startedAt = Date.now();
 
   if (await isSchedulerPaused()) {
+    await prisma.syncLog
+      .create({
+        data: { source: "employer-ats", status: "success", finishedAt: new Date(), errorMessage: "skipped:scheduler_paused" },
+      })
+      .catch(() => undefined);
     return NextResponse.json(
       { ok: true, lane: LANE, skipped: "scheduler_paused" },
       { headers: { "cache-control": "no-store" } },
@@ -61,11 +67,20 @@ async function run() {
 
   const lease = await acquireLane(LANE, LEASE_TTL_MS);
   if (!lease.acquired) {
+    await prisma.syncLog
+      .create({
+        data: { source: "employer-ats", status: "success", finishedAt: new Date(), errorMessage: "skipped:already_running" },
+      })
+      .catch(() => undefined);
     return NextResponse.json(
       { ok: true, lane: LANE, skipped: "already_running", heldUntil: lease.expiresAt },
       { headers: { "cache-control": "no-store" } },
     );
   }
+
+  // Durable per-run record: created at invocation, closed at completion or
+  // error, so scheduled execution is provable from the database alone.
+  const log = await prisma.syncLog.create({ data: { source: "employer-ats", status: "running" } });
 
   const budget = new LaneBudget(BUDGET_MS);
   try {
@@ -107,6 +122,21 @@ async function run() {
     };
     const outcome = laneOutcome(steps);
 
+    await prisma.syncLog
+      .update({
+        where: { id: log.id },
+        data: {
+          status: outcome.ok ? "success" : "error",
+          ...(outcome.ok
+            ? {}
+            : { errorMessage: `Lane steps failed: ${outcome.failedSteps.join(", ")}`.slice(0, 500) }),
+          finishedAt: new Date(),
+          newJobsCount: newJobs,
+          updatedJobsCount: updatedJobs,
+        },
+      })
+      .catch(() => undefined);
+
     return NextResponse.json(
       {
         ok: outcome.ok,
@@ -128,6 +158,21 @@ async function run() {
         freshness: freshness.value ?? null,
       },
       { headers: { "cache-control": "no-store" } },
+    );
+  } catch (error) {
+    await prisma.syncLog
+      .update({
+        where: { id: log.id },
+        data: {
+          status: "error",
+          finishedAt: new Date(),
+          errorMessage: (error instanceof Error ? error.message : String(error)).slice(0, 500),
+        },
+      })
+      .catch(() => undefined);
+    return NextResponse.json(
+      { ok: false, lane: LANE, error: "Standard ingestion failed.", durationMs: Date.now() - startedAt },
+      { status: 500, headers: { "cache-control": "no-store" } },
     );
   } finally {
     await releaseLane(LANE, lease.holder).catch(() => undefined);
