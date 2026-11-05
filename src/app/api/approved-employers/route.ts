@@ -7,6 +7,7 @@
  * authorization layer. The session is verified on the server, per request.
  */
 import { guardSession } from "@/lib/auth/session";
+import { requireCatalogueAdmin } from "@/lib/auth/catalogueAdmin";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { csvFileExists } from "@/lib/employers/csv";
@@ -59,8 +60,8 @@ export async function GET(req: Request) {
 }
 
 export async function POST() {
-  const denied = await guardSession();
+  const denied = await requireCatalogueAdmin();
   if (denied) return denied;
   const result = await syncApprovedEmployersFromCsv();
   return NextResponse.json({ result }, { status: result.ran ? 200 : 422 });
-}
+                         }
