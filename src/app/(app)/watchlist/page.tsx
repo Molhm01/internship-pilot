@@ -253,9 +253,11 @@ export default function WatchlistPage() {
                     <button onClick={() => togglePause(c)} className="text-xs text-faint hover:text-secondary mr-3">
                       {c.monitoringStatus === "active" ? "Pause" : "Resume"}
                     </button>
-                    <button onClick={() => removeCompany(c)} className="text-xs text-red-400/80 hover:text-red-300">
-                      Remove
-                    </button>
+                    {c.source === "manual" && (
+                      <button onClick={() => removeCompany(c)} className="text-xs text-red-400/80 hover:text-red-300">
+                        Remove
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
