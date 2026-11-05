@@ -179,13 +179,21 @@ export async function listJobsForCompany(company: CompanyForListing): Promise<Li
         lastModified: company.lastModified,
         contentHash: company.contentHash,
       });
+      // HTTP 200 alone is not coverage: a JS shell yields zero parsed jobs
+      // and must report unsupported (preserving last-known data), while a
+      // readable page with genuinely no intern links is a credible zero.
+      // notModified means the page we previously validated is unchanged.
+      const supported = result.notModified || result.pageReadable;
       return {
         jobs: result.jobs,
-        supported: true,
+        supported,
         notModified: result.notModified,
         etag: result.etag,
         lastModified: result.lastModified,
         contentHash: result.contentHash,
+        ...(!supported
+          ? { diagnostic: "careers page answered HTTP 200 but exposed no server-rendered job content (JS shell or unreadable page)" }
+          : {}),
       };
     }
     default:
