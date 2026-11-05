@@ -40,7 +40,7 @@ export async function GET(request: Request) {
 
   const running = await prisma.syncLog.findFirst({
     where: {
-      source: "employer-ats",
+      OR: [{ source: "employer-ats" }, { source: { startsWith: "cron:" } }],
       status: "running",
       startedAt: { gte: new Date(Date.now() - RECENT_RUNNING_WINDOW_MS) },
     },
