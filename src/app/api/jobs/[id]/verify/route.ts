@@ -2,7 +2,7 @@
  * Shared data, but not public data.
  *
  * Every handler in this file operates on the global catalogue rather than on
- * one person's rows, so there is no owner to filter by â but a signed-out
+ * one person's rows, so there is no owner to filter by — but a signed-out
  * request still has no business here, and the proxy's cookie check is not an
  * authorization layer. The session is verified on the server, per request.
  */
@@ -20,7 +20,7 @@ import {
   resolveOfficialJobDestination,
 } from "@/lib/applications/officialDestination";
 
-// Re-checks a single job on demand â used right before the user would apply,
+// Re-checks a single job on demand — used right before the user would apply,
 // per "recheck the official page immediately before any future application".
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const denied = await guardSession();
