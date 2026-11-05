@@ -45,7 +45,9 @@ describe("iCIMS Jibe JSON feed", () => {
     expect(job.title).toBe("Summer 2027 Software Engineer Intern");
     expect(job.company).toBe("AMD");
     expect(job.location).toBe("Austin, Texas, United States");
-    expect(job.applyUrl).toBe("https://global-external-amd.icims.com/jobs/93408/login");
+    // The feed's apply_url is a login wall; the public posting is the Jibe
+    // front-end job page on the careers origin.
+    expect(job.applyUrl).toBe("https://careers.amd.com/careers-home/jobs/93408");
     expect(job.postedAt?.toISOString()).toBe("2026-11-04T14:00:00.000Z");
     expect(job.employmentType).toBe("Intern");
     // The feed lives on the careers-site origin, not the tenant subdomain.
