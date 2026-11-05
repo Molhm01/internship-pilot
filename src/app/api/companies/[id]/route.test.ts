@@ -59,13 +59,21 @@ describe("DELETE /api/companies/[id]", () => {
   });
 
   it("deletes a manually-added entry", async () => {
-    findUnique.mockResolvedValue({ source: "manual" });
+    findUnique.mockResolvedValue({ source: "manual", allowlisted: false });
     deleteCompany.mockResolvedValue({});
 
     const response = await del("company-3");
 
     expect(response.status).toBe(200);
     expect(deleteCompany).toHaveBeenCalledWith({ where: { id: "company-3" } });
+  });
+
+  it("refuses to delete an allowlisted manual entry (restored catalogue rows)", async () => {
+    findUnique.mockResolvedValue({ source: "manual", allowlisted: true });
+    const { DELETE } = await import("./route");
+    const response = await DELETE(new Request("https://x"), { params: Promise.resolve({ id: "company-4" }) });
+    expect(response.status).toBe(409);
+    expect(deleteCompany).not.toHaveBeenCalled();
   });
 
   it("404s on an unknown company", async () => {
