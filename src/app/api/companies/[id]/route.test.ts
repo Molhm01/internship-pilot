@@ -23,7 +23,22 @@ function del(id: string) {
 }
 
 describe("DELETE /api/companies/[id]", () => {
-  beforeEach(() => vi.resetAllMocks());
+  beforeEach(() => {
+    vi.resetAllMocks();
+    requireCatalogueAdmin.mockResolvedValue(null); // owner allowed
+  });
+
+  it("passes the gate's denial straight through", async () => {
+    requireCatalogueAdmin.mockResolvedValue(
+      new (await import("next/server")).NextResponse(JSON.stringify({ error: "Forbidden" }), { status: 403 }),
+    );
+
+    const response = await del("company-0");
+
+    expect(response.status).toBe(403);
+    expect(findUnique).not.toHaveBeenCalled();
+    expect(deleteCompany).not.toHaveBeenCalled();
+  });
 
   it("refuses to delete a CSV-seeded catalogue entry", async () => {
     findUnique.mockResolvedValue({ source: "csv" });
@@ -63,9 +78,11 @@ describe("DELETE /api/companies/[id]", () => {
   });
 });
 
-// Session guard mocked the same way as the other route tests; real user
-// isolation is covered by src/lib/auth/multiUserIsolation.test.ts.
-vi.mock("@/lib/auth/session", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/auth/session")>("@/lib/auth/session");
-  return { ...actual, guardSession: async () => null };
-});
+// Auth modules fully mocked: no real auth import, no env secrets needed.
+// The gate's own logic (allowlist parsing, fail-closed) is covered by
+// src/lib/auth/catalogueAdmin.test.ts; these tests cover the route's use of it.
+const requireCatalogueAdmin = vi.fn();
+
+vi.mock("@/lib/auth/catalogueAdmin", () => ({
+  requireCatalogueAdmin: (...args: unknown[]) => requireCatalogueAdmin(...args),
+}));
