@@ -7,6 +7,7 @@
  * authorization layer. The session is verified on the server, per request.
  */
 import { guardSession } from "@/lib/auth/session";
+import { isCatalogueAdmin, requireCatalogueAdmin } from "@/lib/auth/catalogueAdmin";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 
@@ -16,11 +17,11 @@ export async function GET() {
   const companies = await prisma.company.findMany({
     orderBy: [{ priority: "asc" }, { name: "asc" }],
   });
-  return NextResponse.json({ companies });
+  return NextResponse.json({ companies, canManageCatalogue: await isCatalogueAdmin() });
 }
 
 export async function POST(req: Request) {
-  const denied = await guardSession();
+  const denied = await requireCatalogueAdmin();
   if (denied) return denied;
   const body = await req.json().catch(() => null);
   if (!body?.name?.trim()) {
