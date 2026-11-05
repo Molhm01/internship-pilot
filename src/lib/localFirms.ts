@@ -32,7 +32,7 @@ export async function buildLocalFirms(radiusMiles: number, opts?: { writeDiagnos
     const bucket: "local" | "outside" | "unknown" = best ? best.c.bucket : "unknown";
     const isRemote = Boolean(best && best.c.precision === "remote");
     const reason = bucket === "unknown"
-      ? "Location not yet verified Ã¢ÂÂ placed in Location Unknown, never counted as local"
+      ? "Location not yet verified — placed in Location Unknown, never counted as local"
       : isRemote
         ? "Remote location on an exact verified posting"
         : `Computed ${best?.c.distanceMiles} miles from Clifton, NJ using ${best?.c.precision}-level coordinates`;
