@@ -4,12 +4,15 @@
  * session on every request.
  */
 import { guardSession } from "@/lib/auth/session";
+import { requireCatalogueAdmin } from "@/lib/auth/catalogueAdmin";
 import { NextResponse } from "next/server";
 import { EmployerReviewError, reviewNewEmployer } from "@/lib/employers/review";
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const denied = await guardSession();
   if (denied) return denied;
+  const adminDenied = await requireCatalogueAdmin();
+  if (adminDenied) return adminDenied;
 
   const { id } = await params;
   const body = await req.json().catch(() => null);
