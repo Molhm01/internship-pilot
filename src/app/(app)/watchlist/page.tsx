@@ -88,7 +88,7 @@ export default function WatchlistPage() {
       const data = await res.json();
       if (res.ok) {
         setCheckResult(
-          `${data.result.name}: ${data.result.status} — ${data.result.newCount} new, ${data.result.updatedCount} updated`,
+          `${data.result.name}: ${data.result.status} â ${data.result.newCount} new, ${data.result.updatedCount} updated`,
         );
         await load();
       } else {
@@ -162,10 +162,10 @@ export default function WatchlistPage() {
               <input value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value })} className="input" />
             </Field>
             <Field label="Official website">
-              <input value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} className="input" placeholder="https://…" />
+              <input value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} className="input" placeholder="https://â¦" />
             </Field>
             <Field label="Careers URL">
-              <input value={form.careersUrl} onChange={(e) => setForm({ ...form, careersUrl: e.target.value })} className="input" placeholder="https://…/careers" />
+              <input value={form.careersUrl} onChange={(e) => setForm({ ...form, careersUrl: e.target.value })} className="input" placeholder="https://â¦/careers" />
             </Field>
             <Field label="Priority">
               <select value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })} className="input">
@@ -180,13 +180,13 @@ export default function WatchlistPage() {
             disabled={submitting}
             className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-dark transition-colors"
           >
-            {submitting ? "Saving…" : "Add to Watchlist"}
+            {submitting ? "Savingâ¦" : "Add to Watchlist"}
           </button>
         </form>
       )}
 
       {loading ? (
-        <p className="text-sm text-tertiary">Loading…</p>
+        <p className="text-sm text-tertiary">Loadingâ¦</p>
       ) : (
         <div className="bg-surface rounded-lg border border-hairline overflow-x-auto">
           <table className="w-full text-sm">
@@ -240,7 +240,7 @@ export default function WatchlistPage() {
                       <button
                         onClick={() => approveForDiscovery(c)}
                         className="text-xs rounded-full px-2 py-1 border bg-caution-quiet text-caution border-caution-line hover:bg-amber-200"
-                        title="Not from the CSV or Intern List — approve to activate scheduled checking"
+                        title="Not from the CSV or Intern List â approve to activate scheduled checking"
                       >
                         Approve for discovery
                       </button>
@@ -250,26 +250,28 @@ export default function WatchlistPage() {
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                  <td className="px-4 py-3 text-right">
+                    <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
                     {canManage && (
                       <>
                         <button
                           onClick={() => checkNow(c.id)}
                           disabled={checkingId === c.id}
-                          className="text-xs text-accent-text hover:underline mr-3 disabled:opacity-40"
+                          className="text-xs text-accent-text hover:underline disabled:opacity-40"
                         >
-                          {checkingId === c.id ? "Checking…" : "Check now"}
+                          {checkingId === c.id ? "Checkingâ¦" : "Check now"}
                         </button>
-                        <button onClick={() => togglePause(c)} className="text-xs text-faint hover:text-secondary mr-3">
+                        <button onClick={() => togglePause(c)} className="text-xs text-faint hover:text-secondary">
                           {c.monitoringStatus === "active" ? "Pause" : "Resume"}
                         </button>
-                        {c.source === "manual" && (
+                        {c.source === "manual" && !c.allowlisted && (
                           <button onClick={() => removeCompany(c)} className="text-xs text-red-400/80 hover:text-red-300">
                             Remove
                           </button>
                         )}
                       </>
                     )}
+                    </div>
                   </td>
                 </tr>
               ))}
