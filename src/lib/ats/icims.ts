@@ -1,5 +1,4 @@
 import type { AtsJob } from "@/lib/ats/types";
-import { fetchJsonSafe } from "@/lib/ats/types";
 import { crawlStructuredPortalJobs } from "@/lib/ats/structuredCareer";
 
 // iCIMS itself answers some automated clients with HTTP 405; the macOS Chrome
@@ -88,11 +87,25 @@ export async function listIcimsJibeJobs(
       const url = `${origin}/api/jobs?keywords=${encodeURIComponent(
         term,
       )}&page=${page}&limit=${PAGE_SIZE}`;
-      const data = (await fetchJsonSafe(
-        url,
-        { headers: { "User-Agent": USER_AGENT, Accept: "application/json" } },
-        REQUEST_TIMEOUT_MS,
-      )) as JibeResponse | null;
+      let data: JibeResponse | null = null;
+      try {
+        const res = await fetch(url, {
+          headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+        if (res.ok) {
+          data = (await res.json()) as JibeResponse;
+        } else if (!feedSeen) {
+          console.warn("[icims-jibe] feed request failed", { host: origin, status: res.status });
+        }
+      } catch (err) {
+        if (!feedSeen) {
+          console.warn("[icims-jibe] feed request threw", {
+            host: origin,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
       if (!data || !Array.isArray(data.jobs)) {
         // A 404/HTML shell on the very first request means this origin has no
         // Jibe feed at all; later failures just bound that term's pagination.
