@@ -40,6 +40,7 @@ const ATS_LABELS: Record<string, string> = {
 
 export default function WatchlistPage() {
   const [companies, setCompanies] = useState<Company[]>([]);
+  const [canManage, setCanManage] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(emptyForm);
@@ -52,6 +53,7 @@ export default function WatchlistPage() {
     const res = await fetch("/api/companies");
     const data = await res.json();
     setCompanies(data.companies ?? []);
+    setCanManage(Boolean(data.canManageCatalogue));
     setLoading(false);
   }, []);
 
@@ -134,12 +136,14 @@ export default function WatchlistPage() {
             explicitly approve it below.
           </p>
         </div>
-        <button
-          onClick={() => setShowForm((v) => !v)}
-          className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 hover:bg-accent-dark transition-colors"
-        >
-          {showForm ? "Close form" : "+ Add company"}
-        </button>
+        {canManage && (
+          <button
+            onClick={() => setShowForm((v) => !v)}
+            className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 hover:bg-accent-dark transition-colors"
+          >
+            {showForm ? "Close form" : "+ Add company"}
+          </button>
+        )}
       </header>
 
       {checkResult && (
@@ -232,7 +236,7 @@ export default function WatchlistPage() {
                       <span className="text-xs rounded-full px-2 py-1 border bg-verified-quiet text-verified border-verified-line">
                         Allowed ({c.source})
                       </span>
-                    ) : (
+                    ) : canManage ? (
                       <button
                         onClick={() => approveForDiscovery(c)}
                         className="text-xs rounded-full px-2 py-1 border bg-caution-quiet text-caution border-caution-line hover:bg-amber-200"
@@ -240,23 +244,31 @@ export default function WatchlistPage() {
                       >
                         Approve for discovery
                       </button>
+                    ) : (
+                      <span className="text-xs rounded-full px-2 py-1 border bg-caution-quiet text-caution border-caution-line">
+                        Not approved
+                      </span>
                     )}
                   </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
-                    <button
-                      onClick={() => checkNow(c.id)}
-                      disabled={checkingId === c.id}
-                      className="text-xs text-accent-text hover:underline mr-3 disabled:opacity-40"
-                    >
-                      {checkingId === c.id ? "Checking…" : "Check now"}
-                    </button>
-                    <button onClick={() => togglePause(c)} className="text-xs text-faint hover:text-secondary mr-3">
-                      {c.monitoringStatus === "active" ? "Pause" : "Resume"}
-                    </button>
-                    {c.source === "manual" && (
-                      <button onClick={() => removeCompany(c)} className="text-xs text-red-400/80 hover:text-red-300">
-                        Remove
-                      </button>
+                    {canManage && (
+                      <>
+                        <button
+                          onClick={() => checkNow(c.id)}
+                          disabled={checkingId === c.id}
+                          className="text-xs text-accent-text hover:underline mr-3 disabled:opacity-40"
+                        >
+                          {checkingId === c.id ? "Checking…" : "Check now"}
+                        </button>
+                        <button onClick={() => togglePause(c)} className="text-xs text-faint hover:text-secondary mr-3">
+                          {c.monitoringStatus === "active" ? "Pause" : "Resume"}
+                        </button>
+                        {c.source === "manual" && (
+                          <button onClick={() => removeCompany(c)} className="text-xs text-red-400/80 hover:text-red-300">
+                            Remove
+                          </button>
+                        )}
+                      </>
                     )}
                   </td>
                 </tr>
