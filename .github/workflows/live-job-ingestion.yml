@@ -4,21 +4,24 @@ name: Hosted job-ingestion lanes
 #
 # The product goal is that a newly posted internship shows up in Discover
 # within minutes. Vercel's Hobby plan caps cron at two jobs, each at most once
-# per day, so the platform alone cannot express a five-minute lane — vercel.json
+# per day, so the platform alone cannot express a five-minute lane â vercel.json
 # therefore declares only the two daily lanes it is allowed to, and this
 # workflow drives the real cadence. Moving the project to a Vercel plan with
 # minute-level cron would let the same three routes be scheduled natively; the
 # routes themselves need no change.
 #
 # GitHub's own floor is five minutes, and scheduled runs are queued rather than
-# guaranteed on time — under load a tick can be late or dropped. That is an
+# guaranteed on time â under load a tick can be late or dropped. That is an
 # acknowledged limit of this fallback, not a claim of five-minute precision.
+# Observed 2026-11-04/05: a five-minute schedule lost ~90% of its fires (2-7h
+# gaps between runs), so the lanes now use off-peak minutes at a 20-30 minute
+# cadence â a rhythm GitHub actually delivers beats one it silently drops.
 
 on:
   schedule:
-    - cron: "*/5 * * * *"    # LANE A — fresh
-    - cron: "12,42 * * * *"  # LANE B — standard
-    - cron: "25 8 * * *"     # LANE C — maintenance
+    - cron: "9,29,49 * * * *"  # LANE A â fresh
+    - cron: "16,46 * * * *"  # LANE B â standard
+    - cron: "25 8 * * *"     # LANE C â maintenance
   workflow_dispatch:
     inputs:
       lane:
@@ -36,8 +39,8 @@ env:
 
 jobs:
   fresh:
-    name: Lane A — fresh opportunities
-    if: github.event.schedule == '*/5 * * * *' || github.event.inputs.lane == 'fresh'
+    name: Lane A â fresh opportunities
+    if: github.event.schedule == '9,29,49 * * * *' || github.event.inputs.lane == 'fresh'
     runs-on: ubuntu-latest
     timeout-minutes: 6
     concurrency:
@@ -58,8 +61,8 @@ jobs:
           echo
 
   standard:
-    name: Lane B — standard polling cycle
-    if: github.event.schedule == '12,42 * * * *' || github.event.inputs.lane == 'standard'
+    name: Lane B â standard polling cycle
+    if: github.event.schedule == '16,46 * * * *' || github.event.inputs.lane == 'standard'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     concurrency:
@@ -80,7 +83,7 @@ jobs:
           echo
 
   maintenance:
-    name: Lane C — deep maintenance sweep
+    name: Lane C â deep maintenance sweep
     if: github.event.schedule == '25 8 * * *' || github.event.inputs.lane == 'maintenance'
     runs-on: ubuntu-latest
     timeout-minutes: 10
