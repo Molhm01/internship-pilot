@@ -88,7 +88,7 @@ export default function WatchlistPage() {
       const data = await res.json();
       if (res.ok) {
         setCheckResult(
-          `${data.result.name}: ${data.result.status} Ã¢ÂÂ ${data.result.newCount} new, ${data.result.updatedCount} updated`,
+          `${data.result.name}: ${data.result.status} ÃÂ¢ÃÂÃÂ ${data.result.newCount} new, ${data.result.updatedCount} updated`,
         );
         await load();
       } else {
@@ -126,8 +126,8 @@ export default function WatchlistPage() {
 
   return (
     <div className="max-w-6xl mx-auto px-8 py-10 space-y-6">
-      <header className="flex items-center justify-between">
-        <div>
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
           <h1 className="text-2xl font-semibold">Company Watchlist</h1>
           <p className="text-secondary text-sm">
             Every employer whose official career page we check on a schedule. Discovery is
@@ -139,7 +139,7 @@ export default function WatchlistPage() {
         {canManage && (
           <button
             onClick={() => setShowForm((v) => !v)}
-            className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 hover:bg-accent-dark transition-colors"
+            className="shrink-0 whitespace-nowrap rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 hover:bg-accent-dark transition-colors"
           >
             {showForm ? "Close form" : "+ Add company"}
           </button>
@@ -162,10 +162,10 @@ export default function WatchlistPage() {
               <input value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value })} className="input" />
             </Field>
             <Field label="Official website">
-              <input value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} className="input" placeholder="https://Ã¢ÂÂ¦" />
+              <input value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} className="input" placeholder="https://ÃÂ¢ÃÂÃÂ¦" />
             </Field>
             <Field label="Careers URL">
-              <input value={form.careersUrl} onChange={(e) => setForm({ ...form, careersUrl: e.target.value })} className="input" placeholder="https://Ã¢ÂÂ¦/careers" />
+              <input value={form.careersUrl} onChange={(e) => setForm({ ...form, careersUrl: e.target.value })} className="input" placeholder="https://ÃÂ¢ÃÂÃÂ¦/careers" />
             </Field>
             <Field label="Priority">
               <select value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })} className="input">
@@ -180,13 +180,13 @@ export default function WatchlistPage() {
             disabled={submitting}
             className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-dark transition-colors"
           >
-            {submitting ? "SavingÃ¢ÂÂ¦" : "Add to Watchlist"}
+            {submitting ? "SavingÃÂ¢ÃÂÃÂ¦" : "Add to Watchlist"}
           </button>
         </form>
       )}
 
       {loading ? (
-        <p className="text-sm text-tertiary">LoadingÃ¢ÂÂ¦</p>
+        <p className="text-sm text-tertiary">LoadingÃÂ¢ÃÂÃÂ¦</p>
       ) : (
         <div className="bg-surface rounded-lg border border-hairline overflow-x-auto">
           <table className="w-full text-sm">
@@ -240,7 +240,7 @@ export default function WatchlistPage() {
                       <button
                         onClick={() => approveForDiscovery(c)}
                         className="text-xs rounded-full px-2 py-1 border bg-caution-quiet text-caution border-caution-line hover:bg-amber-200"
-                        title="Not from the CSV or Intern List Ã¢ÂÂ approve to activate scheduled checking"
+                        title="Not from the CSV or Intern List ÃÂ¢ÃÂÃÂ approve to activate scheduled checking"
                       >
                         Approve for discovery
                       </button>
@@ -259,7 +259,7 @@ export default function WatchlistPage() {
                           disabled={checkingId === c.id}
                           className="whitespace-nowrap text-xs text-accent-text hover:underline disabled:opacity-40"
                         >
-                          {checkingId === c.id ? "CheckingÃ¢ÂÂ¦" : "Check now"}
+                          {checkingId === c.id ? "CheckingÃÂ¢ÃÂÃÂ¦" : "Check now"}
                         </button>
                         <button onClick={() => togglePause(c)} className="whitespace-nowrap text-xs text-faint hover:text-secondary">
                           {c.monitoringStatus === "active" ? "Pause" : "Resume"}
