@@ -71,8 +71,13 @@ function createPrismaClient() {
     connectionString: connectionString(),
     // Serverless invocations are numerous and short. A large pool per instance
     // is how a project runs out of Postgres connections while barely under
-    // load; the pooled connection string handles concurrency instead.
-    max: Number(process.env.DATABASE_POOL_MAX ?? 5),
+    // load. The provider's free plan allows 10 direct connections with 5
+    // reserved for platform operations, so ~5 are usable across ALL warm
+    // function instances combined; 2 per instance keeps two concurrent
+    // instances inside that budget. Override with DATABASE_POOL_MAX on a
+    // larger plan. (Observed 2026-11-05: "too many connections for role
+    // prisma_migration" when several instances each held 5.)
+    max: Number(process.env.DATABASE_POOL_MAX ?? 2),
     // The old libsql timeout existed because the web app, scheduler, and
     // application worker are separate local processes contending for one
     // SQLite write lock. Postgres has row-level locking, but the same three
