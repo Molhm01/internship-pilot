@@ -2,7 +2,7 @@
  * Shared data, but not public data.
  *
  * Every handler in this file operates on the global catalogue rather than on
- * one person's rows, so there is no owner to filter by — but a signed-out
+ * one person's rows, so there is no owner to filter by â but a signed-out
  * request still has no business here, and the proxy's cookie check is not an
  * authorization layer. The session is verified on the server, per request.
  */
@@ -29,7 +29,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     data.monitoringStatus = body.monitoringStatus;
   }
   // Explicit user approval to activate scheduled checking for a company not
-  // sourced from the CSV allowlist (e.g. one found via Nearby Firms) — the
+  // sourced from the CSV allowlist (e.g. one found via Nearby Firms) â the
   // strict two-source discovery boundary otherwise leaves it inactive.
   if (typeof body.allowlisted === "boolean") {
     data.allowlisted = body.allowlisted;
@@ -51,11 +51,21 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   // check history other discovery depends on, and the employer sync's own
   // rule is de-allowlist, never delete. Only a manually-added entry may be
   // hard-deleted, and even that is a deliberate click, never a sweep.
-  const company = await prisma.company.findUnique({ where: { id }, select: { source: true } });
+  const company = await prisma.company.findUnique({ where: { id }, select: { source: true, allowlisted: true } });
   if (!company) return NextResponse.json({ error: "Company not found" }, { status: 404 });
   if (company.source !== "manual") {
     return NextResponse.json(
       { error: "Seeded catalogue entries can be paused or de-allowlisted, not deleted." },
+      { status: 409 },
+    );
+  }
+  // An allowlisted row is actively monitored - including restored original
+  // catalogue entries that happen to be source=manual. Deleting those loses
+  // history the same way deleting a seeded row does, so removal is a
+  // deliberate two-step: de-allowlist (or pause) first, then delete.
+  if (company.allowlisted) {
+    return NextResponse.json(
+      { error: "This entry is actively monitored. De-allowlist or pause it first; monitored entries are never hard-deleted in one step." },
       { status: 409 },
     );
   }
