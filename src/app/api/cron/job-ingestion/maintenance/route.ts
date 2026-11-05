@@ -53,6 +53,11 @@ async function run() {
   const startedAt = Date.now();
 
   if (await isSchedulerPaused()) {
+    await prisma.syncLog
+      .create({
+        data: { source: "employer-ats", status: "success", finishedAt: new Date(), errorMessage: "skipped:scheduler_paused" },
+      })
+      .catch(() => undefined);
     return NextResponse.json(
       { ok: true, lane: LANE, skipped: "scheduler_paused" },
       { headers: { "cache-control": "no-store" } },
@@ -61,6 +66,11 @@ async function run() {
 
   const lease = await acquireLane(LANE, LEASE_TTL_MS);
   if (!lease.acquired) {
+    await prisma.syncLog
+      .create({
+        data: { source: "employer-ats", status: "success", finishedAt: new Date(), errorMessage: "skipped:already_running" },
+      })
+      .catch(() => undefined);
     return NextResponse.json(
       { ok: true, lane: LANE, skipped: "already_running", heldUntil: lease.expiresAt },
       { headers: { "cache-control": "no-store" } },
