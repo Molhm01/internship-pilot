@@ -5,6 +5,8 @@ import {
   LaneBudget,
   acquireLane,
   boundedEnv,
+  cronInvocationOrigin,
+  cronLaneSource,
   isAuthorizedCronRequest,
   laneOutcome,
   releaseLane,
@@ -42,21 +44,25 @@ const LEASE_TTL_MS = BUDGET_MS + 60_000;
 
 export async function GET(request: Request) {
   if (!isAuthorizedCronRequest(request)) return unauthorizedCronResponse();
-  return run();
+  return run(request);
 }
 
 export async function POST(request: Request) {
   if (!isAuthorizedCronRequest(request)) return unauthorizedCronResponse();
-  return run();
+  return run(request);
 }
 
-async function run() {
+async function run(request: Request) {
   const startedAt = Date.now();
+  // Lane + invocation origin are part of the durable record so a scheduled
+  // Vercel fire is provable without relying on timestamps alone.
+  const invocation = cronInvocationOrigin(request);
+  const runSource = cronLaneSource(LANE, invocation.origin);
 
   if (await isSchedulerPaused()) {
     await prisma.syncLog
       .create({
-        data: { source: "employer-ats", status: "success", finishedAt: new Date(), errorMessage: "skipped:scheduler_paused" },
+        data: { source: runSource, status: "success", finishedAt: new Date(), errorMessage: "skipped:scheduler_paused" },
       })
       .catch(() => undefined);
     return NextResponse.json(
@@ -69,7 +75,7 @@ async function run() {
   if (!lease.acquired) {
     await prisma.syncLog
       .create({
-        data: { source: "employer-ats", status: "success", finishedAt: new Date(), errorMessage: "skipped:already_running" },
+        data: { source: runSource, status: "success", finishedAt: new Date(), errorMessage: "skipped:already_running" },
       })
       .catch(() => undefined);
     return NextResponse.json(
@@ -80,7 +86,7 @@ async function run() {
 
   // Durable per-run record: created at invocation, closed at completion or
   // error, so scheduled execution is provable from the database alone.
-  const log = await prisma.syncLog.create({ data: { source: "employer-ats", status: "running" } });
+  const log = await prisma.syncLog.create({ data: { source: runSource, status: "running" } });
 
   const budget = new LaneBudget(BUDGET_MS);
   try {
@@ -142,6 +148,8 @@ async function run() {
         ok: outcome.ok,
         failedSteps: outcome.failedSteps,
         lane: LANE,
+        origin: invocation.origin,
+        cronSchedule: invocation.schedule,
         durationMs: Date.now() - startedAt,
         budgetMs: BUDGET_MS,
         newJobs,
