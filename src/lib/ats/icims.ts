@@ -72,11 +72,13 @@ type JibeResponse = { jobs?: JibeRow[]; count?: number };
 export async function listIcimsJibeJobs(
   careersUrl: string,
   companyName: string,
+  diag?: { note?: string },
 ): Promise<AtsJob[] | null> {
   let origin: string;
   try {
     origin = new URL(careersUrl).origin;
   } catch {
+    if (diag) diag.note = "invalid careersUrl";
     return null;
   }
 
@@ -97,6 +99,7 @@ export async function listIcimsJibeJobs(
           data = (await res.json()) as JibeResponse;
         } else if (!feedSeen) {
           console.warn("[icims-jibe] feed request failed", { host: origin, status: res.status });
+          if (diag) diag.note = `feed HTTP ${res.status} from ${origin}`;
         }
       } catch (err) {
         if (!feedSeen) {
@@ -104,6 +107,7 @@ export async function listIcimsJibeJobs(
             host: origin,
             error: err instanceof Error ? err.message : String(err),
           });
+          if (diag) diag.note = `feed fetch threw: ${err instanceof Error ? err.message : String(err)}`;
         }
       }
       if (!data || !Array.isArray(data.jobs)) {
