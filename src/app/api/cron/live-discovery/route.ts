@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { isSchedulerPaused } from "@/lib/sync/schedulerState";
 import { runLiveDiscoveryCycle } from "@/lib/sync/liveDiscoveryEngine";
 import { hasGeminiApiKey } from "@/lib/gemini";
+import { recoverStaleSyncRuns } from "@/lib/sync/syncRuns";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -60,6 +61,10 @@ async function handler(request: Request) {
       { headers: { "cache-control": "no-store" } },
     );
   }
+
+  // Rows whose function died mid-run never close; recover them before the
+  // dedup read so a corpse cannot masquerade as live work in the status panel.
+  await recoverStaleSyncRuns().catch(() => 0);
 
   const running = await prisma.syncLog.findFirst({
     where: {
