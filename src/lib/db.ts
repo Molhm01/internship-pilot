@@ -49,14 +49,24 @@ export class DatabaseUrlMissingError extends Error {
 
   constructor() {
     super(
-      "DATABASE_URL is not set. Point it at a PostgreSQL database — `npx prisma dev` starts one locally, and Vercel injects it when a Prisma Postgres store is connected.",
+      "Neither DATABASE_URL_POOLED nor DATABASE_URL is set. Point one at a PostgreSQL database — `npx prisma dev` starts one locally, and Vercel injects it when a Prisma Postgres store is connected.",
     );
     this.name = "DatabaseUrlMissingError";
   }
 }
 
 function connectionString(): string {
-  const url = process.env.DATABASE_URL?.trim();
+  // Prisma Postgres gives every database two endpoints on the same
+  // credentials: db.prisma.io (direct, for migrations and admin tooling) and
+  // pooled.db.prisma.io (PgBouncer in transaction mode, for application
+  // traffic). The Vercel integration puts the direct string in DATABASE_URL
+  // and the pooled one in DATABASE_URL_POOLED; databases created before
+  // 2026-10-29 only received the direct one. Runtime queries prefer the
+  // pooled endpoint when it exists: the free plan caps DIRECT connections at
+  // 10 with 5 reserved for platform operations, and every warm serverless
+  // instance holds its own pool against that tiny budget, while the pooler
+  // multiplexes many functions over a few database connections.
+  const url = process.env.DATABASE_URL_POOLED?.trim() || process.env.DATABASE_URL?.trim();
   if (!url) throw new DatabaseUrlMissingError();
   if (url.startsWith("file:")) {
     throw new Error(
@@ -78,6 +88,11 @@ function createPrismaClient() {
     // larger plan. (Observed 2026-11-05: "too many connections for role
     // prisma_migration" when several instances each held 5.)
     max: Number(process.env.DATABASE_POOL_MAX ?? 2),
+    // Serverless instances suspend without warning and orphan whatever the
+    // pool still holds. Close idle clients quickly: the pooler only reaps
+    // them after 60 minutes, and orphaned clients count against the
+    // connection budget until then. Override with DATABASE_IDLE_TIMEOUT_MS.
+    idleTimeoutMillis: Number(process.env.DATABASE_IDLE_TIMEOUT_MS ?? 5_000),
     // The old libsql timeout existed because the web app, scheduler, and
     // application worker are separate local processes contending for one
     // SQLite write lock. Postgres has row-level locking, but the same three
