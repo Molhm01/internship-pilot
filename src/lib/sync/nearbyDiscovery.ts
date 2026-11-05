@@ -30,8 +30,8 @@ export type NearbySearchSummary={configured:boolean;discovered:number;promoted:n
 // LIVE_JOB_VERIFIED locations only.
 export async function runNearbyFirmSearch(): Promise<NearbySearchSummary> {
   // Runs on the scheduler with nobody signed in. Local Firms is rebuilt from
-  // approved employers and verified locations — shared data — so the default
+  // approved employers and verified locations â shared data â so the default
   // radius is the right input here; a particular person's radius is not.
-  const result = await buildLocalFirms(DEFAULT_PREFERENCE.radiusMiles);
+  const result = await buildLocalFirms(DEFAULT_PREFERENCE.radiusMiles, { writeDiagnostics: true }); // scheduler runs only from CRON_SECRET-guarded lanes
   return { configured: true, discovered: result.firms.length, promoted: 0 };
 }
