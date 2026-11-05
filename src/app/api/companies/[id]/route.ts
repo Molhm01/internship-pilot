@@ -46,10 +46,19 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   const denied = await guardSession();
   if (denied) return denied;
   const { id } = await params;
-  try {
-    await prisma.company.delete({ where: { id } });
-    return NextResponse.json({ ok: true });
-  } catch {
-    return NextResponse.json({ error: "Company not found" }, { status: 404 });
+  // The catalogue is shared infrastructure: seeded (CSV / Intern List)
+  // entries carry check history other discovery depends on, and the employer
+  // sync's own rule is de-allowlist, never delete. Only a manually-added
+  // entry - one person put it in, nothing else references its provenance -
+  // may be hard-deleted, and even that is a deliberate click, never a sweep.
+  const company = await prisma.company.findUnique({ where: { id }, select: { source: true } });
+  if (!company) return NextResponse.json({ error: "Company not found" }, { status: 404 });
+  if (company.source !== "manual") {
+    return NextResponse.json(
+      { error: "Seeded catalogue entries can be paused or de-allowlisted, not deleted." },
+      { status: 409 },
+    );
   }
+  await prisma.company.delete({ where: { id } });
+  return NextResponse.json({ ok: true });
 }
