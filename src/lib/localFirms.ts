@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/db";
+import { isCatalogueAdmin } from "@/lib/auth/catalogueAdmin";
+import { currentUser } from "@/lib/auth/session";
 import { classifyLocation, DEFAULT_RADIUS_MILES, haversineMiles } from "@/lib/geo/geofilter";
 
 export { haversineMiles };
@@ -32,7 +34,7 @@ export async function buildLocalFirms(radiusMiles: number) {
     const bucket: "local" | "outside" | "unknown" = best ? best.c.bucket : "unknown";
     const isRemote = Boolean(best && best.c.precision === "remote");
     const reason = bucket === "unknown"
-      ? "Location not yet verified — placed in Location Unknown, never counted as local"
+      ? "Location not yet verified â placed in Location Unknown, never counted as local"
       : isRemote
         ? "Remote location on an exact verified posting"
         : `Computed ${best?.c.distanceMiles} miles from Clifton, NJ using ${best?.c.precision}-level coordinates`;
@@ -68,6 +70,13 @@ export async function buildLocalFirms(radiusMiles: number) {
     lastCompletedScan: new Date().toISOString(),
     errors: [] as string[],
   };
-  await prisma.appSetting.upsert({ where: { key: "localFirmsDiagnostics" }, update: { value: JSON.stringify(diagnostics) }, create: { key: "localFirmsDiagnostics", value: JSON.stringify(diagnostics) } });
+  // Shared owner-facing diagnostics: only the catalogue owner (session
+  // callers) or trusted server-side callers with no session (cron/sync) may
+  // refresh it. Arbitrary signed-in users still get full search results but
+  // cannot overwrite shared diagnostics.
+  const diagnosticsUser = await currentUser();
+  if (!diagnosticsUser || (await isCatalogueAdmin())) {
+    await prisma.appSetting.upsert({ where: { key: "localFirmsDiagnostics" }, update: { value: JSON.stringify(diagnostics) }, create: { key: "localFirmsDiagnostics", value: JSON.stringify(diagnostics) } });
+  }
   return { center: "Clifton, New Jersey", radiusMiles: radius, firms, outsideRadius, locationUnknown, diagnostics };
 }
