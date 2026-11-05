@@ -7,6 +7,10 @@ export type GenericScanResult = {
   lastModified: string | null;
   contentHash: string | null;
   notModified: boolean;
+  // True when the fetched HTML is a substantive server-rendered page (or an
+  // unchanged page we previously read). False on fetch failure and on thin
+  // JS shells, so callers can refuse to report a false-success zero.
+  pageReadable: boolean;
 };
 
 function hashContent(text: string): string {
@@ -28,7 +32,7 @@ export async function scanCareersPageForInternshipLinks(
   companyName: string,
   conditional?: { etag?: string | null; lastModified?: string | null; contentHash?: string | null },
 ): Promise<GenericScanResult> {
-  const empty: GenericScanResult = { jobs: [], etag: null, lastModified: null, contentHash: null, notModified: false };
+  const empty: GenericScanResult = { jobs: [], etag: null, lastModified: null, contentHash: null, notModified: false, pageReadable: false };
 
   let res: Response;
   try {
@@ -55,6 +59,7 @@ export async function scanCareersPageForInternshipLinks(
       lastModified: lastModified ?? conditional?.lastModified ?? null,
       contentHash: conditional?.contentHash ?? null,
       notModified: true,
+      pageReadable: true,
     };
   }
   if (!res.ok) return empty;
@@ -66,7 +71,7 @@ export async function scanCareersPageForInternshipLinks(
   // like a 304 would, avoiding wasted work across hundreds of CSV-listed
   // career pages that don't support conditional requests.
   if (conditional?.contentHash && conditional.contentHash === contentHash) {
-    return { jobs: [], etag, lastModified, contentHash, notModified: true };
+    return { jobs: [], etag, lastModified, contentHash, notModified: true, pageReadable: true };
   }
 
   const jobs: AtsJob[] = [];
@@ -99,5 +104,11 @@ export async function scanCareersPageForInternshipLinks(
       postedAt: null,
     });
   }
-  return { jobs, etag, lastModified, contentHash, notModified: false };
+  // A careers page that server-renders real navigation has plenty of anchors;
+  // a JS shell (the whole app mounts client-side) has almost none. Zero
+  // intern-matching anchors on a shell is "we could not read this page",
+  // never "this employer has no internships".
+  const totalAnchors = (html.match(/<a\s/gi) || []).length;
+  const pageReadable = jobs.length > 0 || totalAnchors >= 10;
+  return { jobs, etag, lastModified, contentHash, notModified: false, pageReadable };
 }
