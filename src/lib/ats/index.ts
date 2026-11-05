@@ -94,6 +94,21 @@ export async function listJobsForCompany(company: CompanyForListing): Promise<Li
     case "icims":
       if (!id || !company.careersUrl) return { jobs: [], supported: false };
       {
+        // Feed first. Newer iCIMS career sites (Jibe-built "careers-home"
+        // front ends) client-render their job list, and their HTML shells can
+        // hang or parse to zero; the origin's own JSON feed is fast and
+        // complete. Older server-rendered portals have no feed (one quick
+        // 404/HTML probe), and fall through to the HTML crawl.
+        const jibeDiag: { note?: string } = {};
+        const jibe = await listIcimsJibeJobs(company.careersUrl, company.name, jibeDiag);
+        if (jibe && jibe.length > 0) {
+          return { jobs: jibe, supported: true, totalAvailableJobs: jibe.length, paginationVerified: true };
+        }
+        if (jibe) {
+          // The JSON feed answered and genuinely has no matching rows: a
+          // credible empty board, not a parse failure.
+          return { jobs: [], supported: true, totalAvailableJobs: 0, paginationVerified: true };
+        }
         const probe = await probeStructuredPortalJobs({
           kind: "icims",
           companyName: company.name,
@@ -110,20 +125,6 @@ export async function listJobsForCompany(company: CompanyForListing): Promise<Li
             totalAvailableJobs: probe.detailLinksFound,
             paginationVerified: probe.readableListPages > 1 || probe.detailLinksFound <= 35,
           };
-        }
-        // The HTML crawl parsed nothing. Newer iCIMS career sites (Jibe-built
-        // "careers-home" front ends) client-render the whole list, so a zero
-        // here can mean "unreadable shell", not "no openings". Check the
-        // site's own JSON feed before believing the board is empty.
-        const jibeDiag: { note?: string } = {};
-        const jibe = await listIcimsJibeJobs(company.careersUrl, company.name, jibeDiag);
-        if (jibe && jibe.length > 0) {
-          return { jobs: jibe, supported: true, totalAvailableJobs: jibe.length, paginationVerified: true };
-        }
-        if (jibe) {
-          // The JSON feed answered and genuinely has no matching rows: a
-          // credible empty board, not a parse failure.
-          return { jobs: [], supported: true, totalAvailableJobs: 0, paginationVerified: true };
         }
         // JS shell and no readable feed: honest "cannot check automatically"
         // rather than a false-success zero.
