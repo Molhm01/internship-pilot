@@ -15,6 +15,7 @@ import { listSpaEmbeddedJobs } from "@/lib/ats/spaDiscovery";
 import { listEmployerPageJobs, searchEmployerMirrorJobs } from "@/lib/ats/employerPageLinks";
 import { scanCareersPageForInternshipLinks } from "@/lib/ats/generic";
 import { probeStructuredPortalJobs } from "@/lib/ats/structuredCareer";
+import { listIcimsJibeJobs } from "@/lib/ats/icims";
 
 export * from "@/lib/ats/types";
 export * from "@/lib/ats/detect";
@@ -43,7 +44,7 @@ export type ListJobsResult = {
   contentHash?: string | null;
 };
 
-// Every supported ATS type dispatches here. Returns { jobs, supported } —
+// Every supported ATS type dispatches here. Returns { jobs, supported } â
 // `supported: false` means we have no working adapter for this company yet
 // (honest signal, not an error) so callers can distinguish "checked, found
 // nothing" from "can't check this one automatically." For the remaining
@@ -101,12 +102,30 @@ export async function listJobsForCompany(company: CompanyForListing): Promise<Li
           maxJobDetails: 35,
           throwOnFetchError: true,
         });
-        return {
-          jobs: probe.jobs,
-          supported: true,
-          totalAvailableJobs: probe.detailLinksFound,
-          paginationVerified: probe.readableListPages > 1 || probe.detailLinksFound <= 35,
-        };
+        if (probe.jobs.length > 0) {
+          return {
+            jobs: probe.jobs,
+            supported: true,
+            totalAvailableJobs: probe.detailLinksFound,
+            paginationVerified: probe.readableListPages > 1 || probe.detailLinksFound <= 35,
+          };
+        }
+        // The HTML crawl parsed nothing. Newer iCIMS career sites (Jibe-built
+        // "careers-home" front ends) client-render the whole list, so a zero
+        // here can mean "unreadable shell", not "no openings". Check the
+        // site's own JSON feed before believing the board is empty.
+        const jibe = await listIcimsJibeJobs(company.careersUrl, company.name);
+        if (jibe && jibe.length > 0) {
+          return { jobs: jibe, supported: true, totalAvailableJobs: jibe.length, paginationVerified: true };
+        }
+        if (jibe) {
+          // The JSON feed answered and genuinely has no matching rows: a
+          // credible empty board, not a parse failure.
+          return { jobs: [], supported: true, totalAvailableJobs: 0, paginationVerified: true };
+        }
+        // JS shell and no readable feed: honest "cannot check automatically"
+        // rather than a false-success zero.
+        return { jobs: [], supported: false };
       }
     case "eightfold":
       if (!id) return { jobs: [], supported: false };
