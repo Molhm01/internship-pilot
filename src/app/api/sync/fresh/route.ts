@@ -1,4 +1,5 @@
 import { guardSession } from "@/lib/auth/session";
+import { requireCatalogueAdmin } from "@/lib/auth/catalogueAdmin";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { runLiveDiscoveryCycle } from "@/lib/sync/liveDiscoveryEngine";
@@ -14,6 +15,8 @@ const RECENT_RUNNING_WINDOW_MS = 4 * 60 * 1000;
 export async function POST() {
   const denied = await guardSession();
   if (denied) return denied;
+  const adminDenied = await requireCatalogueAdmin();
+  if (adminDenied) return adminDenied;
 
   const running = await prisma.syncLog.findFirst({
     where: {
