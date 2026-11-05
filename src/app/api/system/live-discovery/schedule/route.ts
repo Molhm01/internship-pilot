@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { guardSession } from "@/lib/auth/session";
+import { requireCatalogueAdmin } from "@/lib/auth/catalogueAdmin";
 
 export const runtime = "nodejs";
 
@@ -120,6 +121,8 @@ export async function GET() {
 export async function POST() {
   const denied = await guardSession();
   if (denied) return denied;
+  const adminDenied = await requireCatalogueAdmin();
+  if (adminDenied) return adminDenied;
   const { token, cronSecret, baseUrl } = config();
   if (!token || !cronSecret || !baseUrl) {
     return NextResponse.json(
@@ -180,6 +183,8 @@ export async function POST() {
 export async function DELETE() {
   const denied = await guardSession();
   if (denied) return denied;
+  const adminDenied = await requireCatalogueAdmin();
+  if (adminDenied) return adminDenied;
   const { token } = config();
   if (!token) {
     return NextResponse.json({ error: "QSTASH_TOKEN is not configured." }, { status: 503 });
