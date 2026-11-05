@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { listJobsForCompany } from "@/lib/ats";
+import { listIcimsJibeJobs } from "@/lib/ats/icims";
 import { detectAtsForCareersPage } from "@/lib/ats/detect";
 import { getUsaJobsConfig, searchUsaJobs } from "@/lib/ats/usajobs";
 import { ingestAtsJobs, upsertClassifiedAtsJob } from "@/lib/sync/ingest";
@@ -163,6 +164,38 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
           },
         });
       } else {
+        // Newer iCIMS career sites (Jibe front ends) client-render their
+        // careers page, so a crawl cannot confirm the tenant from HTML. The
+        // site's own unauthenticated jobs feed on the same origin is
+        // first-party proof instead: if it answers, the tenant is real.
+        if (atsType === "icims") {
+          const feedDiag: { note?: string } = {};
+          const feed = await listIcimsJibeJobs(company.careersUrl, company.name, feedDiag);
+          if (feed !== null) {
+            await prisma.approvedAtsTenant.create({
+              data: {
+                companyId,
+                atsType,
+                atsIdentifier,
+                discoveredFromCareersUrl: company.careersUrl,
+                evidence: JSON.stringify({ confirmedAt: new Date().toISOString(), method: "jibe-feed" }),
+              },
+            });
+          } else {
+            await logAudit({
+              actor: "verification",
+              action: "ats-tenant-unconfirmed",
+              detail: `Could not independently confirm that ${company.name}'s own careers page (${company.careersUrl}) links to ${atsType}/${atsIdentifier} — skipping this check cycle rather than trusting an unverified tenant.${feedDiag.note ? ` Feed probe: ${feedDiag.note}.` : ""}`,
+            });
+            await prisma.company.update({
+              where: { id: companyId },
+              data: { lastCheckedAt: new Date(), nextCheckAt: nextCheckTimeFor(effectivePriority(company, atsType), 0, atsType), lastCheckStatus: "unsupported" },
+            });
+            const feedDurationMs = Date.now() - startedAt.getTime();
+            await recordOfficialPoll({ companyId, companyName: company.name, provider: atsType ?? "unknown", startedAt, status: "unsupported", durationMs: feedDurationMs, configState: "UNTESTED", errorCode: feedDiag.note ? "ATS_FEED_UNREACHABLE" : "ATS_TENANT_UNCONFIRMED" });
+            return { companyId, name: company.name, status: "unsupported", newCount: 0, updatedCount: 0, jobsScanned: 0, totalAvailableJobs: 0, engineeringInternshipsFound: 0, missingCount: 0, closedCount: 0, durationMs: feedDurationMs, diagnostic: feedDiag.note ?? null };
+          }
+        } else {
         await logAudit({
           actor: "verification",
           action: "ats-tenant-unconfirmed",
@@ -175,6 +208,7 @@ export async function checkCompany(companyId: string): Promise<CompanyCheckResul
         const durationMs = Date.now() - startedAt.getTime();
         await recordOfficialPoll({ companyId, companyName: company.name, provider: atsType ?? "unknown", startedAt, status: "unsupported", durationMs, configState: "UNTESTED", errorCode: "ATS_TENANT_UNCONFIRMED" });
         return { companyId, name: company.name, status: "unsupported", newCount: 0, updatedCount: 0, jobsScanned: 0, totalAvailableJobs: 0, engineeringInternshipsFound: 0, missingCount: 0, closedCount: 0, durationMs };
+        }
       }
     }
   }
