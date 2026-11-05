@@ -6,6 +6,8 @@ import {
   CRON_LANES,
   LaneBudget,
   boundedEnv,
+  cronInvocationOrigin,
+  cronLaneSource,
   isAuthorizedCronRequest,
   laneOutcome,
   leaseIsAvailable,
@@ -261,5 +263,46 @@ describe("the lanes are actually wired up", () => {
     // The secret is passed as a bearer token, never interpolated into a URL
     // where it would land in a log line.
     expect(workflow).not.toMatch(/https:\/\/[^\s]*CRON_SECRET/);
+  });
+});
+
+describe("cronInvocationOrigin", () => {
+  it("identifies a documented Vercel scheduler invocation by UA and schedule header", () => {
+    const request = new Request("https://app.example/api/cron/job-ingestion/standard", {
+      headers: {
+        "user-agent": "vercel-cron/1.0",
+        "x-vercel-cron-schedule": "0 9 * * *",
+      },
+    });
+    expect(cronInvocationOrigin(request)).toEqual({ origin: "vercel-scheduler", schedule: "0 9 * * *" });
+  });
+
+  it("does not trust the schedule header without the Vercel cron user agent", () => {
+    const request = new Request("https://app.example/api/cron/job-ingestion/standard", {
+      headers: { "x-vercel-cron-schedule": "0 9 * * *" },
+    });
+    expect(cronInvocationOrigin(request)).toEqual({ origin: "authorized-external", schedule: null });
+  });
+
+  it("does not trust the user agent without the schedule header", () => {
+    const request = new Request("https://app.example/api/cron/job-ingestion/standard", {
+      headers: { "user-agent": "vercel-cron/1.0" },
+    });
+    expect(cronInvocationOrigin(request)).toEqual({ origin: "authorized-external", schedule: null });
+  });
+
+  it("labels any other authorized caller as external, never as a scheduler fire", () => {
+    const request = new Request("https://app.example/api/cron/job-ingestion/fresh", {
+      headers: { "user-agent": "curl/8.0" },
+    });
+    expect(cronInvocationOrigin(request).origin).toBe("authorized-external");
+  });
+});
+
+describe("cronLaneSource", () => {
+  it("embeds lane and origin so records never rely on timestamps alone", () => {
+    expect(cronLaneSource("standard", "vercel-scheduler")).toBe("cron:standard:vercel-scheduler");
+    expect(cronLaneSource("maintenance", "authorized-external")).toBe("cron:maintenance:authorized-external");
+    expect(cronLaneSource("fresh", "vercel-scheduler").startsWith("cron:")).toBe(true);
   });
 });
