@@ -8,9 +8,14 @@ export type GenericScanResult = {
   contentHash: string | null;
   notModified: boolean;
   // True when the fetched HTML is a substantive server-rendered page (or an
-  // unchanged page we previously read). False on fetch failure and on thin
-  // JS shells, so callers can refuse to report a false-success zero.
+  // unchanged page we previously read). False on fetch failure and on JS
+  // shells, so callers can refuse to report a false-success zero.
   pageReadable: boolean;
+  // True only when the page shows an actual job-listing structure AND an
+  // explicit empty result, i.e. a verified complete listing with genuinely
+  // zero roles. A careers landing page without listing evidence is NOT
+  // complete coverage, whatever its anchor count.
+  completeEmptyListing: boolean;
 };
 
 function hashContent(text: string): string {
@@ -32,7 +37,7 @@ export async function scanCareersPageForInternshipLinks(
   companyName: string,
   conditional?: { etag?: string | null; lastModified?: string | null; contentHash?: string | null },
 ): Promise<GenericScanResult> {
-  const empty: GenericScanResult = { jobs: [], etag: null, lastModified: null, contentHash: null, notModified: false, pageReadable: false };
+  const empty: GenericScanResult = { jobs: [], etag: null, lastModified: null, contentHash: null, notModified: false, pageReadable: false, completeEmptyListing: false };
 
   let res: Response;
   try {
@@ -60,6 +65,7 @@ export async function scanCareersPageForInternshipLinks(
       contentHash: conditional?.contentHash ?? null,
       notModified: true,
       pageReadable: true,
+      completeEmptyListing: false,
     };
   }
   if (!res.ok) return empty;
@@ -71,7 +77,7 @@ export async function scanCareersPageForInternshipLinks(
   // like a 304 would, avoiding wasted work across hundreds of CSV-listed
   // career pages that don't support conditional requests.
   if (conditional?.contentHash && conditional.contentHash === contentHash) {
-    return { jobs: [], etag, lastModified, contentHash, notModified: true, pageReadable: true };
+    return { jobs: [], etag, lastModified, contentHash, notModified: true, pageReadable: true, completeEmptyListing: false };
   }
 
   const jobs: AtsJob[] = [];
@@ -104,11 +110,26 @@ export async function scanCareersPageForInternshipLinks(
       postedAt: null,
     });
   }
-  // A careers page that server-renders real navigation has plenty of anchors;
-  // a JS shell (the whole app mounts client-side) has almost none. Zero
-  // intern-matching anchors on a shell is "we could not read this page",
-  // never "this employer has no internships".
-  const totalAnchors = (html.match(/<a\s/gi) || []).length;
-  const pageReadable = jobs.length > 0 || totalAnchors >= 10;
-  return { jobs, etag, lastModified, contentHash, notModified: false, pageReadable };
+  // Readability needs content evidence, not anchor count alone: a JS shell
+  // can render a full navigation bar. A shell pairs a framework mount point
+  // with almost no server-rendered visible text.
+  const visibleText = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const shellMarkers = /id=["'](root|app|__next)["']/i.test(html)
+    || /__NEXT_DATA__|data-reactroot|ng-app|data-v-app/i.test(html);
+  const shellLikely = jobs.length === 0 && shellMarkers && visibleText.length < 400;
+  const pageReadable = jobs.length > 0 || !shellLikely && visibleText.length >= 400;
+
+  // "Verified complete and empty" requires both a job-listing structure and
+  // an explicit empty-state message. Anything else with zero matches is
+  // unvalidated coverage, not a credible zero.
+  const listingEvidence = /(job[-_ ]?(list|board|opening|position|posting|result)|career[-_ ]?(list|portal|site)|\/jobs?\/\d|requisition|req[-_ ]?id|search[-_ ]?results)/i.test(html);
+  const emptyIndicator = /(no (current |available )?(openings|positions|jobs|results|vacancies)|0 (openings|positions|jobs|results)|nothing (was )?found|no matching (jobs|results|openings))/i.test(visibleText);
+  const completeEmptyListing = jobs.length === 0 && listingEvidence && emptyIndicator;
+
+  return { jobs, etag, lastModified, contentHash, notModified: false, pageReadable, completeEmptyListing };
 }
