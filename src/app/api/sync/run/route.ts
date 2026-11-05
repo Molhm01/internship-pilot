@@ -6,6 +6,7 @@
  * depth and sweep owned employer sources.
  */
 import { guardSession } from "@/lib/auth/session";
+import { requireCatalogueAdmin } from "@/lib/auth/catalogueAdmin";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { runQueueBatch } from "@/lib/sync/queue";
@@ -38,6 +39,8 @@ async function recentRunningSync() {
 export async function POST() {
   const denied = await guardSession();
   if (denied) return denied;
+  const adminDenied = await requireCatalogueAdmin();
+  if (adminDenied) return adminDenied;
 
   const running = await recentRunningSync();
   if (running) {
