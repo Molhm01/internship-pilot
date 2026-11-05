@@ -107,6 +107,12 @@ export default function WatchlistPage() {
     });
   }
 
+  async function removeCompany(company: Company) {
+    if (!window.confirm(`Remove ${company.name} from the watchlist? This deletes the employer from the catalogue and stops all future checks for it.`)) return;
+    const res = await fetch(`/api/companies/${company.id}`, { method: "DELETE" });
+    if (res.ok) setCompanies((prev) => prev.filter((c) => c.id !== company.id));
+  }
+
   async function approveForDiscovery(company: Company) {
     setCompanies((prev) => prev.map((c) => (c.id === company.id ? { ...c, allowlisted: true } : c)));
     await fetch(`/api/companies/${company.id}`, {
@@ -244,8 +250,11 @@ export default function WatchlistPage() {
                     >
                       {checkingId === c.id ? "Checking…" : "Check now"}
                     </button>
-                    <button onClick={() => togglePause(c)} className="text-xs text-faint hover:text-secondary">
+                    <button onClick={() => togglePause(c)} className="text-xs text-faint hover:text-secondary mr-3">
                       {c.monitoringStatus === "active" ? "Pause" : "Resume"}
+                    </button>
+                    <button onClick={() => removeCompany(c)} className="text-xs text-red-400/80 hover:text-red-300">
+                      Remove
                     </button>
                   </td>
                 </tr>
