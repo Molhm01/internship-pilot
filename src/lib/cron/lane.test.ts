@@ -274,7 +274,7 @@ describe("cronInvocationOrigin", () => {
         "x-vercel-cron-schedule": "0 9 * * *",
       },
     });
-    expect(cronInvocationOrigin(request)).toEqual({ origin: "vercel-scheduler", schedule: "0 9 * * *" });
+    expect(cronInvocationOrigin(request)).toEqual({ origin: "vercel-cron-markers", schedule: "0 9 * * *" });
   });
 
   it("does not trust the schedule header without the Vercel cron user agent", () => {
@@ -301,8 +301,8 @@ describe("cronInvocationOrigin", () => {
 
 describe("cronLaneSource", () => {
   it("embeds lane and origin so records never rely on timestamps alone", () => {
-    expect(cronLaneSource("standard", "vercel-scheduler")).toBe("cron:standard:vercel-scheduler");
+    expect(cronLaneSource("standard", "vercel-cron-markers")).toBe("cron:standard:vercel-cron-markers");
     expect(cronLaneSource("maintenance", "authorized-external")).toBe("cron:maintenance:authorized-external");
-    expect(cronLaneSource("fresh", "vercel-scheduler").startsWith("cron:")).toBe(true);
+    expect(cronLaneSource("fresh", "vercel-cron-markers").startsWith("cron:")).toBe(true);
   });
 });
