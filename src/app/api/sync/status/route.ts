@@ -20,7 +20,10 @@ export async function GET() {
   if (denied) return denied;
   const [lastLog, lastFreshLog, liveDiscovery] = await Promise.all([
     prisma.syncLog.findFirst({
-      where: { source: "employer-ats", status: { in: ["success", "error"] } },
+      where: {
+        OR: [{ source: "employer-ats" }, { source: { startsWith: "cron:" } }],
+        status: { in: ["success", "error"] },
+      },
       orderBy: { startedAt: "desc" },
     }),
     prisma.syncLog.findFirst({
@@ -31,6 +34,21 @@ export async function GET() {
   ]);
 
   const now = Date.now();
+  // Durable per-run records for scheduled-ingestion verification: lane and
+  // invocation origin live in the source string (cron:<lane>:<origin>).
+  const recentRuns = await prisma.syncLog.findMany({
+    orderBy: { startedAt: "desc" },
+    take: 8,
+    select: {
+      source: true,
+      startedAt: true,
+      finishedAt: true,
+      status: true,
+      newJobsCount: true,
+      updatedJobsCount: true,
+      errorMessage: true,
+    },
+  });
   const recentErrorCount = await prisma.syncLog.count({
     where: {
       source: { in: ["employer-ats", "live-discovery", "fresh-discovery"] },
@@ -68,6 +86,7 @@ export async function GET() {
   ]);
 
   return NextResponse.json({
+    recentRuns,
     lastSyncAt: lastLog?.finishedAt ?? null,
     lastSyncStatus: lastLog?.status ?? null,
     lastFreshSyncAt: lastFreshLog?.finishedAt ?? null,
