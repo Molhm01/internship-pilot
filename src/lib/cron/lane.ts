@@ -221,7 +221,7 @@ export function laneOutcome(steps: Record<string, { error?: string | null }>): {
  * identify the invocation origin for the durable run record; they are NOT
  * authentication - the Bearer CRON_SECRET check above stays the only gate.
  */
-export type CronInvocationOrigin = "vercel-scheduler" | "authorized-external";
+export type CronInvocationOrigin = "vercel-cron-markers" | "authorized-external";
 
 export function cronInvocationOrigin(request: Request): {
   origin: CronInvocationOrigin;
@@ -230,7 +230,7 @@ export function cronInvocationOrigin(request: Request): {
   const userAgent = request.headers.get("user-agent") ?? "";
   const schedule = request.headers.get("x-vercel-cron-schedule");
   if (userAgent.startsWith("vercel-cron/") && schedule) {
-    return { origin: "vercel-scheduler", schedule };
+    return { origin: "vercel-cron-markers", schedule };
   }
   return { origin: "authorized-external", schedule: null };
 }
