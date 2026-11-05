@@ -44,7 +44,7 @@ export type ListJobsResult = {
   contentHash?: string | null;
 };
 
-// Every supported ATS type dispatches here. Returns { jobs, supported } â
+// Every supported ATS type dispatches here. Returns { jobs, supported } —
 // `supported: false` means we have no working adapter for this company yet
 // (honest signal, not an error) so callers can distinguish "checked, found
 // nothing" from "can't check this one automatically." For the remaining
