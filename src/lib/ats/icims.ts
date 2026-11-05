@@ -148,7 +148,10 @@ function mapJibeRow(row: JibeRow, companyName: string, origin: string): AtsJob |
     company: companyName,
     location,
     workplaceType: location && /remote/i.test(location) ? "Remote" : null,
-    applyUrl: d.apply_url ?? `${origin}/careers-home/jobs/${slug}`,
+    // The feed's apply_url lands on an iCIMS login wall
+    // (campus-<tenant>.icims.com/jobs/<id>/login); the Jibe front end's own
+    // job page is the public posting (verified careers.amd.com 200 + title).
+    applyUrl: `${origin}/careers-home/jobs/${slug}`,
     description: d.description ?? "",
     postedAt: postedAt && !Number.isNaN(postedAt.getTime()) ? postedAt : null,
     employmentType: (d.category ?? []).some((c) => /intern/i.test(c)) ? "Intern" : null,
