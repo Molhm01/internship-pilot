@@ -35,7 +35,7 @@ export async function POST(request: Request) {
   // Vercel function itself cannot live that long on Hobby.
   const recentRunning = await prisma.syncLog.findFirst({
     where: {
-      source: "employer-ats",
+      OR: [{ source: "employer-ats" }, { source: { startsWith: "cron:" } }],
       status: "running",
       startedAt: { gte: new Date(Date.now() - 7 * 60 * 1000) },
     },
