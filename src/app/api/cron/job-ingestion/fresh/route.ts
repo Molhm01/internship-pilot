@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 
+import { prisma } from "@/lib/db";
 import {
   LaneBudget,
   acquireLane,
   boundedEnv,
+  cronInvocationOrigin,
+  cronLaneSource,
   isAuthorizedCronRequest,
   laneOutcome,
   releaseLane,
@@ -48,18 +51,27 @@ const LEASE_TTL_MS = BUDGET_MS + 60_000;
 
 export async function GET(request: Request) {
   if (!isAuthorizedCronRequest(request)) return unauthorizedCronResponse();
-  return run();
+  return run(request);
 }
 
 export async function POST(request: Request) {
   if (!isAuthorizedCronRequest(request)) return unauthorizedCronResponse();
-  return run();
+  return run(request);
 }
 
-async function run() {
+async function run(request: Request) {
   const startedAt = Date.now();
+  // Lane + invocation origin are part of the durable record so a scheduled
+  // Vercel fire is provable without relying on timestamps alone.
+  const invocation = cronInvocationOrigin(request);
+  const runSource = cronLaneSource(LANE, invocation.origin);
 
   if (await isSchedulerPaused()) {
+    await prisma.syncLog
+      .create({
+        data: { source: runSource, status: "success", finishedAt: new Date(), errorMessage: "skipped:scheduler_paused" },
+      })
+      .catch(() => undefined);
     return NextResponse.json(
       { ok: true, lane: LANE, skipped: "scheduler_paused" },
       { headers: { "cache-control": "no-store" } },
@@ -68,11 +80,20 @@ async function run() {
 
   const lease = await acquireLane(LANE, LEASE_TTL_MS);
   if (!lease.acquired) {
+    await prisma.syncLog
+      .create({
+        data: { source: runSource, status: "success", finishedAt: new Date(), errorMessage: "skipped:already_running" },
+      })
+      .catch(() => undefined);
     return NextResponse.json(
       { ok: true, lane: LANE, skipped: "already_running", heldUntil: lease.expiresAt },
       { status: 200, headers: { "cache-control": "no-store" } },
     );
   }
+
+  // Durable per-run record: created at invocation, closed at completion or
+  // error, so scheduled execution is provable from the database alone.
+  const log = await prisma.syncLog.create({ data: { source: runSource, status: "running" } });
 
   const budget = new LaneBudget(BUDGET_MS);
   try {
@@ -120,11 +141,28 @@ async function run() {
     };
     const outcome = laneOutcome(steps);
 
+    await prisma.syncLog
+      .update({
+        where: { id: log.id },
+        data: {
+          status: outcome.ok ? "success" : "error",
+          ...(outcome.ok
+            ? {}
+            : { errorMessage: `Lane steps failed: ${outcome.failedSteps.join(", ")}`.slice(0, 500) }),
+          finishedAt: new Date(),
+          newJobsCount: newJobs,
+          updatedJobsCount: updatedJobs,
+        },
+      })
+      .catch(() => undefined);
+
     return NextResponse.json(
       {
         ok: outcome.ok,
         failedSteps: outcome.failedSteps,
         lane: LANE,
+        origin: invocation.origin,
+        cronSchedule: invocation.schedule,
         durationMs: Date.now() - startedAt,
         budgetMs: BUDGET_MS,
         newJobs,
@@ -153,6 +191,21 @@ async function run() {
           : null,
       },
       { headers: { "cache-control": "no-store" } },
+    );
+  } catch (error) {
+    await prisma.syncLog
+      .update({
+        where: { id: log.id },
+        data: {
+          status: "error",
+          finishedAt: new Date(),
+          errorMessage: (error instanceof Error ? error.message : String(error)).slice(0, 500),
+        },
+      })
+      .catch(() => undefined);
+    return NextResponse.json(
+      { ok: false, lane: LANE, error: "Fresh ingestion failed.", durationMs: Date.now() - startedAt },
+      { status: 500, headers: { "cache-control": "no-store" } },
     );
   } finally {
     await releaseLane(LANE, lease.holder).catch(() => undefined);
