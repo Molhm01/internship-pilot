@@ -6,12 +6,12 @@
  * request still has no business here, and the proxy's cookie check is not an
  * authorization layer. The session is verified on the server, per request.
  */
-import { guardSession } from "@/lib/auth/session";
+import { requireCatalogueAdmin } from "@/lib/auth/catalogueAdmin";
 import { NextResponse } from "next/server";
 import { checkCompany } from "@/lib/sync/companyDiscovery";
 
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const denied = await guardSession();
+  const denied = await requireCatalogueAdmin();
   if (denied) return denied;
   const { id } = await params;
   try {
