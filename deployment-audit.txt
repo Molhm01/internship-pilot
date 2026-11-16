@@ -179,7 +179,7 @@ C:\Users\Molhm\Desktop\Internship-AI\src\components\OllamaStatusBadge.tsx       
 C:\Users\Molhm\Desktop\Internship-AI\src\components\OllamaStatusBadge.tsx                            6 export default function OllamaStatusBadge() {                               
 C:\Users\Molhm\Desktop\Internship-AI\src\components\OllamaStatusBadge.tsx                            7   const [health, setHealth] = useState<OllamaHealth | null>(null);          
 C:\Users\Molhm\Desktop\Internship-AI\src\components\OllamaStatusBadge.tsx                           11     void getCachedOllamaHealth()                                            
-C:\Users\Molhm\Desktop\Internship-AI\src\components\OllamaStatusBadge.tsx                           24         Checking Ollama…                                                    
+C:\Users\Molhm\Desktop\Internship-AI\src\components\OllamaStatusBadge.tsx                           24         Checking Ollamaï¿½                                                    
 C:\Users\Molhm\Desktop\Internship-AI\src\components\OllamaStatusBadge.tsx                           36         Ollama not reachable at localhost:11434                             
 C:\Users\Molhm\Desktop\Internship-AI\src\components\OllamaStatusBadge.tsx                           45         Ollama is running, but model &quot;{health.model}&quot; is not in...
 C:\Users\Molhm\Desktop\Internship-AI\src\components\OllamaStatusBadge.tsx                           53       Ollama connected ({health.model})                                     
@@ -187,7 +187,7 @@ C:\Users\Molhm\Desktop\Internship-AI\src\components\ResumeFactsSection.tsx      
 C:\Users\Molhm\Desktop\Internship-AI\src\components\ResumeFactsSection.tsx                         146         <OllamaStatusBadge />                                               
 C:\Users\Molhm\Desktop\Internship-AI\src\components\marketing\ArchitectureDiagram.tsx               47     sub: "localhost",                                                       
 C:\Users\Molhm\Desktop\Internship-AI\src\components\marketing\ArchitectureDiagram.tsx               56     sub: "Ollama",                                                          
-C:\Users\Molhm\Desktop\Internship-AI\src\components\marketing\Footer.tsx                            69           <p className="font-mono">Local-first · Ollama · SQLite</p>        
+C:\Users\Molhm\Desktop\Internship-AI\src\components\marketing\Footer.tsx                            69           <p className="font-mono">Local-first ï¿½ Ollama ï¿½ SQLite</p>        
 C:\Users\Molhm\Desktop\Internship-AI\src\components\shell\CommandPalette.tsx                       107       keywords: "debug trace ollama connection",                            
 C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.test.ts                                       10 const ollamaGenerateJSON = vi.fn();                                         
 C:\Users\Molhm\Desktop\Internship-AI\src\lib\matching.test.ts                                       29 vi.mock("@/lib/ollama", () => ({                                            
