@@ -331,6 +331,7 @@ jobs:
           --health-retries 20
     env:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/internship_pilot_browser_audit
+      REQUIRE_AUTH: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

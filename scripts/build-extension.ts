@@ -1,8 +1,10 @@
 import path from "node:path";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { EXTENSION_PROTOCOL_VERSION } from "@/lib/applications/extensionProtocol";
 
-const dist = path.resolve(process.cwd(), "extension", "dist");
+const extension = path.resolve(process.cwd(), "extension");
+const source = path.join(extension, "src");
+const dist = path.join(extension, "dist");
 const required = [
   "manifest.json",
   "background.js",
@@ -17,7 +19,7 @@ const required = [
 async function main(): Promise<void> {
   const files = await Promise.all(required.map(async (filename) => ({
     filename,
-    content: await readFile(path.join(dist, filename), "utf8"),
+    content: await readFile(path.join(source, filename), "utf8"),
   })));
   const manifest = JSON.parse(files.find((file) => file.filename === "manifest.json")?.content ?? "{}") as {
     manifest_version?: number;
@@ -44,10 +46,12 @@ async function main(): Promise<void> {
   if (Number(declared[1]) !== EXTENSION_PROTOCOL_VERSION) {
     throw new Error(
       `Protocol drift: background.js declares v${declared[1]} but the server speaks v${EXTENSION_PROTOCOL_VERSION}. ` +
-        "Update both together (extension/dist/background.js and src/lib/applications/extensionProtocol.ts).",
+      "Update both together (extension/src/background.js and src/lib/applications/extensionProtocol.ts).",
     );
   }
-  console.log(`Manifest V3 extension package validated: ${dist}`);
+  await mkdir(dist, { recursive: true });
+  await Promise.all(files.map(({ filename, content }) => writeFile(path.join(dist, filename), content)));
+  console.log(`Manifest V3 extension package built and validated: ${dist}`);
   console.log(`Protocol version: ${EXTENSION_PROTOCOL_VERSION} (extension and server agree).`);
   console.log(`Assets: ${required.join(", ")}`);
 }

@@ -357,9 +357,26 @@ async function main() {
       // Sign out through the product route, then prove the same credentials can
       // establish a fresh session again.
       try {
-        await page.goto(`${BASE_URL}/logout`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+        const [signOut] = await Promise.all([
+          page.waitForResponse((response) =>
+            response.url() === `${BASE_URL}/api/auth/sign-out` && response.request().method() === "POST",
+          ),
+          page.goto(`${BASE_URL}/logout`, { waitUntil: "domcontentloaded", timeout: 30_000 }),
+        ]);
+        if (!signOut.ok()) throw new Error(`Sign-out request returned HTTP ${signOut.status()}`);
+        const session = await page.request.get(`${BASE_URL}/api/auth/get-session`);
+        if (!session.ok() || (await session.json()) !== null) {
+          throw new Error(`Expected no session after logout, received HTTP ${session.status()}`);
+        }
+        const protectedRequest = await page.request.get(`${BASE_URL}/api/jobs?limit=1`);
+        if (protectedRequest.status() !== 401) {
+          throw new Error(`Expected HTTP 401 for signed-out Jobs API access, received HTTP ${protectedRequest.status()}`);
+        }
+        const signInAgain = page.getByRole("link", { name: "Sign in again" });
+        await signInAgain.or(page.locator("#auth-email")).first().waitFor({ timeout: 15_000 });
+        if (await signInAgain.isVisible()) await signInAgain.click();
         await page.waitForURL(/\/login(?:\?|$)/, { timeout: 15_000 });
-        pass("auth logout", "logout cleared the session and returned to /login");
+        pass("auth logout", "logout cleared the session, denied Jobs API access, and offered a return to /login");
       } catch (error) {
         fail("auth logout", error instanceof Error ? error.message : String(error));
       }

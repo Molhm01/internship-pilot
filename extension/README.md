@@ -1,8 +1,7 @@
 # Internship Pilot Chrome extension
 
-The loadable unpacked extension is:
-
-`C:\Users\Molhm\Desktop\Internship-AI\extension\dist`
+Run `npm run extension:build` from the project folder to generate the
+loadable unpacked extension in `extension/dist`.
 
 It uses Manifest V3, fills from the local authenticated Internship Pilot API,
 and never clicks Submit.
@@ -13,7 +12,7 @@ and never clicks Submit.
 2. Open `chrome://extensions`.
 3. Turn on **Developer mode** in the upper-right corner.
 4. Select **Load unpacked**.
-5. Choose `C:\Users\Molhm\Desktop\Internship-AI\extension\dist`.
+5. Choose the generated `extension/dist` folder.
 6. In a terminal in the project folder, run `npm run extension:token`.
 7. Open the Internship Pilot extension popup, paste that token, leave the app
    address as `http://localhost:3000`, and select **Connect securely**.
@@ -22,10 +21,9 @@ and never clicks Submit.
 9. Review every answer and upload. Press Submit manually only when you are
    satisfied.
 
-After changing files in `extension/dist`, run `npm run extension:build` (it
-validates the package and checks the server/extension protocol versions
-match), select the extension's refresh icon on `chrome://extensions`, then
-refresh the application page.
+Edit the assets in `extension/src`, then run `npm run extension:build` to
+validate them and regenerate `extension/dist`. Select the extension's
+refresh icon on `chrome://extensions`, then refresh the application page.
 
 ## Version handshake
 

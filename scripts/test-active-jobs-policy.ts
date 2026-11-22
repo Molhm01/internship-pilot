@@ -51,7 +51,8 @@ async function main() {
     check(canonicalizeSource(v) === "intern-list", `"${v}" -> intern-list (got ${canonicalizeSource(v)})`);
   }
   check(canonicalizeSource("ats:greenhouse") === "greenhouse", `"ats:greenhouse" -> greenhouse`);
-  check(canonicalizeSource("linkedin") === "other", `unknown source -> other`);
+  check(canonicalizeSource("linkedin") === "linkedin", `"linkedin" -> linkedin`);
+  check(canonicalizeSource("unknown-source") === "other", `unknown source -> other`);
   check(canonicalizeSource(null) === null, `null -> null`);
   check(isTrustedAggregatorSource("Jobright AI") && isTrustedAggregatorSource("simplify.jobs") && isTrustedAggregatorSource("intern-list.com"), "all three aggregator families are recognized");
   check(!isTrustedAggregatorSource("greenhouse") && !isTrustedAggregatorSource("linkedin"), "greenhouse/linkedin are not trusted aggregators");
