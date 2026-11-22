@@ -37,6 +37,8 @@ vi.mock("@/lib/matching/initialAiMatchQueue", () => ({
 }));
 
 import { GET, POST } from "./route";
+import { buildJobsQuery, EMPTY_FILTERS } from "@/components/JobFilters";
+import { SUMMER_ELECTRICAL_HARDWARE } from "@/lib/jobs/summerElectricalHardware";
 
 const existingJobs = [
   {
@@ -143,6 +145,48 @@ describe("GET /api/jobs", () => {
       returned: 1,
       jobs: [{ id: "job-existing-1" }],
     });
+  });
+
+  it("filters the summer hardware preset before ordering and paginating", async () => {
+    const now = Date.now();
+    const twoDaysAgo = new Date(now - 2 * 24 * 60 * 60 * 1000);
+    const base = {
+      ...existingJobs[1],
+      activeFeed: true,
+      company: "Signal Labs",
+      source: "greenhouse",
+      sourcePostedAt: new Date(now),
+      internshipTerm: null,
+      season: null,
+      description: "Design microcontroller firmware and test circuit boards.",
+    };
+
+    findMany.mockResolvedValue([
+      { ...base, id: "power", title: "Power Systems Intern", season: "Summer", sourcePostedAt: twoDaysAgo },
+      { ...base, id: "software", title: "Summer Software Intern", description: "Electrical engineering majors are welcome." },
+      { ...base, id: "fall", title: "Fall Electrical Engineering Intern" },
+      { ...base, id: "multi-term", title: "Summer/Fall Embedded Intern" },
+      { ...base, id: "conflicting-term", title: "Summer Firmware Intern", internshipTerm: "Fall 2027" },
+      { ...base, id: "unknown", title: "Hardware Intern" },
+      { ...base, id: "permanent", title: "Summer Hardware Engineer" },
+      { ...base, id: "closed", title: "Summer Firmware Intern", verificationStatus: "Closed" },
+      { ...base, id: "expired", title: "Summer Firmware Intern", reasonCode: "CLOSED_EXPIRED" },
+      { ...base, id: "stale", title: "Summer Firmware Intern", sourcePostedAt: new Date(now - 8 * 24 * 60 * 60 * 1000) },
+      { ...base, id: "firmware", title: "Summer Embedded Systems Intern" },
+    ]);
+
+    const params = buildJobsQuery({ ...EMPTY_FILTERS, preset: SUMMER_ELECTRICAL_HARDWARE.id });
+    params.set("feed", "all");
+    params.set("limit", "1");
+    const url = new URL(`http://localhost/api/jobs?${params}`);
+    const first = await GET(new Request(url), {});
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { activeFeed: true } }));
+    expect(await first.json()).toMatchObject({ total: 2, returned: 1, jobs: [{ id: "firmware" }] });
+
+    url.searchParams.set("offset", "1");
+    const second = await GET(new Request(url), {});
+    expect(await second.json()).toMatchObject({ total: 2, returned: 1, jobs: [{ id: "power" }] });
+    expect(buildJobsQuery(EMPTY_FILTERS).has("preset")).toBe(false);
   });
 
   it("returns a logged JSON database error instead of an empty list", async () => {

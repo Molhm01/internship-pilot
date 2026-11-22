@@ -3,8 +3,11 @@
 import { useEffect, useState } from "react";
 import { DISCIPLINE_TAGS, DisciplineTag } from "@/lib/sync/classify";
 import { TRACKER_STATUSES } from "@/lib/statuses";
+import { SUMMER_ELECTRICAL_HARDWARE } from "@/lib/jobs/summerElectricalHardware";
+import { Button } from "@/components/ui/Button";
 
 export type JobFiltersState = {
+  preset?: typeof SUMMER_ELECTRICAL_HARDWARE.id;
   availability: string; // "" = active feed (default) | official | source_listed | verification_pending | closed | security | all
   location: string;
   status: string;
@@ -100,6 +103,7 @@ const AVAILABILITY_QUERY: Record<string, (p: URLSearchParams) => void> = {
 
 export function buildJobsQuery(filters: JobFiltersState): URLSearchParams {
   const params = new URLSearchParams();
+  if (filters.preset) params.set("preset", filters.preset);
   (AVAILABILITY_QUERY[filters.availability] ?? AVAILABILITY_QUERY[""])(params);
   if (filters.location) params.set("location", filters.location);
   if (filters.status) params.set("status", filters.status);
@@ -131,6 +135,11 @@ export function buildJobsQuery(filters: JobFiltersState): URLSearchParams {
 
 type SavedFilter = { id: string; name: string; filterJson: string };
 
+function isSummerPreset(filter: SavedFilter): boolean {
+  return filter.name === SUMMER_ELECTRICAL_HARDWARE.name
+    && filter.filterJson === JSON.stringify({ preset: SUMMER_ELECTRICAL_HARDWARE.id });
+}
+
 export default function JobFilters({
   filters,
   onChange,
@@ -138,13 +147,16 @@ export default function JobFilters({
   filters: JobFiltersState;
   onChange: (f: JobFiltersState) => void;
 }) {
-  const [presets, setPresets] = useState<SavedFilter[]>([]);
+  const [presets, setPresets] = useState<SavedFilter[] | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const summerActive = filters.preset === SUMMER_ELECTRICAL_HARDWARE.id;
 
   useEffect(() => {
     fetch("/api/filters/saved")
       .then((r) => r.json())
       .then((data) => setPresets(data.filters ?? []))
-      .catch(() => {});
+      .catch(() => setPresets([]));
   }, []);
 
   function set<K extends keyof JobFiltersState>(key: K, value: JobFiltersState[K]) {
@@ -160,25 +172,59 @@ export default function JobFilters({
     const parsed = JSON.parse(preset.filterJson);
     onChange({
       ...EMPTY_FILTERS,
-      disciplines: parsed.disciplines ?? [],
-      maxDistanceMiles: parsed.maxDistanceMiles ? String(parsed.maxDistanceMiles) : "",
-      includeRemoteRegardlessOfDistance: Boolean(parsed.includeRemoteRegardlessOfDistance),
-      relocationWillingness: Boolean(parsed.relocationWillingness),
+      preset: parsed?.preset === SUMMER_ELECTRICAL_HARDWARE.id ? parsed.preset : undefined,
+      disciplines: parsed?.disciplines ?? [],
+      maxDistanceMiles: parsed?.maxDistanceMiles ? String(parsed.maxDistanceMiles) : "",
+      includeRemoteRegardlessOfDistance: Boolean(parsed?.includeRemoteRegardlessOfDistance),
+      relocationWillingness: Boolean(parsed?.relocationWillingness),
     });
+  }
+
+  async function saveSummerPreset() {
+    setSaving(true);
+    setSaveError("");
+    try {
+      const response = await fetch("/api/filters/saved", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ preset: SUMMER_ELECTRICAL_HARDWARE.id }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "Could not save this search.");
+      const filter: SavedFilter = data.filter;
+      setPresets((current) => [...(current ?? []).filter((p) => p.id !== filter.id), filter]);
+      applyPreset(filter);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Could not save this search.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
     <section className="bg-surface rounded-lg border border-hairline p-4 space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        {presets.map((p) => (
+        {presets?.map((p) => (
           <button
             key={p.id}
+            type="button"
+            aria-pressed={isSummerPreset(p) ? summerActive : undefined}
             onClick={() => applyPreset(p)}
-            className="rounded-full border border-accent-line/40 bg-accent/5 text-accent-text text-xs font-medium px-3 py-1.5 hover:bg-accent/10"
+            className="rounded-full border border-accent-line/40 bg-accent/5 text-accent-text text-xs font-medium px-3 py-1.5 hover:bg-accent/10 aria-pressed:border-accent-line aria-pressed:bg-accent/15"
           >
             ⭐ {p.name}
           </button>
         ))}
+        {presets && !presets.some(isSummerPreset) && (
+          <Button
+            size="sm"
+            disabled={saving}
+            onClick={() => void saveSummerPreset()}
+            className="max-w-full whitespace-normal h-auto min-h-7 py-1 text-left"
+          >
+            {saving ? "Saving…" : `Save and apply ${SUMMER_ELECTRICAL_HARDWARE.name}`}
+          </Button>
+        )}
         <button
           onClick={() => onChange(EMPTY_FILTERS)}
           className="text-xs text-tertiary hover:text-accent-text underline"
@@ -186,6 +232,7 @@ export default function JobFilters({
           Clear all filters
         </button>
       </div>
+      {saveError && <p role="alert" className="text-xs text-critical">{saveError}</p>}
 
       <details open className="group">
         <summary className="cursor-pointer text-sm font-medium text-secondary">Location & distance</summary>
@@ -260,7 +307,8 @@ export default function JobFilters({
           />
           <SelectField
             label="Season"
-            value={filters.season}
+            value={summerActive ? "Summer" : filters.season}
+            disabled={summerActive}
             onChange={(v) => set("season", v)}
             options={["", "Summer", "Fall", "Spring", "Winter"]}
           />
@@ -351,6 +399,7 @@ export default function JobFilters({
           <SelectField
             label="Availability"
             value={filters.availability}
+            disabled={summerActive}
             onChange={(v) => set("availability", v)}
             options={[
               { value: "", label: "Active feed" },
@@ -397,17 +446,20 @@ function SelectField({
   value,
   onChange,
   options,
+  disabled = false,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   options: Array<string | { value: string; label: string }>;
+  disabled?: boolean;
 }) {
   return (
     <label className="space-y-1">
       <span className="block text-xs font-medium text-secondary">{label}</span>
       <select
         value={value}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
         className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-primary outline-none focus:border-accent-line"
       >
