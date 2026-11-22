@@ -39,14 +39,14 @@ describe("website to extension handoff", () => {
 
 describe("extension backend selection", () => {
   it("accepts a hosted https origin so a deployed website is reachable", async () => {
-    const source = await repoFile("extension/dist/background.js");
+    const source = await repoFile("extension/src/background.js");
 
     expect(source).toContain("isSecureRemoteBase");
     expect(source).toContain('url.protocol === "https:"');
   });
 
   it("refuses plain http to anywhere but loopback, because the token travels with every request", async () => {
-    const source = await repoFile("extension/dist/background.js");
+    const source = await repoFile("extension/src/background.js");
     const loopbackCheck = source.slice(
       source.indexOf("function isLoopbackBase"),
       source.indexOf("function isAllowedBase"),
@@ -63,13 +63,13 @@ describe("extension backend selection", () => {
     // The extension talks to the website and to the page it is filling. The
     // Agent is the local Agent's own business; a second path to it here would
     // be exactly the duplicate system this architecture avoids.
-    const source = await repoFile("extension/dist/background.js");
+    const source = await repoFile("extension/src/background.js");
 
     expect(source).not.toContain("4317");
   });
 
   it("loads no remote code, on any origin", async () => {
-    const source = await repoFile("extension/dist/background.js");
+    const source = await repoFile("extension/src/background.js");
 
     expect(source).not.toMatch(/importScripts\s*\(\s*["']https?:/i);
   });

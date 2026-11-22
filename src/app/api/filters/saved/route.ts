@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { withUser } from "@/lib/auth/session";
+import { SUMMER_ELECTRICAL_HARDWARE } from "@/lib/jobs/summerElectricalHardware";
+
+const privateResponse = { "cache-control": "private, no-store" };
 
 // Not exported: a Next route module may only export route handlers and route
 // config, and `next build` type-checks that contract against its generated
@@ -54,11 +57,28 @@ export const GET = withUser(async (_request, user) => {
     where: { userId: user.id },
     orderBy: { createdAt: "asc" },
   });
-  return NextResponse.json({ filters });
+  return NextResponse.json({ filters }, { headers: privateResponse });
 });
 
 export const POST = withUser(async (request, user) => {
   const body = await request.json().catch(() => null);
+  if (body?.preset === SUMMER_ELECTRICAL_HARDWARE.id) {
+    const { id, name } = SUMMER_ELECTRICAL_HARDWARE;
+    const filterJson = JSON.stringify({ preset: id });
+    const key = { userId: user.id, name };
+    await prisma.savedFilter.createMany({
+      data: [{ ...key, filterJson }],
+      skipDuplicates: true,
+    });
+    const filter = await prisma.savedFilter.findUniqueOrThrow({ where: { userId_name: key } });
+    if (filter.filterJson !== filterJson) {
+      return NextResponse.json(
+        { error: "You already have a saved search with that name." },
+        { status: 409, headers: privateResponse },
+      );
+    }
+    return NextResponse.json({ filter }, { status: 201, headers: privateResponse });
+  }
   if (!body?.name?.trim() || !body?.filter) {
     return NextResponse.json({ error: "name and filter are required" }, { status: 400 });
   }
@@ -70,5 +90,5 @@ export const POST = withUser(async (request, user) => {
     update: { filterJson: JSON.stringify(body.filter) },
     create: { userId: user.id, name, filterJson: JSON.stringify(body.filter) },
   });
-  return NextResponse.json({ filter }, { status: 201 });
+  return NextResponse.json({ filter }, { status: 201, headers: privateResponse });
 });

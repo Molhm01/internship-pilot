@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/Button";
 import { Field, Input, Select, Textarea } from "@/components/ui/Field";
 import { EmptyState, ErrorState, Notice, SkeletonRows } from "@/components/ui/State";
 import { cn } from "@/components/ui/cn";
+import { SUMMER_ELECTRICAL_HARDWARE } from "@/lib/jobs/summerElectricalHardware";
 import {
   fetchJobCounts,
   fetchJobsPage,
@@ -371,7 +372,12 @@ function JobsPageContent() {
           </Button>
         )}
 
-        {(filters !== EMPTY_FILTERS && (filters.freshHours || filters.source || filters.location || filters.status || filters.disciplines.length > 0 || filters.availability || filters.workplaceType || filters.matchScoreMin)) && (
+        {filters.preset && (
+          <span className="rounded-full border border-accent-line/40 px-2.5 py-1 text-xs text-accent-text">
+            {SUMMER_ELECTRICAL_HARDWARE.name}
+          </span>
+        )}
+        {(filters !== EMPTY_FILTERS && (filters.preset || filters.freshHours || filters.source || filters.location || filters.status || filters.disciplines.length > 0 || filters.availability || filters.workplaceType || filters.matchScoreMin)) && (
           <Button size="sm" variant="ghost" onClick={() => setFilters(EMPTY_FILTERS)}>
             <X className="size-3" aria-hidden />
             Clear filters

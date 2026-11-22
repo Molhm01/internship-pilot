@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getApp, getApps, initializeApp, type FirebaseApp } from "firebase/app";
+import { getApp, getApps, initializeApp, registerVersion, type FirebaseApp } from "@firebase/app";
 import {
   getAuth,
   GoogleAuthProvider,
@@ -9,8 +9,11 @@ import {
   signInWithPopup,
   type Auth,
   type User,
-} from "firebase/auth";
+} from "@firebase/auth";
 import firebaseConfig from "../../../firebase-applet-config.json";
+
+// Keep the app wrapper's SDK registration used by Firebase Auth.
+registerVersion("firebase", "13.4.0", "app");
 
 export const GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"] as const;
 

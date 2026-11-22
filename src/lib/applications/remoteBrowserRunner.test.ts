@@ -489,6 +489,8 @@ describe("remoteBrowserRunner live Chromium mock-ATS execution", () => {
     await rm(path.join(process.cwd(), tmpRunRoot), { recursive: true, force: true }).catch(() => undefined);
   });
 
+  // The first Chromium launch on a shared runner precedes navigation, which
+  // itself has a 25-second deadline in runPlaywrightApplication.
   it("fills, uploads PDF, submits, and verifies confirmation on mock Lever", async () => {
     const exe = await resolveChromiumExecutablePath();
     if (!exe) return;
@@ -507,7 +509,7 @@ describe("remoteBrowserRunner live Chromium mock-ATS execution", () => {
     expect(outcome?.confirmationNumber).toBe("LEV-83921");
     expect(outcome?.fieldsResolved).toBeGreaterThanOrEqual(5);
     expect(outcome?.screenshotPath).toContain("submitted-confirmation.png");
-  }, 20_000);
+  }, 45_000);
 
   it("navigates Workday multi-step Step 1 -> Save and Continue -> Step 2 -> submits", async () => {
     const exe = await resolveChromiumExecutablePath();

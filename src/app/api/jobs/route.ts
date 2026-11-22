@@ -14,6 +14,7 @@ import { jobOrderBy, parseJobSort, sortJobs } from "@/lib/jobs/jobSort";
 import { jobsQueryErrorDevDetail, jobsQueryErrorLog } from "@/lib/jobs/jobsQueryError";
 import { parseSourcePostedAt } from "@/lib/sync/sourceDate";
 import { manualEntryVerification } from "@/lib/jobs/manualEntry";
+import { matchesSummerElectricalHardware, SUMMER_ELECTRICAL_HARDWARE } from "@/lib/jobs/summerElectricalHardware";
 
 function parseListParam(value: string | null): string[] {
   return value ? value.split(",").map((v) => v.trim()).filter(Boolean) : [];
@@ -58,6 +59,7 @@ function withUserState<T extends { userStates?: unknown[] }>(job: T) {
 async function getJobsResponse(req: Request, userId: string) {
   await ensureWorkspaceBootstrapped(userId);
   const { searchParams } = new URL(req.url);
+  const summerPreset = searchParams.get("preset") === SUMMER_ELECTRICAL_HARDWARE.id;
   const location = searchParams.get("location");
   const status = searchParams.get("status");
   const internshipTerm = searchParams.get("internshipTerm");
@@ -91,6 +93,7 @@ async function getJobsResponse(req: Request, userId: string) {
 
   const where: Prisma.JobWhereInput = {};
   const andClauses: Prisma.JobWhereInput[] = [];
+  if (summerPreset) where.activeFeed = true;
   // Case-insensitive by request. SQLite's LIKE ignored ASCII case for free;
   // PostgreSQL's does not, and a filter for "remote" that stops matching
   // "Remote" reads as a broken feed rather than a changed database.
@@ -206,6 +209,10 @@ async function getJobsResponse(req: Request, userId: string) {
     },
   });
   let jobs = rows.map(withUserState);
+  if (summerPreset) {
+    const now = new Date();
+    jobs = jobs.filter((job) => matchesSummerElectricalHardware({ ...job, now }));
+  }
 
   // Fields stored as JSON strings are filtered in-memory — the dataset here
   // is small (a personal job board, not a production job search engine).

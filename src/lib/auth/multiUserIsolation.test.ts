@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/lib/db";
+import { SUMMER_ELECTRICAL_HARDWARE } from "@/lib/jobs/summerElectricalHardware";
 
 /**
  * Two users, one shared job catalogue, and no way across.
@@ -266,6 +267,44 @@ describe.skipIf(!DATABASE_AVAILABLE)("multi-user isolation", () => {
       const names = (body.filters as { name: string }[]).map((filter) => filter.name);
 
       expect(names).not.toContain(`${RUN_ID} B filter`);
+    });
+
+    it("saves the summer preset only for the current account on opt-in", async () => {
+      const { GET, POST } = await import("@/app/api/filters/saved/route");
+      const { id, name } = SUMMER_ELECTRICAL_HARDWARE;
+      const url = "http://localhost/api/filters/saved";
+      const save = () => POST(new Request(url, {
+        method: "POST",
+        body: JSON.stringify({ preset: id, userId: userB }),
+      }), {});
+
+      asking = null;
+      expect((await save()).status).toBe(401);
+      expect((await GET(new Request(url), {})).status).toBe(401);
+
+      asking = { id: userA, email: EMAIL_A };
+      const response = await save();
+      expect(response.status).toBe(201);
+      const { filter } = await response.json();
+      expect(filter).toMatchObject({ userId: userA, name, filterJson: JSON.stringify({ preset: id }) });
+      expect((await (await save()).json()).filter.id).toBe(filter.id);
+      const listA = await GET(new Request(url), {});
+      expect(listA.headers.get("cache-control")).toBe("private, no-store");
+      expect((await listA.json()).filters.map((row: { name: string }) => row.name)).toEqual(
+        expect.arrayContaining(["Engineering internships", name]),
+      );
+
+      asking = { id: userB, email: EMAIL_B };
+      const listB = await (await GET(new Request(url), {})).json();
+      expect(listB.filters.map((row: { name: string }) => row.name)).not.toContain(name);
+      const custom = await POST(new Request(url, {
+        method: "POST",
+        body: JSON.stringify({ name, filter: { season: "Fall" } }),
+      }), {});
+      expect(custom.status).toBe(201);
+      expect((await save()).status).toBe(409);
+      const listBAfter = await (await GET(new Request(url), {})).json();
+      expect(listBAfter.filters.find((row: { name: string }) => row.name === name)?.filterJson).toBe('{"season":"Fall"}');
     });
 
     it("does not return B's assessments to A", async () => {
