@@ -5,6 +5,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { prisma } from "@/lib/db";
 import { normalizeQuestionText } from "@/lib/applications/approvedAnswers";
+import { answerAndResumeApplicationRun } from "@/lib/applications/answerAndResume";
+import { enqueueApplication, queueAnsweredRun, retryFailedRun } from "@/lib/applications/queue";
 import { setApplicationMode } from "@/lib/applications/settings";
 import { captureAndSaveOfficialJobDescription } from "@/lib/jobs/captureDescription";
 import { generateDocumentsForJob } from "@/lib/documents/generate";
@@ -190,11 +192,10 @@ async function makeJob(title: string, fixture: string, resumePath: string) {
   return job;
 }
 
-async function enqueue(jobId: string) {
-  const response = await authedFetch(`${BASE_URL}/api/jobs/${jobId}/apply`, { method: "POST" });
-  const body = await response.json();
-  if (!response.ok) throw new Error(`Queue request failed (${response.status}): ${JSON.stringify(body)}`);
-  return body as { runId: string; status: string; queued: boolean };
+function enqueue(jobId: string) {
+  // This suite drives the fill-only background worker. The web Apply route
+  // executes the autonomous runner immediately and can select a different mode.
+  return enqueueApplication(jobId, TEST_USER_ID);
 }
 
 async function readRun(id: string) {
@@ -308,11 +309,11 @@ async function main(): Promise<void> {
   const leaked = unsupportedByThisPosting.filter((pattern) => pattern.test(generatedText));
   check(leaked.length === 0, `no unsupported Lightship requirement entered the PDF${leaked.length ? ` (leaked: ${leaked.map(String).join(", ")})` : ""}`);
 
-  console.log("1) Five Apply clicks create one durable queued run");
+  console.log("1) Five concurrent enqueue requests create one durable queued run");
   const clickJob = await makeJob("Five Clicks", "greenhouse-fillonly.html", resumePath);
   const clicks = await Promise.all(Array.from({ length: 5 }, () => enqueue(clickJob.id)));
-  check(new Set(clicks.map((result) => result.runId)).size === 1, "all five API responses returned the same run id");
-  check(await prisma.applicationRun.count({ where: { jobId: clickJob.id } }) === 1, "five clicks created exactly one ApplicationRun");
+  check(new Set(clicks.map((result) => result.runId)).size === 1, "all five requests returned the same run id");
+  check(await prisma.applicationRun.count({ where: { jobId: clickJob.id } }) === 1, "five requests created exactly one ApplicationRun");
 
   console.log("\n2) Two queued jobs are processed sequentially");
   const firstJob = await makeJob("Sequential One", "greenhouse-fillonly.html", resumePath);
@@ -380,8 +381,8 @@ async function main(): Promise<void> {
 
   console.log("\n8) CAPTCHA Resume continues the retained same run");
   await workerTestAction(`/test/captcha/complete?runId=${encodeURIComponent(captchaQueued.runId)}`);
-  const captchaResumeResponse = await authedFetch(`${BASE_URL}/api/applications/${captchaQueued.runId}/resume`, { method: "POST" });
-  check(captchaResumeResponse.ok, "CAPTCHA Resume queued the existing run");
+  const captchaResume = await queueAnsweredRun(captchaQueued.runId, TEST_USER_ID);
+  check(captchaResume.runId === captchaQueued.runId && captchaResume.status === "queued", "CAPTCHA Resume queued the existing run");
   const captchaCompleted = await waitFor(() => readRun(captchaQueued.runId), (run) => run?.status === "filled", "CAPTCHA same-page resume");
   check(captchaCompleted?.id === captchaQueued.runId && captchaCompleted.currentStep === "FINAL_REVIEW", "CAPTCHA Resume continued the same retained page to final review");
   check(await prisma.applicationRun.count({ where: { jobId: captchaJob.id } }) === 1, "CAPTCHA Resume created no duplicate run");
@@ -391,8 +392,8 @@ async function main(): Promise<void> {
   const closedCaptchaQueued = await enqueue(closedCaptchaJob.id);
   await waitFor(() => readRun(closedCaptchaQueued.runId), (run) => run?.status === "needs_user_action", "second CAPTCHA pause");
   await workerTestAction("/test/browser/close");
-  const closedCaptchaResume = await authedFetch(`${BASE_URL}/api/applications/${closedCaptchaQueued.runId}/resume`, { method: "POST" });
-  check(closedCaptchaResume.ok, "Resume accepted the same run after its browser closed");
+  const closedCaptchaResume = await queueAnsweredRun(closedCaptchaQueued.runId, TEST_USER_ID);
+  check(closedCaptchaResume.runId === closedCaptchaQueued.runId, "Resume accepted the same run after its browser closed");
   const captchaReopened = await waitFor(
     () => readRun(closedCaptchaQueued.runId),
     (run) => run?.status === "needs_user_action" && parseStageCount(run.stageHistory, "NEEDS_USER_ACTION") >= 2,
@@ -432,9 +433,9 @@ async function main(): Promise<void> {
   const crashed = await waitFor(() => readRun(crashQueued.runId), (run) => run?.status === "failed", "crashed run failure");
   check(crashed?.currentStep === "FAILED" && crashed.stageHistory?.includes("BROWSER_RESTART_FAILED"), "browser crash recorded readable recovery failure detail");
   const retryResponses = await Promise.all(Array.from({ length: 5 }, () =>
-    authedFetch(`${BASE_URL}/api/applications/${crashQueued.runId}/retry`, { method: "POST" }),
+    retryFailedRun(crashQueued.runId, TEST_USER_ID),
   ));
-  check(retryResponses.every((response) => response.ok), "all five Retry requests were idempotent");
+  check(retryResponses.every((response) => response.runId === crashQueued.runId), "all five Retry requests were idempotent");
   const retried = await waitFor(() => readRun(crashQueued.runId), (run) => run?.status === "filled", "same-run crash retry");
   check(retried?.id === crashQueued.runId, "Retry recovered the original ApplicationRun");
   check(await prisma.applicationRun.count({ where: { jobId: crashJob.id } }) === 1, "five Retry clicks created no duplicate run");
@@ -477,13 +478,8 @@ async function main(): Promise<void> {
   check(/already running|lock is held/i.test(collision.output), "duplicate worker reported the existing owner instead of launching Chromium");
   await waitForWorkerReady();
 
-  const answerResponse = await authedFetch(`${BASE_URL}/api/applications/${countryQueued.runId}/answer`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ answer: "United States", reuse: true }),
-  });
-  const answerResult = await answerResponse.json() as { runId?: string; status?: string };
-  check(answerResponse.ok && answerResult.runId === countryQueued.runId, "Save & retry queued the same run id");
+  const answerResult = await answerAndResumeApplicationRun(countryQueued.runId, "United States", true, TEST_USER_ID);
+  check(answerResult.saved && answerResult.runId === countryQueued.runId, "Save & retry queued the same run id");
   const completedCountry = await waitFor(() => readRun(countryQueued.runId), (run) => run?.status === "filled", "Country resumed final review");
   check(await prisma.applicationRun.count({ where: { jobId: countryJob.id } }) === 1, "resume created no duplicate run");
   check(completedCountry?.currentStep === "FINAL_REVIEW", "agent reached final review");
