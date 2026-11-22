@@ -18,7 +18,7 @@ vi.mock("@/lib/db", () => ({
       upsert: (...args: unknown[]) => sensitiveUpsert(...args),
       findUnique: async () => null,
     },
-    education: { findFirst: async () => null },
+    education: { findFirst: async () => null, findMany: async () => [] },
   },
 }));
 

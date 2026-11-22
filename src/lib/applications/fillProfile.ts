@@ -12,7 +12,10 @@ type ProfileRow = NonNullable<Awaited<ReturnType<typeof applicationProfileForUse
  * form. Two copies of that mapping is two places for one person's answer to
  * drift away from the other, so it lives here and both callers import it.
  */
-export function fillContextProfile(profile: ProfileRow): FillContext["profile"] {
+export function fillContextProfile(
+  profile: ProfileRow,
+  overrides?: { portalEmail?: string | null; portalPassword?: string | null },
+): FillContext["profile"] {
   let locationPreferences: string[] | null = null;
   try {
     const parsed = JSON.parse(profile.locationPreferences ?? "null");
@@ -22,28 +25,51 @@ export function fillContextProfile(profile: ProfileRow): FillContext["profile"] 
   }
   return {
     fullName: profile.fullName,
+    legalFirstName: profile.legalFirstName,
+    legalMiddleName: profile.legalMiddleName,
+    noMiddleName: profile.noMiddleName,
+    legalLastName: profile.legalLastName,
+    suffix: profile.suffix,
     preferredName: profile.preferredName,
-    email: profile.email,
+    pronouns: profile.pronouns,
+    email: overrides?.portalEmail ?? profile.email,
+    alternateEmail: profile.alternateEmail,
+    portalPassword: overrides?.portalPassword ?? null,
     phone: profile.phone,
+    phoneCountryCode: profile.phoneCountryCode,
     linkedin: profile.linkedin,
     github: profile.github,
     website: profile.website,
+    portfolio: profile.portfolio,
     school: profile.school,
-    // Not carried by the user-owned profile. Null is the honest answer: the
-    // agent asks rather than filling a school the applicant never entered.
-    previousSchool: null,
+    previousSchool: profile.previousSchool ?? null,
+    degreeType: profile.degreeType,
+    educationLevel: profile.educationLevel,
+    major: profile.major,
+    minor: profile.minor,
+    educationStartDate: profile.educationStartDate,
+    graduationDate: profile.graduationDate,
+    gpa: profile.gpa,
     addressStreet: profile.addressStreet,
+    addressLine2: profile.addressLine2,
+    metroRegion: profile.metroRegion,
     addressCity: profile.addressCity,
     addressState: profile.addressState,
     addressZip: profile.addressZip,
     countryOfResidence: profile.countryOfResidence,
     willingToRelocate: profile.willingToRelocate,
+    remotePreference: profile.remotePreference,
     locationPreferences,
+    earliestStartDate: profile.earliestStartDate,
     internshipTermAvailability: profile.internshipTermAvailability,
     salaryAnswerPreference: profile.salaryAnswerPreference,
     workAuthorization: profile.workAuthorization,
     requiresSponsorship: profile.requiresSponsorship,
     clearanceEligible: profile.clearanceEligible,
+    securityClearanceStatus: profile.securityClearanceStatus,
+    hasDriversLicense: profile.hasDriversLicense,
+    meetsMinimumAge: profile.meetsMinimumAge,
+    referralSource: profile.referralSource,
     eeoGender: profile.eeoGender,
     eeoRaceEthnicity: profile.eeoRaceEthnicity,
     eeoVeteranStatus: profile.eeoVeteranStatus,

@@ -33,7 +33,7 @@ export const STATUS_LABELS: Record<TrackerStatus, string> = {
   READY_TO_APPLY: "Ready to Apply",
   QUEUED: "Queued",
   APPLYING: "Applying",
-  NEEDS_USER_ACTION: "Needs Your Action",
+  NEEDS_USER_ACTION: "Autonomous Retry",
   SUBMITTED: "Submitted",
   ASSESSMENT_REQUIRED: "Assessment Required",
   INTERVIEW: "Interview",

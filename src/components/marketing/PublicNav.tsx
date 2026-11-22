@@ -107,16 +107,22 @@ export function PublicNav() {
         </nav>
 
         <div className="ml-auto flex items-center gap-1.5">
-          <ThemeToggle className="hidden sm:inline-flex" />
+          <ThemeToggle className="hidden shrink-0 sm:inline-flex" />
           <Link
-            href="/dashboard"
-            className="hidden h-7 items-center rounded-md px-2.5 text-small text-secondary transition-colors duration-[120ms] ease-standard hover:bg-n-150 hover:text-primary sm:inline-flex"
+            href="/login"
+            className="hidden h-7 shrink-0 whitespace-nowrap items-center rounded-md px-2.5 text-small text-secondary transition-colors duration-[120ms] ease-standard hover:bg-n-150 hover:text-primary sm:inline-flex"
           >
             Sign in
           </Link>
           <Link
+            href="/signup"
+            className="hidden h-7 shrink-0 whitespace-nowrap items-center rounded-md border border-line bg-surface px-2.5 text-small font-medium text-primary transition-colors duration-[120ms] ease-standard hover:bg-n-150 sm:inline-flex"
+          >
+            Create account
+          </Link>
+          <Link
             href="/jobs"
-            className="group inline-flex h-7 items-center gap-1.5 rounded-md border border-accent bg-accent px-2.5 text-small font-medium text-inverse transition-colors duration-[120ms] ease-standard hover:bg-accent-hover"
+            className="group inline-flex h-7 shrink-0 whitespace-nowrap items-center gap-1.5 rounded-md border border-accent bg-accent px-2.5 text-small font-medium text-inverse transition-colors duration-[120ms] ease-standard hover:bg-accent-hover"
           >
             Explore internships
             <ArrowRight
@@ -153,10 +159,20 @@ export function PublicNav() {
               ))}
               <li className="pt-1">
                 <Link
-                  href="/dashboard"
+                  href="/login"
+                  onClick={() => setOpen(false)}
                   className="block rounded-md px-2 py-2 text-small text-secondary hover:bg-n-150 hover:text-primary"
                 >
                   Sign in
+                </Link>
+              </li>
+              <li>
+                <Link
+                  href="/signup"
+                  onClick={() => setOpen(false)}
+                  className="block rounded-md px-2 py-2 text-small font-medium text-accent-text hover:bg-n-150"
+                >
+                  Create account
                 </Link>
               </li>
             </ul>

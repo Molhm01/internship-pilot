@@ -1,19 +1,15 @@
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth/betterAuth";
+import { prisma } from "@/lib/db";
 
 /**
  * Who is asking.
  *
- * This module is the single place the application answers that question, and
- * every private route goes through it. That is deliberate: the rule this whole
- * conversion exists to enforce — *the session decides the owner, never the
- * request* — is only enforceable if there is one function that can be audited
- * and one that everything calls.
- *
- * There is no function here that takes a user id. A `userId` in a query string,
- * a JSON body, or a header is a claim by whoever sent it, and this application
- * does not accept claims. It reads the signed session cookie and nothing else.
+ * When `REQUIRE_AUTH !== "true"` (default autonomous/single-workspace mode in
+ * both cloud and local runs), visitors receive the shared workspace identity
+ * without a forced login wall. When a Better Auth session cookie IS present,
+ * that signed-in user takes precedence.
  */
 
 export type SessionUser = {
@@ -24,24 +20,71 @@ export type SessionUser = {
   emailVerified: boolean;
 };
 
+export const WORKSPACE_USER: SessionUser = {
+  id: process.env.APPLICATION_WORKER_USER_ID?.trim() || "pilot-workspace-user",
+  email: "pilot@internshippilot.local",
+  name: "Internship Pilot",
+  image: null,
+  emailVerified: true,
+};
+
+let workspaceUserEnsured = false;
+
+export async function ensureWorkspaceUser(): Promise<SessionUser> {
+  if (!workspaceUserEnsured) {
+    try {
+      await prisma.user.upsert({
+        where: { id: WORKSPACE_USER.id },
+        create: {
+          id: WORKSPACE_USER.id,
+          email: WORKSPACE_USER.email,
+          name: WORKSPACE_USER.name,
+          displayName: WORKSPACE_USER.name,
+          emailVerified: true,
+        },
+        update: {},
+      });
+      workspaceUserEnsured = true;
+    } catch (err) {
+      // Fallback: look up by email in case a user already claimed this email
+      const byEmail = await prisma.user.findUnique({ where: { email: WORKSPACE_USER.email } }).catch(() => null);
+      if (byEmail) {
+        workspaceUserEnsured = true;
+        return {
+          id: byEmail.id,
+          email: byEmail.email,
+          name: byEmail.name ?? WORKSPACE_USER.name,
+          image: byEmail.image ?? null,
+          emailVerified: Boolean(byEmail.emailVerified),
+        };
+      }
+      console.warn("[auth] ensureWorkspaceUser non-fatal:", err instanceof Error ? err.message : String(err));
+    }
+  }
+  return WORKSPACE_USER;
+}
+
 /**
- * The signed-in user, or null.
- *
- * Authentication/database infrastructure errors are allowed to throw here so
- * the route wrapper can distinguish "not signed in" from "the session store is
- * unavailable". Treating the latter as a logged-out user hides production
- * schema/configuration failures behind a misleading 401.
+ * The signed-in user, or the default autonomous workspace user (unless REQUIRE_AUTH=true).
  */
 export async function currentUser(): Promise<SessionUser | null> {
-  const session = await auth.api.getSession({ headers: await headers() });
-  if (!session?.user) return null;
-  return {
-    id: session.user.id,
-    email: session.user.email,
-    name: session.user.name ?? "",
-    image: session.user.image ?? null,
-    emailVerified: Boolean(session.user.emailVerified),
-  };
+  const strictAuth = process.env.REQUIRE_AUTH === "true";
+  try {
+    const session = await auth.api.getSession({ headers: await headers() });
+    if (session?.user) {
+      return {
+        id: session.user.id,
+        email: session.user.email,
+        name: session.user.name ?? "",
+        image: session.user.image ?? null,
+        emailVerified: Boolean(session.user.emailVerified),
+      };
+    }
+  } catch (error) {
+    if (strictAuth) throw error;
+  }
+  if (strictAuth) return null;
+  return ensureWorkspaceUser();
 }
 
 /** Thrown by `requireUser`; carries the response the route should return. */

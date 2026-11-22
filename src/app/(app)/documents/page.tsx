@@ -261,11 +261,11 @@ export default function DocumentsPage() {
   return (
     <div className="max-w-4xl mx-auto px-8 py-10 space-y-6">
       <header>
-        <h1 className="text-2xl font-semibold">Documents</h1>
+        <h1 className="font-display text-title font-semibold tracking-tight text-primary">Documents &amp; Candidate Vault</h1>
         <p className="text-secondary text-sm">
-          Your resume and its approved facts live on the{" "}
+          Your uploaded resume and extracted evidence live on the{" "}
           <Link href="/profile" className="text-accent-text hover:underline">
-            Profile page
+            Resume page
           </Link>
           . Here: an optional master cover letter, your reusable bullet library, and the contact
           details used on generated documents.
@@ -372,7 +372,7 @@ export default function DocumentsPage() {
           </Field>
           <Field label="Remote preference">
             <select value={profile.remotePreference ?? ""} onChange={(e) => setProfile({ ...profile, remotePreference: e.target.value })} className="input">
-              <option value="">Ask me each time</option>
+              <option value="">Auto / Not specified</option>
               <option value="remote">Remote</option>
               <option value="hybrid">Hybrid</option>
               <option value="onsite">On-site</option>
@@ -384,14 +384,14 @@ export default function DocumentsPage() {
           </Field>
           <Field label="Do you hold a valid driver’s licence?">
             <select value={triStateValue(profile.hasDriversLicense)} onChange={(e) => setProfile({ ...profile, hasDriversLicense: triStateParse(e.target.value) })} className="input">
-              <option value="">Ask me each time</option>
+              <option value="">Auto / Not specified</option>
               <option value="yes">Yes</option>
               <option value="no">No</option>
             </select>
           </Field>
           <Field label="Do you meet the minimum age requirement?">
             <select value={triStateValue(profile.meetsMinimumAge)} onChange={(e) => setProfile({ ...profile, meetsMinimumAge: triStateParse(e.target.value) })} className="input">
-              <option value="">Ask me each time</option>
+              <option value="">Auto / Not specified</option>
               <option value="yes">Yes</option>
               <option value="no">No</option>
             </select>
@@ -404,7 +404,7 @@ export default function DocumentsPage() {
           </Field>
           <Field label="Let the agent help create employer accounts?">
             <select value={triStateValue(profile.wantsAccountCreationHelp)} onChange={(e) => setProfile({ ...profile, wantsAccountCreationHelp: triStateParse(e.target.value) })} className="input">
-              <option value="">Ask me each time</option>
+              <option value="">Auto / Not specified</option>
               <option value="yes">Yes</option>
               <option value="no">No</option>
             </select>
@@ -415,7 +415,7 @@ export default function DocumentsPage() {
               onChange={(e) => setProfile({ ...profile, willingToRelocate: triStateParse(e.target.value) })}
               className="input"
             >
-              <option value="">Ask me each time</option>
+              <option value="">Auto / Not specified</option>
               <option value="yes">Yes</option>
               <option value="no">No</option>
             </select>
@@ -448,7 +448,7 @@ export default function DocumentsPage() {
             <button
               type="submit"
               disabled={savingProfile}
-              className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-dark transition-colors"
+              className="rounded-lg bg-accent text-inverse text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-hover transition-colors"
             >
               {savingProfile ? "Saving…" : "Save profile"}
             </button>
@@ -459,9 +459,7 @@ export default function DocumentsPage() {
       <section className="bg-surface rounded-lg border border-hairline p-6 space-y-4">
         <h2 className="font-medium text-primary">Application-form answers (optional)</h2>
         <p className="text-xs text-tertiary">
-          Leave any of these blank and the Application Agent will always stop and ask you directly
-          instead of guessing — it never invents an answer to a work-authorization, sponsorship,
-          clearance, or demographic question.
+          Stored answers here are used automatically when employer portals ask work-authorization, sponsorship, clearance, or EEO questions.
         </p>
         <form onSubmit={saveProfile} className="grid grid-cols-2 gap-4">
           <Field label="Work authorization">
@@ -470,7 +468,7 @@ export default function DocumentsPage() {
               onChange={(e) => setProfile({ ...profile, legallyAuthorizedToWork: triStateParse(e.target.value) })}
               className="input"
             >
-              <option value="">Ask me each time</option>
+              <option value="">Auto / Not specified</option>
               <option value="yes">Authorized to work in the United States</option>
               <option value="no">Not currently authorized to work in the United States</option>
             </select>
@@ -481,7 +479,7 @@ export default function DocumentsPage() {
               onChange={(e) => setProfile({ ...profile, requiresSponsorship: triStateParse(e.target.value) })}
               className="input"
             >
-              <option value="">Ask me each time</option>
+              <option value="">Auto / Not specified</option>
               <option value="yes">Yes</option>
               <option value="no">No</option>
             </select>
@@ -492,7 +490,7 @@ export default function DocumentsPage() {
               onChange={(e) => setProfile({ ...profile, securityClearanceStatus: e.target.value })}
               className="input"
             >
-              <option value="">Ask me each time</option>
+              <option value="">Auto / Not specified</option>
               <option value="Eligible">Eligible</option>
               <option value="Not eligible">Not eligible</option>
             </select>
@@ -514,7 +512,7 @@ export default function DocumentsPage() {
             <button
               type="submit"
               disabled={savingProfile}
-              className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-dark transition-colors"
+              className="rounded-lg bg-accent text-inverse text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-hover transition-colors"
             >
               {savingProfile ? "Saving…" : "Save answers"}
             </button>
@@ -532,9 +530,9 @@ export default function DocumentsPage() {
           <button
             onClick={regenerateBullets}
             disabled={generating}
-            className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2 disabled:opacity-40 hover:bg-accent-dark transition-colors"
+            className="rounded-lg bg-accent text-inverse text-sm font-medium px-4 py-2 disabled:opacity-40 hover:bg-accent-hover transition-colors"
           >
-            {generating ? "Generating…" : "Regenerate from approved facts"}
+            {generating ? "Generating…" : "Regenerate bullets"}
           </button>
         </div>
         <p className="text-xs text-tertiary">
@@ -544,7 +542,7 @@ export default function DocumentsPage() {
         </p>
         {genMessage && <p className="text-xs text-secondary">{genMessage}</p>}
         {bullets.length === 0 ? (
-          <p className="text-sm text-tertiary">No bullets yet. Approve resume facts on the Profile page, then click Regenerate.</p>
+          <p className="text-sm text-tertiary">No bullets yet. Upload your resume on the Resume page or click Regenerate.</p>
         ) : (
           <div className="space-y-4">
             {Object.entries(bulletsByCategory).map(([category, items]) => (

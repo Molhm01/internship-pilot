@@ -69,6 +69,8 @@ describe("official application destination", () => {
     "https://jobs.smartrecruiters.com/Acme/123",
     "https://acme.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/job/123",
     "https://acme.taleo.net/careersection/jobdetail.ftl?job=123",
+    "https://recruiting.ultipro.com/pod1000podse/jobboard/9d07ea8d-f78b-4a3b/OpportunityDetail?opportunityId=abc",
+    "https://www.tesla.com/careers/search/job/289796",
   ])("accepts direct employer/ATS URL %s", async (url) => {
     const result = await resolveOfficialApplicationDestination(
       { officialApplyUrl: url },

@@ -191,11 +191,13 @@ export async function syncAllConnectedGmailInboxes(): Promise<SyncSummary> {
   return total;
 }
 
-export async function syncGmailInbox(userId: string): Promise<SyncSummary> {
-  const accessToken = await getValidAccessToken(userId);
+export async function syncGmailInbox(userId: string, overrideAccessToken?: string | null): Promise<SyncSummary> {
+  const accessToken = (overrideAccessToken && overrideAccessToken.trim().length >= 20)
+    ? overrideAccessToken.trim()
+    : await getValidAccessToken(userId);
   if (!accessToken) return { checked: 0, classified: 0, newAssessments: 0, errors: 0, skipped: "not_connected" };
 
-  const account = await prisma.gmailAccount.findUnique({ where: { userId } });
+  const account = await prisma.gmailAccount.findUnique({ where: { userId } }).catch(() => null);
   const sinceEpochSeconds = account?.lastSyncAt
     ? Math.floor(account.lastSyncAt.getTime() / 1000)
     : Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000);
@@ -244,6 +246,8 @@ export async function syncGmailInbox(userId: string): Promise<SyncSummary> {
     await processSupplementalRadarQueue(Math.min(20, radarEnqueued)).catch(() => undefined);
   }
 
-  await prisma.gmailAccount.update({ where: { userId }, data: { lastSyncAt: new Date() } });
+  if (account) {
+    await prisma.gmailAccount.update({ where: { userId }, data: { lastSyncAt: new Date() } }).catch(() => undefined);
+  }
   return summary;
 }

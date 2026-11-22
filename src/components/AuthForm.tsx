@@ -115,12 +115,12 @@ export default function AuthForm({
 
   return (
     <div className="w-full max-w-md px-8 py-12">
-      <h1 className="text-2xl font-semibold text-primary">
+      <h1 className="font-display text-[1.5rem] font-semibold tracking-[-0.02em] text-primary">
         {signingUp ? "Create your account" : "Log in to Internship Pilot"}
       </h1>
-      <p className="mt-2 text-sm text-secondary">
+      <p className="mt-2 text-small text-secondary">
         {signingUp
-          ? "Your profile, résumé and applications stay yours and stay private."
+          ? "Your profile, resume, and autonomous applications stay private to your workspace."
           : "Welcome back."}
       </p>
 
@@ -130,7 +130,7 @@ export default function AuthForm({
             type="button"
             onClick={() => void continueWithGoogle()}
             disabled={busy}
-            className="mt-8 flex w-full items-center justify-center gap-2.5 rounded-lg border border-hairline bg-surface px-4 py-2.5 text-sm font-medium text-primary hover:bg-surface-hover disabled:opacity-40"
+            className="mt-8 flex w-full items-center justify-center gap-2.5 rounded-lg border border-line bg-surface px-4 py-2.5 text-small font-medium text-primary hover:bg-n-50 disabled:opacity-45"
           >
             <GoogleMark />
             Continue with Google
@@ -138,7 +138,7 @@ export default function AuthForm({
 
           <div className="my-6 flex items-center gap-3" aria-hidden="true">
             <span className="h-px flex-1 bg-hairline" />
-            <span className="text-xs uppercase tracking-wider text-tertiary">or</span>
+            <span className="text-micro uppercase tracking-wider text-tertiary">or</span>
             <span className="h-px flex-1 bg-hairline" />
           </div>
         </>
@@ -151,7 +151,7 @@ export default function AuthForm({
       >
         {signingUp && (
           <label className="block" htmlFor="auth-name">
-            <span className="text-sm font-medium text-secondary">Your name</span>
+            <span className="text-small font-medium text-secondary">Your name</span>
             <input
               id="auth-name"
               name="name"
@@ -164,7 +164,7 @@ export default function AuthForm({
         )}
 
         <label className="block" htmlFor="auth-email">
-          <span className="text-sm font-medium text-secondary">Email address</span>
+          <span className="text-small font-medium text-secondary">Email address</span>
           <input
             id="auth-email"
             name="email"
@@ -178,7 +178,7 @@ export default function AuthForm({
         </label>
 
         <label className="block" htmlFor="auth-password">
-          <span className="text-sm font-medium text-secondary">Password</span>
+          <span className="text-small font-medium text-secondary">Password</span>
           <input
             id="auth-password"
             name="password"
@@ -193,7 +193,7 @@ export default function AuthForm({
 
         {signingUp && (
           <label className="block" htmlFor="auth-confirm-password">
-            <span className="text-sm font-medium text-secondary">Confirm password</span>
+            <span className="text-small font-medium text-secondary">Confirm password</span>
             <input
               id="auth-confirm-password"
               name="confirm-password"
@@ -210,7 +210,7 @@ export default function AuthForm({
         {error && (
           <p
             role="alert"
-            className="rounded-lg border border-critical-line bg-critical-quiet px-3 py-2 text-sm text-critical"
+            className="rounded-lg border border-critical-line bg-critical-quiet px-3 py-2 text-small text-critical"
           >
             {error}
           </p>
@@ -219,40 +219,38 @@ export default function AuthForm({
         <button
           type="submit"
           disabled={busy}
-          className="w-full rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white hover:bg-accent-dark disabled:opacity-40"
+          className="w-full rounded-lg bg-accent px-4 py-2.5 text-small font-medium text-inverse transition-colors hover:bg-accent-hover disabled:opacity-45"
         >
           {busy ? "Working…" : signingUp ? "Create account" : "Sign in"}
         </button>
       </form>
 
       {!signingUp && (
-        <p className="mt-3 text-xs text-tertiary">
+        <p className="mt-3 text-micro text-tertiary">
           You&rsquo;ll stay signed in on this device for up to 30 days unless you sign out.
         </p>
       )}
 
-      <p className="mt-6 text-sm text-secondary">
+      <p className="mt-6 text-small text-secondary">
         {signingUp ? (
           <>
             Already have an account?{" "}
-            <Link href="/login" className="text-accent-text hover:underline">
+            <Link href="/login" className="font-medium text-accent-text hover:underline">
               Log in
             </Link>
           </>
         ) : (
           <>
             No account yet?{" "}
-            <Link href="/signup" className="text-accent-text hover:underline">
+            <Link href="/signup" className="font-medium text-accent-text hover:underline">
               Create one
             </Link>
           </>
         )}
       </p>
 
-      <p className="mt-8 text-xs leading-relaxed text-tertiary">
-        This password is for Internship Pilot only. It is never used on an employer&rsquo;s website —
-        those credentials stay in your browser&rsquo;s password manager or the extension&rsquo;s
-        encrypted vault, and never in this database.
+      <p className="mt-8 text-micro leading-relaxed text-tertiary">
+        Your workspace keeps your resume facts, tailored PDFs, and automated submission history isolated per account.
       </p>
     </div>
   );

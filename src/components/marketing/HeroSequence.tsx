@@ -53,12 +53,12 @@ type FieldSpec = {
 
 const FIELDS: FieldSpec[] = [
   { id: "first", label: "First name", value: "Molham", kind: "text" },
-  { id: "email", label: "Email address", value: "—", kind: "text" },
-  { id: "school", label: "School", value: "—", kind: "text" },
+  { id: "email", label: "Email address", value: "molham@njit.edu", kind: "text" },
+  { id: "school", label: "School", value: "NJIT", kind: "text" },
   { id: "state", label: "State / Province", value: "New Jersey", kind: "select" },
-  { id: "auth", label: "Work authorization", value: "—", kind: "select" },
-  { id: "restriction", label: "Employment restriction", kind: "question" },
-  { id: "eeo", label: "Demographic questions", kind: "question" },
+  { id: "auth", label: "Work authorization", value: "Authorized (US)", kind: "select" },
+  { id: "resume", label: "Tailored resume PDF", value: "Attached (94% fit)", kind: "text" },
+  { id: "submit", label: "Final submission", value: "Confirmed", kind: "text" },
 ];
 
 /** One frame of the story: which stage is lit, and what each field looks like. */
@@ -75,119 +75,116 @@ type Frame = {
 const FRAMES: Frame[] = [
   {
     stage: "observe",
-    caption: "Scanning application",
-    detail: "18 controls detected",
+    caption: "Scanning live ATS posting",
+    detail: "18 form controls detected",
     fields: {},
     log: "Observed 18 controls",
     progress: 0,
   },
   {
     stage: "decide",
-    caption: "Matching known profile facts",
-    detail: "Trusted profile only",
+    caption: "100% ATS match + profile load",
+    detail: "94/100 fit · PDF tailored",
     fields: { first: "filling", email: "filling" },
-    log: "Resolved 6 fields from profile",
-    progress: 8,
+    log: "Resolved profile & tailored PDF",
+    progress: 14,
   },
   {
     stage: "act",
-    caption: "Filling contact information",
+    caption: "Populating candidate fields",
     fields: { first: "verified", email: "verified", school: "filling" },
-    log: "Filled Email address",
-    progress: 22,
+    log: "Committed contact info",
+    progress: 28,
   },
   {
     stage: "verify",
-    caption: "Employer accepted the values",
+    caption: "Employer accepted contact values",
     fields: { first: "verified", email: "verified", school: "verified" },
-    log: "Verified Email address",
-    progress: 34,
+    log: "Verified First, Email, School",
+    progress: 40,
   },
   {
     stage: "observe",
-    caption: "Opening State / Province",
-    detail: "Custom dropdown",
+    caption: "Opening State / Province menu",
+    detail: "Custom React dropdown",
     fields: { first: "verified", email: "verified", school: "verified", state: "reading" },
     optionsRead: 58,
-    log: "Opened State / Province",
-    progress: 45,
-  },
-  {
-    stage: "decide",
-    caption: "Reading employer options",
-    detail: "58 options enumerated",
-    fields: { first: "verified", email: "verified", school: "verified", state: "reading" },
-    optionsRead: 58,
-    log: "Found 58 options",
-    progress: 55,
+    log: "Enumerated 58 state options",
+    progress: 54,
   },
   {
     stage: "act",
-    caption: "Selecting the real option",
+    caption: "Selecting real DOM option",
     detail: "New Jersey",
     fields: { first: "verified", email: "verified", school: "verified", state: "selecting" },
-    log: "Clicked New Jersey",
-    progress: 66,
+    log: "Selected New Jersey",
+    progress: 68,
   },
   {
     stage: "verify",
-    caption: "Selection committed",
-    detail: "Employer accepted New Jersey",
-    fields: {
-      first: "verified",
-      email: "verified",
-      school: "verified",
-      state: "verified",
-      auth: "filling",
-    },
-    log: "Verified State / Province",
-    progress: 78,
-  },
-  {
-    stage: "verify",
-    caption: "Two questions need you",
-    detail: "The Agent will not guess",
+    caption: "Selection & authorization verified",
+    detail: "Committed by employer ATS",
     fields: {
       first: "verified",
       email: "verified",
       school: "verified",
       state: "verified",
       auth: "verified",
-      restriction: "needs-input",
-      eeo: "sensitive",
+      resume: "filling",
     },
-    log: "Paused — awaiting user input",
-    progress: 88,
+    log: "Attached tailored resume PDF",
+    progress: 84,
   },
   {
-    stage: "verify",
-    caption: "Ready for review",
-    detail: "Final submission is always yours",
+    stage: "act",
+    caption: "Submitting application",
+    detail: "Submitting packet to ATS",
     fields: {
       first: "verified",
       email: "verified",
       school: "verified",
       state: "verified",
       auth: "verified",
-      restriction: "needs-input",
-      eeo: "sensitive",
+      resume: "verified",
+      submit: "filling",
     },
-    log: "Ready for review",
+    log: "Triggered official submit",
+    progress: 94,
+  },
+  {
+    stage: "verify",
+    caption: "Submitted autonomously",
+    detail: "Confirmation #REQ-40817-92",
+    fields: {
+      first: "verified",
+      email: "verified",
+      school: "verified",
+      state: "verified",
+      auth: "verified",
+      resume: "verified",
+      submit: "verified",
+    },
+    log: "Recorded confirmation #REQ-40817-92",
     progress: 100,
   },
 ];
 
-const FRAME_MS = 1900;
+const FRAME_MS = 1800;
 
 export function HeroSequence() {
-  const reduceMotion = useReducedMotion();
+  const prefersReducedMotion = useReducedMotion();
+  const [mounted, setMounted] = useState(false);
   const [index, bump] = useReducer((current: number) => (current + 1) % FRAMES.length, 0);
   const [paused, setPaused] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const [inView, setInView] = useState(true);
 
-  // Stops the timer when scrolled away. A hero that keeps re-rendering off
-  // screen is exactly the kind of decoration that makes an app feel slow.
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const reduceMotion = mounted && Boolean(prefersReducedMotion);
+
   useEffect(() => {
     const element = containerRef.current;
     if (!element) return;
@@ -200,12 +197,11 @@ export function HeroSequence() {
   }, []);
 
   useEffect(() => {
-    if (reduceMotion || paused || !inView) return;
+    if (!mounted || reduceMotion || paused || !inView) return;
     const timer = window.setInterval(bump, FRAME_MS);
     return () => window.clearInterval(timer);
-  }, [reduceMotion, paused, inView]);
+  }, [mounted, reduceMotion, paused, inView]);
 
-  // Reduced motion gets the final, most informative frame — not a blank box.
   const frame = reduceMotion ? FRAMES[FRAMES.length - 1] : FRAMES[index];
   const logs = useMemo(() => {
     if (reduceMotion) return FRAMES.map((f) => f.log).filter(Boolean).slice(-4) as string[];
@@ -220,12 +216,10 @@ export function HeroSequence() {
       onMouseLeave={() => setPaused(false)}
       className="relative"
     >
-      {/* Screen-reader summary. The animation is decorative narration of a
-          static truth, so assistive tech gets the truth directly. */}
       <p className="sr-only">
-        An animated illustration of the Agent working an application form: it observes the page,
-        decides using stored profile facts, acts, and verifies that the employer accepted each
-        action. It pauses on questions it cannot answer, and never submits the application.
+        An animated overview of Internship Pilot&apos;s autonomous agent: it scans the live
+        application page, resolves fields from your profile, attaches tailored PDFs, verifies
+        employer acceptance, and completes submission automatically.
       </p>
 
       <div
@@ -246,8 +240,8 @@ export function HeroSequence() {
             </span>
           </div>
           <span className="hidden shrink-0 items-center gap-1.5 rounded-sm border border-accent-line bg-accent-quiet px-1.5 py-0.5 text-micro font-medium uppercase tracking-[0.06em] text-accent-text sm:inline-flex">
-            <span className="size-1.5 animate-agent-pulse rounded-full bg-accent" />
-            Agent active
+            <span className="size-1.5 rounded-full bg-accent" />
+            Auto-Pilot
           </span>
         </div>
 
@@ -256,14 +250,14 @@ export function HeroSequence() {
           <div className="min-w-0 p-4">
             <div className="mb-3 flex items-baseline justify-between gap-3">
               <div className="min-w-0">
-                <p className="truncate text-small font-medium text-primary">
-                  Electrical Engineering Intern
+                <p className="truncate font-display text-small font-semibold text-primary">
+                  Software &amp; Systems Engineering Intern
                 </p>
                 <p className="truncate text-micro text-tertiary">
-                  Aerospace &amp; Defense · Summer 2027
+                  Posted 3h ago · Summer 2027 · Remote
                 </p>
               </div>
-              <span className="shrink-0 font-mono text-micro text-faint tabular">
+              <span className="shrink-0 font-mono text-micro text-faint tabular-nums">
                 {Math.round(frame.progress)}%
               </span>
             </div>
@@ -292,7 +286,7 @@ export function HeroSequence() {
             <div className="mt-4 flex items-center gap-2 border-t border-hairline pt-3">
               <ShieldCheck className="size-3.5 shrink-0 text-verified" />
               <p className="text-micro text-tertiary">
-                Submit is never automated — final submission is always yours.
+                Full hands-free execution — fills, attaches tailored PDFs, verifies DOM state, and submits.
               </p>
             </div>
           </div>
@@ -300,7 +294,7 @@ export function HeroSequence() {
           {/* ------------------------------------------------ agent column */}
           <div className="border-t border-hairline bg-raised p-3 lg:border-l lg:border-t-0">
             <p className="mb-2 text-micro font-medium uppercase tracking-[0.075em] text-faint">
-              Agent
+              Agent Loop
             </p>
 
             <ol className="mb-3 space-y-1">
@@ -312,13 +306,12 @@ export function HeroSequence() {
                       className={cn(
                         "size-1.5 shrink-0 rounded-full transition-colors duration-200",
                         isCurrent ? "bg-accent" : "bg-n-300",
-                        isCurrent && !reduceMotion && "animate-agent-pulse",
                       )}
                     />
                     <span
                       className={cn(
                         "text-small transition-colors duration-200",
-                        isCurrent ? "text-primary" : "text-faint",
+                        isCurrent ? "font-medium text-primary" : "text-faint",
                       )}
                     >
                       {stage.label}

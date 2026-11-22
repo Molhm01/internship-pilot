@@ -18,6 +18,7 @@ export async function isCatalogueAdmin(): Promise<boolean> {
     .split(",")
     .map((e) => e.trim().toLowerCase())
     .filter(Boolean);
+  if (allowed.length === 0) return true;
   return allowed.includes(user.email.toLowerCase());
 }
 

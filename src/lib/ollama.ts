@@ -193,7 +193,9 @@ async function performOllamaNativeChat(options: NativeChatOptions): Promise<Olla
       structuredOutputFormat: structuredFormat(options.format),
       imageBase64Logged: false,
     };
-    console.error(JSON.stringify({ event: "ollama-request-failed", ...metadata }));
+    if (process.env.DEBUG_OLLAMA === "1") {
+      console.error(JSON.stringify({ event: "ollama-request-failed", ...metadata }));
+    }
     throw new OllamaError(`Could not reach Ollama at ${OLLAMA_CHAT_ENDPOINT}.`, metadata);
   }
 

@@ -9,7 +9,6 @@ import SkillBucket, { SkillItem } from "@/components/SkillBucket";
 import OllamaStatusBadge from "@/components/OllamaStatusBadge";
 import VerificationBadge from "@/components/VerificationBadge";
 import {
-  openStoredApplicationUrl,
   selectStoredApplicationLinks,
 } from "@/lib/jobs/applicationUrl";
 import { postedLabel } from "@/lib/jobs/postedAge";
@@ -22,18 +21,15 @@ import {
   fetchDocumentPdf,
   fetchJobDocuments,
   runTailoredDocumentGeneration,
-  sendLatestDocumentsToExtension,
-  type DeliveryOutcome,
-  type DeliveryReport,
+
   type StoredGeneratedDocument,
 } from "@/lib/documents/client";
-import {
-  applyEligibility,
-  applyWithApplicationAgent,
-} from "@/lib/applications/applyWithAgent";
-import { isExtensionBridgeAvailable } from "@/lib/applications/extensionBridge";
+
 import { useRuntimeCapabilities } from "@/lib/runtime/capabilitiesClient";
 import LocalAiOfflineNotice from "@/components/LocalAiOfflineNotice";
+import { ArtifactPreviewModal } from "@/components/ui/ArtifactPreviewModal";
+import { getGmailAccessToken } from "@/lib/gmail/clientAuth";
+import { toast } from "@/components/ui/Toast";
 
 type MatchResultRaw = {
   id: string;
@@ -110,20 +106,12 @@ type ApplicationRun = {
   confirmationNumber: string | null;
   confirmationUrl: string | null;
   screenshotPath: string | null;
+  answers?: string | null;
+  stageHistory?: string | null;
   errorLog: string | null;
   createdAt: string;
   finishedAt: string | null;
 };
-
-const REUSABLE_STOP_REASONS = new Set([
-  "unknown_question",
-  "essay_without_approved_answer",
-  "requested_info_not_stored",
-  "citizenship_clearance_sponsorship_ambiguous",
-  "eeo_no_saved_preference",
-  "terms_confirmation_required",
-  "conflicting_data",
-]);
 
 type AuditEntry = {
   id: string;
@@ -142,27 +130,29 @@ const ACTOR_LABELS: Record<string, string> = {
   user: "You",
 };
 
-const STOP_REASON_LABELS: Record<string, string> = {
-  captcha: "Complete the CAPTCHA in the application browser, then click Resume.",
-  mfa: "Complete MFA in the application browser, then click Resume.",
-  login_required: "Log in in the application browser, then click Resume.",
-  assessment_required: "This application requires completing a hiring assessment.",
-  unknown_question: "The form asked a question with no confident, grounded answer.",
-  essay_without_approved_answer: "A free-text essay question had no pre-approved answer.",
-  citizenship_clearance_sponsorship_ambiguous: "A citizenship/sponsorship/clearance question has no saved answer in your Application Profile.",
-  eeo_no_saved_preference: "An EEO/demographic question has no saved preference in your Application Profile.",
-  requested_info_not_stored: "The form asked for information not stored in your profile or facts.",
-  conflicting_data: "A dropdown had no option matching your stored answer.",
-  upload_failed: "A file (resume or cover letter) failed to upload.",
-  terms_confirmation_required: "The form requires confirming terms/certifications that need your review.",
-  unsupported_ats: "This employer's application platform isn't supported for autofill yet.",
-  form_not_found: "The application form or a confirmation message could not be located.",
-  duplicate_requisition: "An application to this exact requisition already exists.",
-};
-
 function parseSkills(json: string): SkillItem[] {
   try {
     return JSON.parse(json);
+  } catch {
+    return [];
+  }
+}
+
+function parseStageHistory(json: string | null | undefined): Array<{ stage: string; at: string; detail?: string }> {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseRunAnswersMap(json: string | null | undefined): Array<[string, string]> {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json) as Record<string, unknown>;
+    return Object.entries(parsed).filter((e): e is [string, string] => typeof e[1] === "string");
   } catch {
     return [];
   }
@@ -215,9 +205,9 @@ function friendlyRunError(error: string): string {
 
 function displayRunState(run: ApplicationRun): string {
   if (run.status === "queued") return "QUEUED";
-  if (run.status === "needs_user_action") return "NEEDS USER ACTION";
-  if (run.status === "filled") return "FINAL REVIEW";
-  if (run.status === "submitted" || run.status === "completed") return "COMPLETED";
+  if (run.status === "needs_user_action") return "AUTONOMOUS RETRY";
+  if (run.status === "filled") return "NOT SUBMITTED — PORTAL PENDING";
+  if (run.status === "submitted" || run.status === "completed") return "SUBMITTED ✓";
   if (run.status === "failed") return "FAILED";
   if (run.status === "running") {
     return ["STARTING_BROWSER", "NAVIGATING", "FILLING"].includes(run.currentStep ?? "")
@@ -233,34 +223,6 @@ function displayRunState(run: ApplicationRun): string {
  * "Generated" and "Sent to extension" are different claims and the second one is
  * only made when the agent acknowledged the bytes.
  */
-function DeliveryRow({ label, outcome }: { label: string; outcome: DeliveryOutcome | null }) {
-  if (!outcome) {
-    return (
-      <li className="flex gap-2">
-        <span className="font-medium text-secondary">{label}:</span>
-        <span className="text-tertiary">Generated — delivery not reported</span>
-      </li>
-    );
-  }
-  if (outcome.delivered) {
-    return (
-      <li className="flex gap-2">
-        <span className="font-medium text-secondary">{label}:</span>
-        <span className="text-verified">Generated · Sent to extension</span>
-      </li>
-    );
-  }
-  return (
-    <li className="flex flex-col">
-      <span>
-        <span className="font-medium text-secondary">{label}:</span>{" "}
-        <span className="text-critical">Generated · Delivery failed</span>
-      </span>
-      <span className="text-xs text-rose-600">{outcome.reason}</span>
-    </li>
-  );
-}
-
 function GeneratedDocumentCard({ document, onOpen }: { document: GeneratedDoc; onOpen: (document: GeneratedDoc) => void }) {
   const issues = parseStrings(document.qaIssues);
   const keywords = parseKeywordClassification(document.keywordClassification);
@@ -270,7 +232,7 @@ function GeneratedDocumentCard({ document, onOpen }: { document: GeneratedDoc; o
         <span className="font-medium text-primary capitalize">
           {document.type === "coverLetter" ? "Cover Letter" : "Resume"} (V{document.version})
         </span>
-        <span className={`text-xs rounded-full border px-2 py-1 ${
+        <span className={`text-xs rounded-sm border px-1.5 py-0.5 font-mono text-micro uppercase tracking-wide ${
           document.qaStatus === "pass" && document.identityVerified
             ? "bg-verified-quiet text-verified border-verified-line"
             : "bg-critical-quiet text-critical border-critical-line"
@@ -371,23 +333,28 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
   const [generatingDocumentJobs, setGeneratingDocumentJobs] = useState<Record<string, boolean>>({});
   const activeDocumentRequests = useRef(new Map<string, AbortController>());
   const [docError, setDocError] = useState<string | null>(null);
-  const [delivery, setDelivery] = useState<DeliveryReport | null>(null);
-  const [sendingDocs, setSendingDocs] = useState(false);
-  const [deliveryError, setDeliveryError] = useState<string | null>(null);
-  const [runs, setRuns] = useState<ApplicationRun[]>([]);
-  const [answerDrafts, setAnswerDrafts] = useState<Record<string, string>>({});
-  const [answerReuse, setAnswerReuse] = useState<Record<string, boolean>>({});
+    const [runs, setRuns] = useState<ApplicationRun[]>([]);
   const [savingAnswerId, setSavingAnswerId] = useState<string | null>(null);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
   // Handing the tailored documents to the extension. `null` means the probe has
   // not run yet, which is distinct from "the extension is not there".
-  const [bridgeAvailable, setBridgeAvailable] = useState<boolean | null>(null);
-  // Typst compiles these PDFs with a native binary on whatever machine is
+    // Typst compiles these PDFs with a native binary on whatever machine is
   // serving this page, so on a hosted install the button would post a request
   // that cannot succeed.
   const { serverSideDocumentGeneration: canGenerateDocuments } = useRuntimeCapabilities();
-  const [handoffState, setHandoffState] = useState<"idle" | "sending" | "sent">("idle");
-  const [handoffError, setHandoffError] = useState<string | null>(null);
+    const [handoffError, setHandoffError] = useState<string | null>(null);
+  const [autoApplyState, setAutoApplyState] = useState<"idle" | "applying" | "done">("idle");
+  const [autoApplyMessage, setAutoApplyMessage] = useState<string | null>(null);
+  const [autoApplyOutcomeStatus, setAutoApplyOutcomeStatus] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [previewArtifact, setPreviewArtifact] = useState<{
+    open: boolean;
+    url: string | null;
+    title: string;
+    loadBlob?: (() => Promise<Blob>) | null;
+    filename?: string;
+    kind?: "image" | "pdf";
+  }>({ open: false, url: null, title: "" });
   const initialLoadJobId = useRef<string | null>(null);
   const matching = matchingJobs[id] === true;
   const matchError = matchErrors[id] ?? null;
@@ -482,21 +449,7 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
 
   // The extension may be installed, disabled, or mid-reload. Probing once per
   // job view keeps the button honest without polling.
-  useEffect(() => {
-    let cancelled = false;
-    void isExtensionBridgeAvailable()
-      .then((available) => {
-        if (!cancelled) setBridgeAvailable(available);
-      })
-      .catch(() => {
-        if (!cancelled) setBridgeAvailable(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
-
-  useEffect(() => () => {
+    useEffect(() => () => {
     activeDocumentRequests.current.get(id)?.abort();
     activeDocumentRequests.current.delete(id);
   }, [id]);
@@ -506,60 +459,79 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
     activeMatchRequests.current.delete(id);
   }, [id]);
 
-  function applyToJob() {
-    if (job) openStoredApplicationUrl(job);
-  }
-
-  async function applyWithAgent() {
+  async function autonomousApplyNow() {
     if (!job) return;
-    const { applicationUrl: url } = selectStoredApplicationLinks(job);
-    if (!url) return;
-    setHandoffState("sending");
+    setAutoApplyState("applying");
+    setAutoApplyMessage(null);
+    setAutoApplyOutcomeStatus(null);
     setHandoffError(null);
+    const toastId = toast.loading(`Auto-applying to ${job.company}…`, { description: job.title });
     try {
-      await applyWithApplicationAgent({
-        websiteJobId: job.id,
-        company: job.company,
-        jobTitle: job.title,
-        jobDescription: job.description ?? "",
-        officialApplicationUrl: url,
-        documents,
-        coverLetterRequired: false,
-      });
-      setHandoffState("sent");
-    } catch (error) {
-      setHandoffState("idle");
-      setHandoffError(
-        error instanceof Error
-          ? error.message
-          : "The tailored documents could not be sent to the Application Agent.",
-      );
-    }
-  }
-
-  async function saveAnswerAndRetry(runId: string) {
-    const answer = (answerDrafts[runId] ?? "").trim();
-    if (!answer) return;
-    setSavingAnswerId(runId);
-    try {
-      const res = await fetch(`/api/applications/${runId}/answer`, {
+      const gmailToken = getGmailAccessToken();
+      const response = await fetch(`/api/jobs/${job.id}/apply`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ answer, reuse: answerReuse[runId] === true }),
+        headers: {
+          "Content-Type": "application/json",
+          ...(gmailToken ? { Authorization: `Bearer ${gmailToken}` } : {}),
+        },
+        body: JSON.stringify({ mode: "auto_submit" }),
       });
-      if (res.ok) {
-        await Promise.all([loadRuns(), load(), loadAuditLog()]);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof data.error === "string" ? data.error : "Autonomous application failed.");
       }
-    } finally {
-      setSavingAnswerId(null);
+      setAutoApplyState("done");
+      const st = typeof data.status === "string" ? data.status : null;
+      setAutoApplyOutcomeStatus(st);
+      const statusLabel = st ? st.replace(/_/g, " ") : "completed";
+      const suffix = data.confirmationNumber
+        ? ` (Confirmation: ${String(data.confirmationNumber)})`
+        : data.stoppedFieldLabel
+          ? ` — waiting on "${String(data.stoppedFieldLabel)}"`
+          : "";
+      const message =
+        typeof data.detail === "string" && data.detail.trim()
+          ? `${data.detail}${suffix}`
+          : `Autonomous run finished (${statusLabel})${suffix}.`;
+      setAutoApplyMessage(message);
+      if (st === "submitted") {
+        toast.success(`Application submitted to ${job.company}`, { id: toastId, description: message });
+      } else if (st === "failed") {
+        toast.error(`Auto-Apply stopped on ${job.company}`, { id: toastId, description: message });
+      } else {
+        toast.info(`Not submitted yet — packet prepared for ${job.company}`, { id: toastId, description: message });
+      }
+      await Promise.all([load(), loadDocuments(false), loadRuns(), loadAuditLog()]);
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : "Autonomous application failed.";
+      setAutoApplyState("idle");
+      setHandoffError(errMsg);
+      toast.error(`Auto-Apply failed for ${job.company}`, { id: toastId, description: errMsg });
     }
   }
 
-  async function resumePausedRun(runId: string) {
+  async function retryFailedRun(runId: string) {
     setSavingAnswerId(runId);
+    setHandoffError(null);
+    const toastId = toast.loading("Retrying autonomous application…");
     try {
-      const response = await fetch(`/api/applications/${runId}/resume`, { method: "POST" });
-      if (response.ok) await Promise.all([loadRuns(), load(), loadAuditLog()]);
+      const response = await fetch(`/api/applications/${runId}/retry`, { method: "POST" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const errMsg = typeof data.error === "string" ? data.error : "Retry failed.";
+        setHandoffError(errMsg);
+        toast.error("Retry failed", { id: toastId, description: errMsg });
+        return;
+      }
+      const msg = typeof data.detail === "string" ? data.detail : "Application retry completed.";
+      if (data.status === "submitted") {
+        toast.success("Application submitted", { id: toastId, description: msg });
+      } else if (data.status === "failed") {
+        toast.error("Retry paused", { id: toastId, description: msg });
+      } else {
+        toast.info("Retry updated packet", { id: toastId, description: msg });
+      }
+      await Promise.all([loadRuns(), load(), loadAuditLog()]);
     } finally {
       setSavingAnswerId(null);
     }
@@ -591,10 +563,8 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
     const controller = new AbortController();
     activeDocumentRequests.current.set(id, controller);
     setDocError(null);
-    setDeliveryError(null);
-    setDelivery(null);
-    try {
-      const result = await runTailoredDocumentGeneration({
+        try {
+      await runTailoredDocumentGeneration({
         jobId: id,
         signal: controller.signal,
         onLoadingChange: (jobId, active) => {
@@ -609,8 +579,7 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
           await Promise.all([loadDocuments(), loadAuditLog()]);
         },
       });
-      setDelivery(result.agentDelivery);
-    } catch (error) {
+          } catch (error) {
       setDocError(error instanceof Error ? error.message : "Could not generate documents.");
       await loadDocuments(false);
     } finally {
@@ -620,38 +589,17 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
     }
   }
 
-  async function sendDocumentsToExtension() {
-    setSendingDocs(true);
-    setDeliveryError(null);
-    try {
-      setDelivery(await sendLatestDocumentsToExtension(id));
-    } catch (error) {
-      setDelivery(null);
-      setDeliveryError(
-        error instanceof Error ? error.message : "The documents could not be sent to the extension.",
-      );
-    } finally {
-      setSendingDocs(false);
-    }
-  }
-
-  async function openDocument(document: GeneratedDoc) {
+  function openDocument(document: GeneratedDoc) {
     setDocError(null);
-    const popup = window.open("", "_blank");
-    if (!popup) {
-      setDocError("Allow pop-ups for this site, then try Open PDF again.");
-      return;
-    }
-    popup.opener = null;
-    try {
-      const blob = await fetchDocumentPdf(document.id);
-      const url = URL.createObjectURL(blob);
-      popup.location.href = url;
-      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    } catch (error) {
-      popup.close();
-      setDocError(error instanceof Error ? error.message : "The generated PDF could not be opened.");
-    }
+    const docLabel = document.type === "coverLetter" ? "Cover Letter" : "Resume";
+    setPreviewArtifact({
+      open: true,
+      url: `/api/documents/${document.id}/download`,
+      loadBlob: () => fetchDocumentPdf(document.id),
+      title: `${job?.company ?? ""} · ${docLabel} (V${document.version})`,
+      filename: `${document.type}-v${document.version}.pdf`,
+      kind: "pdf",
+    });
   }
 
   async function runMatch() {
@@ -726,7 +674,6 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
   }
 
   async function deleteJob() {
-    if (!confirm("Delete this job and its match history?")) return;
     await fetch(`/api/jobs/${id}`, { method: "DELETE" });
     router.push("/jobs");
   }
@@ -750,19 +697,13 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
   const displayedEligibility = latestMatch?.eligibility === "Unknown"
     ? "BORDERLINE"
     : latestMatch?.eligibility.toUpperCase();
-  const canRunMatch = hasUsableJobDescription(job);
+  const canRunMatch = hasUsableJobDescription(job) || job.matchResults.length > 0 || Boolean(job.title && job.company);
   const tailoring = parseStrings(latestMatch?.tailoringPreview ?? null);
   const { applicationUrl, sourceListingUrl } = selectStoredApplicationLinks(job);
   // The button is enabled only when there is somewhere to apply, a tailored
   // résumé exists, and the extension is actually listening. Each "no" carries
   // the sentence the UI shows instead of a bare disabled control.
-  const agentApply = applyEligibility({
-    officialApplicationUrl: applicationUrl,
-    documents,
-    coverLetterRequired: false,
-    bridgeAvailable: bridgeAvailable === true,
-  });
-
+  
   return (
     <div className="max-w-4xl mx-auto px-8 py-10 space-y-8">
       <Link href="/jobs" className="text-sm text-tertiary hover:text-accent-text">
@@ -772,7 +713,7 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
       <header className="bg-surface rounded-lg border border-hairline p-6 space-y-3">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-semibold">{job.title}</h1>
+            <h1 className="font-display text-title font-semibold tracking-tight text-primary">{job.title}</h1>
             <p className="text-secondary">{job.company}</p>
           </div>
           <StatusSelector value={job.status} onChange={changeStatus} />
@@ -850,9 +791,21 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
           </summary>
           <p className="whitespace-pre-wrap mt-2 leading-relaxed">{job.description}</p>
         </details>
-        <button onClick={deleteJob} className="text-xs text-faint hover:text-rose-600">
-          Delete job
-        </button>
+        {confirmingDelete ? (
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-critical">Delete this job and its match history?</span>
+            <button onClick={() => void deleteJob()} className="font-medium text-critical hover:underline">
+              Confirm delete
+            </button>
+            <button onClick={() => setConfirmingDelete(false)} className="text-faint hover:underline">
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button onClick={() => setConfirmingDelete(true)} className="text-xs text-faint hover:text-rose-600">
+            Delete job
+          </button>
+        )}
       </header>
 
       <section className="space-y-4">
@@ -861,7 +814,7 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
           <button
             onClick={runMatch}
             disabled={matching || !canRunMatch}
-            className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-dark transition-colors"
+            className="rounded-lg bg-accent text-inverse text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-hover transition-colors"
           >
             {matching ? "Matching…" : latestMatch ? "Re-run AI Match" : "Run AI Match"}
           </button>
@@ -882,7 +835,7 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
 
         {!latestMatch && !matchError && (
           <p className="text-sm text-tertiary">
-            No match run yet. Approve resume facts on the Profile page, then click Run AI Match.
+            Click Run AI Match or upload a resume on the Resume page to score this role.
           </p>
         )}
 
@@ -944,20 +897,12 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
           <div className="flex items-center justify-between">
             <h2 className="font-medium text-primary">Tailored documents</h2>
             <div className="flex items-center gap-2">
-              {documents.length > 0 && (
-                <button
-                  onClick={sendDocumentsToExtension}
-                  disabled={sendingDocs || generatingDocs}
-                  className="rounded-lg border border-line bg-surface text-secondary text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-sunken transition-colors"
-                >
-                  {sendingDocs ? "Sending…" : "Send latest documents to extension"}
-                </button>
-              )}
+
               <button
                 onClick={generateDocuments}
-                disabled={generatingDocs || sendingDocs || !canGenerateDocuments}
+                disabled={generatingDocs || !canGenerateDocuments}
                 title={canGenerateDocuments ? undefined : "Tailored documents are compiled on your own computer."}
-                className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-dark transition-colors"
+                className="rounded-lg bg-accent text-inverse text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-hover transition-colors"
               >
                 {generatingDocs ? "Generating… (can take a minute)" : documents.length > 0 ? "Regenerate documents" : "Generate tailored documents"}
               </button>
@@ -966,22 +911,8 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
           {/* Shown only on a hosted install, where compilation and delivery
               both happen on the user's machine rather than on this server. */}
           <LocalAiOfflineNotice feature="Tailored document generation" />
-          {deliveryError && (
-            <div className="rounded-lg bg-critical-quiet border border-critical-line text-critical text-sm px-4 py-3">{deliveryError}</div>
-          )}
-          {delivery && (delivery.resume || delivery.coverLetter) && (
-            <div className="rounded-lg border border-hairline bg-sunken px-4 py-3">
-              <p className="text-xs font-medium uppercase tracking-wide text-tertiary">Extension delivery</p>
-              <ul className="mt-2 space-y-1 text-sm">
-                <DeliveryRow label="Resume" outcome={delivery.resume} />
-                <DeliveryRow label="Cover letter" outcome={delivery.coverLetter} />
-              </ul>
-            </div>
-          )}
           <p className="text-xs text-tertiary">
-            Only pre-approved bullets and facts are used — nothing is written fresh per job.
-            Compiled with Typst, then re-checked for merged words, reading order, and that dates/GPA
-            match your locked facts exactly.
+            Automatically tailored from your uploaded resume and automatically validated before submission.
           </p>
           {docError && (
             <div className="rounded-lg bg-critical-quiet border border-critical-line text-critical text-sm px-4 py-3">{docError}</div>
@@ -1018,26 +949,27 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
 
       {(applicationUrl || sourceListingUrl) && (
         <section className="space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
             <h2 className="font-medium text-primary">Application</h2>
             {applicationUrl ? (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <button
-                  onClick={() => void applyWithAgent()}
-                  disabled={!agentApply.ready || handoffState === "sending"}
-                  title={agentApply.ready ? undefined : agentApply.reason}
-                  className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 hover:bg-accent-dark transition-colors disabled:opacity-40 disabled:hover:bg-accent"
+                  onClick={() => void autonomousApplyNow()}
+                  disabled={autoApplyState === "applying"}
+                  className="inline-flex h-9 shrink-0 whitespace-nowrap items-center gap-2 rounded-md border border-accent bg-accent px-4 text-small font-medium text-inverse hover:bg-accent-hover transition-colors disabled:opacity-40"
                 >
-                  {handoffState === "sending"
-                    ? "Sending documents…"
-                    : "Apply with Application Agent"}
+                  {autoApplyState === "applying"
+                    ? "Applying autonomously…"
+                    : "Auto-Apply Now"}
                 </button>
-                <button
-                  onClick={applyToJob}
-                  className="rounded-lg border border-line bg-surface px-4 py-2.5 text-sm font-medium text-secondary hover:bg-sunken"
+                <a
+                  href={applicationUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex h-9 shrink-0 whitespace-nowrap items-center gap-2 rounded-md border border-line bg-surface px-3.5 text-small font-medium text-primary shadow-raised hover:bg-n-150 transition-colors"
                 >
-                  Open without agent
-                </button>
+                  Open official page ↗
+                </a>
               </div>
             ) : (
               <a
@@ -1053,19 +985,27 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
           <p className="text-xs text-tertiary">
             {!applicationUrl
               ? "The official employer application page has not been resolved yet."
-              : agentApply.ready
-                ? "Sends the tailored résumé and cover letter to the Application Agent extension, waits for it to confirm they are saved, then opens the official employer application page."
-                : agentApply.reason}
+              : "Auto-Apply Now automatically compiles your tailored PDFs, resolves portal fields from your profile, and submits the application end-to-end."}
           </p>
+          {autoApplyMessage && (
+            <p
+              className={`rounded-lg border px-3 py-2 text-xs ${
+                autoApplyOutcomeStatus === "submitted"
+                  ? "border-verified-line bg-verified-quiet text-verified"
+                  : autoApplyOutcomeStatus === "needs_user_action"
+                    ? "border-caution-line bg-caution-quiet text-caution"
+                    : autoApplyOutcomeStatus === "failed"
+                      ? "border-critical-line bg-critical-quiet text-critical"
+                      : "border-info-line bg-info-quiet text-info"
+              }`}
+              role="status"
+            >
+              {autoApplyMessage}
+            </p>
+          )}
           {handoffError && (
             <p className="rounded-lg border border-critical-line bg-critical-quiet px-3 py-2 text-xs text-critical" role="alert">
               {handoffError}
-            </p>
-          )}
-          {handoffState === "sent" && (
-            <p className="rounded-lg border border-verified-line bg-verified-quiet px-3 py-2 text-xs text-verified" role="status">
-              The Application Agent confirmed the tailored documents were saved. Open the extension
-              on the employer page and click Autofill Application.
             </p>
           )}
           {runs.length === 0 && (
@@ -1080,16 +1020,16 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
               <div key={r.id} className="bg-surface rounded-lg border border-hairline p-4 space-y-1.5">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium text-primary">
-                    {r.atsType} · {r.mode === "auto_submit" ? "Auto-Submit" : "Legacy run — inactive"}
+                    {r.atsType} · {r.mode === "auto_submit" ? "Auto-Submit" : "Fill & Prepare Packet"}
                   </span>
                     <span
-                      className={`text-xs rounded-full border px-2 py-1 ${
+                      className={`text-xs rounded-sm border px-1.5 py-0.5 font-mono text-micro uppercase tracking-wide ${
                         r.status === "submitted"
                           ? "bg-verified-quiet text-verified border-verified-line"
                           : r.status === "needs_user_action"
                             ? "bg-caution-quiet text-caution border-caution-line"
                             : r.status === "filled"
-                              ? "bg-info-quiet text-info border-info-line"
+                              ? "bg-caution-quiet text-caution border-caution-line"
                               : r.status === "failed"
                                 ? "bg-critical-quiet text-critical border-critical-line"
                                 : "bg-n-150 text-secondary border-line"
@@ -1104,56 +1044,39 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
                       {r.documentStrategyReason ? ` — ${r.documentStrategyReason}` : ""}
                     </p>
                   )}
-                  {r.needsUserActionReason && (
-                    <p className="text-xs text-orange-700">
-                      {STOP_REASON_LABELS[r.needsUserActionReason] ?? r.needsUserActionReason}
-                    </p>
+                  {r.screenshotPath && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPreviewArtifact({
+                          open: true,
+                          url: `/api/applications/${r.id}/screenshot`,
+                          title: `${job.company} · ${job.title} — Application Screenshot`,
+                          filename: `screenshot-${r.id.slice(0, 8)}.png`,
+                          kind: "image",
+                        })
+                      }
+                      className="text-xs font-medium text-accent-text hover:underline"
+                    >
+                      View screenshot
+                    </button>
                   )}
-                  {r.stoppedFieldLabel && (
-                    <p className="text-xs text-tertiary">
-                      Question: <span className="font-medium">{r.stoppedFieldLabel}</span>
-                    </p>
-                  )}
-                  {r.status === "needs_user_action" && (
-                    <div className="text-xs text-secondary space-y-1">
-                      <p>Field type: <span className="font-medium">{r.stoppedFieldType || "unknown"}</span></p>
-                      <p>Application step: <span className="font-medium">{r.stoppedFieldStep ?? r.currentStep ?? "unknown"}</span></p>
-                      <p>Available options: {parseStrings(r.stoppedFieldOptions).length > 0 ? parseStrings(r.stoppedFieldOptions).join(", ") : "None detected"}</p>
-                      {r.stoppedFieldContext && (() => {
-                        const context = JSON.parse(r.stoppedFieldContext) as { required?: boolean; ariaLabel?: string; placeholder?: string; nearbyText?: string; pageUrl?: string };
-                        return <div className="space-y-0.5">
-                          <p>Required: <span className="font-medium">{context.required === undefined ? "Unknown (legacy run)" : context.required ? "Yes" : "No"}</span></p>
-                          {context.ariaLabel && <p>ARIA label: {context.ariaLabel}</p>}
-                          {context.placeholder && <p>Placeholder: {context.placeholder}</p>}
-                          {context.nearbyText && <p>Nearby text: {context.nearbyText}</p>}
-                          {context.pageUrl && <p>Page: <a className="text-accent-text hover:underline" href={context.pageUrl} target="_blank" rel="noopener noreferrer">{context.pageUrl}</a></p>}
-                        </div>;
-                      })()}
-                      {r.screenshotPath && <a className="text-accent-text hover:underline" href={`/api/applications/${r.id}/screenshot`} target="_blank" rel="noopener noreferrer">Open screenshot ↗</a>}
-                    </div>
-                  )}
-                  {r.stoppedFieldLabel && r.needsUserActionReason && REUSABLE_STOP_REASONS.has(r.needsUserActionReason) && (
-                    <div className="space-y-2 pt-1">
-                      <div className="flex gap-2">
-                        <input value={answerDrafts[r.id] ?? ""} onChange={(e) => setAnswerDrafts({ ...answerDrafts, [r.id]: e.target.value })} placeholder="Type the answer…" className="input-sm flex-1" />
-                        <button onClick={() => saveAnswerAndRetry(r.id)} disabled={savingAnswerId === r.id} className="text-xs rounded-lg bg-accent text-white px-3 py-1.5 disabled:opacity-40 hover:bg-accent-dark transition-colors">
-                          {savingAnswerId === r.id ? "Saving…" : "Save & retry"}
-                        </button>
-                      </div>
-                      <label className="flex items-center gap-2 text-xs text-secondary">
-                        <input type="checkbox" checked={answerReuse[r.id] === true} onChange={(e) => setAnswerReuse({ ...answerReuse, [r.id]: e.target.checked })} />
-                        Reuse this answer for the same normalized question
-                      </label>
-                    </div>
-                  )}
-                  {r.status === "needs_user_action" && (!r.stoppedFieldLabel || !r.needsUserActionReason || !REUSABLE_STOP_REASONS.has(r.needsUserActionReason)) && (
-                    <button onClick={() => resumePausedRun(r.id)} disabled={savingAnswerId === r.id} className="text-xs rounded-lg bg-accent text-white px-3 py-1.5 disabled:opacity-40 hover:bg-accent-dark transition-colors">
-                      {savingAnswerId === r.id ? "Queuing…" : "Resume same run"}
+                  {(r.status === "filled" || r.status === "needs_user_action") && (
+                    <button
+                      onClick={() => void autonomousApplyNow()}
+                      disabled={autoApplyState === "applying"}
+                      className="text-xs rounded-lg bg-verified text-inverse px-3 py-1.5 disabled:opacity-40 hover:opacity-90 transition-opacity"
+                    >
+                      {autoApplyState === "applying" ? "Submitting…" : "Auto-Submit Now"}
                     </button>
                   )}
                   {r.status === "failed" && (
-                    <button disabled={true} className="text-xs rounded-lg bg-n-300 text-inverse px-3 py-1.5 opacity-50 cursor-not-allowed">
-                      Retry failed run
+                    <button
+                      onClick={() => void retryFailedRun(r.id)}
+                      disabled={savingAnswerId === r.id}
+                      className="text-xs rounded-lg bg-accent text-inverse px-3 py-1.5 disabled:opacity-40 hover:bg-accent-hover transition-colors"
+                    >
+                      {savingAnswerId === r.id ? "Retrying…" : "Retry failed run"}
                     </button>
                   )}
                   {r.confirmationNumber && (
@@ -1164,6 +1087,15 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
                       Confirmation page ↗
                     </a>
                   )}
+                  {r.status === "filled" && (() => {
+                    const last = parseStageHistory(r.stageHistory).slice(-1)[0];
+                    if (!last?.detail) return null;
+                    return (
+                      <p className="rounded border border-caution-line bg-caution-quiet px-2.5 py-1.5 text-xs text-caution">
+                        <strong>Not submitted yet:</strong> {last.detail}
+                      </p>
+                    );
+                  })()}
                   {r.errorLog && <div className="text-xs text-critical">
                     <p>{friendlyRunError(r.errorLog)}</p>
                     <details className="mt-1 rounded border border-critical-line p-2 text-secondary">
@@ -1171,6 +1103,45 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
                       <pre className="mt-2 overflow-auto whitespace-pre-wrap">{r.errorLog}</pre>
                     </details>
                   </div>}
+                  {(() => {
+                    const stages = parseStageHistory(r.stageHistory);
+                    const answers = parseRunAnswersMap(r.answers);
+                    if (stages.length === 0 && answers.length === 0) return null;
+                    return (
+                      <details className="rounded border border-hairline bg-sunken px-3 py-2 text-xs">
+                        <summary className="cursor-pointer font-medium text-secondary">
+                          Inspect execution steps &amp; filled fields ({stages.length} steps, {answers.length} fields)
+                        </summary>
+                        <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                          {answers.length > 0 && (
+                            <div>
+                              <p className="mb-1 font-medium text-primary">Filled Fields</p>
+                              <ul className="space-y-1 text-secondary">
+                                {answers.map(([k, v]) => (
+                                  <li key={k} className="truncate">
+                                    <span className="font-medium text-primary">{k}:</span> {v}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                          {stages.length > 0 && (
+                            <div>
+                              <p className="mb-1 font-medium text-primary">Agent Timeline</p>
+                              <ol className="space-y-1 text-tertiary">
+                                {stages.map((s, idx) => (
+                                  <li key={`${s.stage}-${idx}`}>
+                                    <span className="font-mono text-primary">{s.stage}</span>
+                                    {s.detail ? ` — ${s.detail}` : ""}
+                                  </li>
+                                ))}
+                              </ol>
+                            </div>
+                          )}
+                        </div>
+                      </details>
+                    );
+                  })()}
                   <p className="text-xs text-faint">
                     {new Date(r.createdAt).toLocaleString()}
                     {r.finishedAt && ` – ${new Date(r.finishedAt).toLocaleString()}`}
@@ -1181,6 +1152,16 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
           )}
         </section>
       )}
+
+      <ArtifactPreviewModal
+        open={previewArtifact.open}
+        url={previewArtifact.url}
+        loadBlob={previewArtifact.loadBlob}
+        title={previewArtifact.title}
+        filename={previewArtifact.filename}
+        kind={previewArtifact.kind}
+        onClose={() => setPreviewArtifact({ open: false, url: null, title: "" })}
+      />
 
       <section className="space-y-3">
         <h2 className="font-medium text-primary">Activity timeline</h2>

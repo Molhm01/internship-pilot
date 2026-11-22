@@ -98,15 +98,19 @@ export async function listIcimsJibeJobs(
         if (res.ok) {
           data = (await res.json()) as JibeResponse;
         } else if (!feedSeen) {
-          console.warn("[icims-jibe] feed request failed", { host: origin, status: res.status });
+          if (res.status >= 500 && process.env.DEBUG_DISCOVERY === "1") {
+            console.warn("[icims-jibe] feed request failed", { host: origin, status: res.status });
+          }
           if (diag) diag.note = `feed HTTP ${res.status} from ${origin}`;
         }
       } catch (err) {
         if (!feedSeen) {
-          console.warn("[icims-jibe] feed request threw", {
-            host: origin,
-            error: err instanceof Error ? err.message : String(err),
-          });
+          if (process.env.DEBUG_DISCOVERY === "1") {
+            console.warn("[icims-jibe] feed request threw", {
+              host: origin,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
           if (diag) diag.note = `feed fetch threw: ${err instanceof Error ? err.message : String(err)}`;
         }
       }

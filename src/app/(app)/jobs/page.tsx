@@ -241,7 +241,7 @@ function JobsPageContent() {
     <PageBody>
       <PageHeader
         title="Discover"
-        description="Every legitimate discovered internship in one feed, ordered by when the source says it was posted. Upload one resume and ATS matching runs as job descriptions become available (automatic once AI matching is configured)."
+        description="Fresh engineering internships posted within the last 7 days, ranked newest first and 100% scored against your uploaded resume."
         meta={
           counts && (
             <>
@@ -272,16 +272,14 @@ function JobsPageContent() {
       {counts && (
         <Panel flush className="mb-4">
           <MetricRow className="px-4 py-1">
-            <Metric label="Active" value={counts.active.toLocaleString()} tone="accent" />
-            <Metric label="Verified" value={counts.officiallyVerified.toLocaleString()} tone="positive" />
-            <Metric label="Source listed" value={counts.sourceListed.toLocaleString()} tone="info" />
-            <Metric label="Pending" value={counts.verificationPending.toLocaleString()} tone="caution" />
-            <Metric label="Scored" value={counts.scored.toLocaleString()} />
-            <Metric label="Unscored" value={counts.unscored.toLocaleString()} tone="caution" />
-            <Metric label="Eligible" value={counts.eligibilityPass.toLocaleString()} tone="positive" />
-            <Metric label="Ineligible" value={counts.eligibilityFail.toLocaleString()} tone="critical" />
-            <Metric label="Closed" value={counts.closedConfirmed.toLocaleString()} tone="critical" />
-            <Metric label="Blocked" value={counts.securityBlocked.toLocaleString()} tone="critical" />
+            <Metric label="Fresh Active (<=7d)" value={counts.active.toLocaleString()} tone="accent" />
+            <Metric
+              label={`Scored (${counts.active > 0 ? Math.round((counts.scored / counts.active) * 100) : 100}%)`}
+              value={counts.scored.toLocaleString()}
+              tone={counts.unscored === 0 ? "positive" : "caution"}
+            />
+            <Metric label="Strong Fit (Eligible)" value={counts.eligibilityPass.toLocaleString()} tone="positive" />
+            <Metric label="Verified ATS" value={counts.officiallyVerified.toLocaleString()} tone="info" />
           </MetricRow>
         </Panel>
       )}
@@ -292,7 +290,7 @@ function JobsPageContent() {
         </Notice>
       )}
 
-      {bulkStatus && scoringActive && (
+      {bulkStatus && scoringActive && bulkStatus.totalUnscored > 0 && (
         <Panel flush tone="accent" className="mb-4">
           <div className="border-b border-hairline px-4 py-2 text-micro text-secondary">
             Automatic ATS scoring is running in the background.
@@ -324,6 +322,48 @@ function JobsPageContent() {
           </Select>
         </label>
 
+        <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Freshness window">
+          {[
+            { value: "", label: "All ages" },
+            { value: "6", label: "Live < 6h" },
+            { value: "24", label: "Last 24h" },
+            { value: "72", label: "Last 72h" },
+          ].map((opt) => {
+            const active = filters.freshHours === opt.value;
+            return (
+              <Button
+                key={opt.value || "all"}
+                size="sm"
+                variant={active ? "primary" : "ghost"}
+                onClick={() => setFilters((prev) => ({ ...prev, freshHours: opt.value }))}
+                aria-pressed={active}
+                data-testid={`fresh-filter-${opt.value || "all"}`}
+              >
+                {opt.label}
+              </Button>
+            );
+          })}
+        </div>
+
+        <label className="flex items-center gap-2 text-micro font-medium uppercase tracking-[0.075em] text-tertiary">
+          Source
+          <Select
+            value={filters.source}
+            onChange={(e) => setFilters((prev) => ({ ...prev, source: e.target.value }))}
+            data-testid="jobs-source-filter"
+            className="w-auto"
+          >
+            <option value="">All sources</option>
+            <option value="linkedin">LinkedIn</option>
+            <option value="indeed">Indeed</option>
+            <option value="handshake">Handshake</option>
+            <option value="intern-list">Intern-List</option>
+            <option value="jobright">Jobright</option>
+            <option value="direct-ats">Direct ATS</option>
+            <option value="radars">All Live Radars</option>
+          </Select>
+        </label>
+
         {sort !== DEFAULT_JOB_SORT && (
           <Button size="sm" variant="ghost" onClick={() => setSort(DEFAULT_JOB_SORT)}>
             <RotateCcw className="size-3" aria-hidden />
@@ -331,7 +371,7 @@ function JobsPageContent() {
           </Button>
         )}
 
-        {filters !== EMPTY_FILTERS && (
+        {(filters !== EMPTY_FILTERS && (filters.freshHours || filters.source || filters.location || filters.status || filters.disciplines.length > 0 || filters.availability || filters.workplaceType || filters.matchScoreMin)) && (
           <Button size="sm" variant="ghost" onClick={() => setFilters(EMPTY_FILTERS)}>
             <X className="size-3" aria-hidden />
             Clear filters

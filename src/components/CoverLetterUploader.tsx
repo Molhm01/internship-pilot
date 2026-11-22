@@ -94,7 +94,7 @@ export default function CoverLetterUploader() {
             type="button"
             onClick={() => inputRef.current?.click()}
             disabled={uploading}
-            className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-dark transition-colors"
+            className="rounded-lg bg-accent text-inverse text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-hover transition-colors"
           >
             {uploading ? "Uploading…" : "Choose PDF"}
           </button>

@@ -19,7 +19,7 @@ type UploadedDoc = {
 
 type AutomaticProfile =
   | { status: "processing" }
-  | { status: "ready"; factCount: number }
+  | { status: "ready"; factCount: number; scoredJobs?: number; totalActive?: number }
   | { status: "failed"; error: string }
   | { status: "not_applicable" }
   | { status: "scanned" };
@@ -35,6 +35,8 @@ type AnalyzeResponse = {
   status?: "ready";
   factCount?: number;
   queuedJobs?: number;
+  scoredJobs?: number;
+  totalActive?: number;
   error?: string;
 };
 
@@ -82,18 +84,35 @@ export default function ResumeUploader({
     try {
       const res = await fetch("/api/resume/analyze", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({ documentId }),
       });
+      const contentType = res.headers.get("content-type") ?? "";
+      if (res.redirected || contentType.includes("text/html")) {
+        setAutomaticProfile({
+          status: "failed",
+          error: "Session expired or redirected during resume analysis. Please reload and try again.",
+        });
+        return;
+      }
       const data = await readJson<AnalyzeResponse>(res);
       if (!res.ok || data?.status !== "ready" || typeof data.factCount !== "number") {
         setAutomaticProfile({
           status: "failed",
-          error: data?.error ?? `Resume analysis failed${res.status ? ` (HTTP ${res.status})` : ""}.`,
+          error:
+            data?.error ??
+            (res.ok
+              ? "Resume analysis returned an unexpected response payload."
+              : `Resume analysis failed (HTTP ${res.status}).`),
         });
         return;
       }
-      setAutomaticProfile({ status: "ready", factCount: data.factCount });
+      setAutomaticProfile({
+        status: "ready",
+        factCount: data.factCount,
+        scoredJobs: data.scoredJobs,
+        totalActive: data.totalActive,
+      });
       await onProcessed?.();
     } catch (err) {
       setAutomaticProfile({
@@ -176,11 +195,11 @@ export default function ResumeUploader({
   }
 
   return (
-    <section className="bg-surface rounded-lg border border-hairline p-6 space-y-4">
+    <section className="rounded-lg border border-hairline bg-surface p-6 shadow-raised space-y-4">
       <div>
-        <h2 className="font-medium text-primary">Upload your resume</h2>
-        <p className="mt-1 text-sm text-secondary">
-          That&apos;s it. Internship Pilot extracts only facts written in the PDF and automatically scores your resume against every active job.
+        <h2 className="font-display text-subhead font-semibold text-primary">Upload your resume</h2>
+        <p className="mt-1 text-small text-secondary">
+          Upload one text-based PDF. Internship Pilot extracts your facts automatically and scores 100% of active internships immediately.
         </p>
       </div>
 
@@ -194,16 +213,16 @@ export default function ResumeUploader({
           onDragLeave={() => setDragActive(false)}
           onDrop={onDrop}
           className={`rounded-lg border-2 border-dashed p-10 text-center transition-colors ${
-            dragActive ? "border-accent-line bg-accent/5" : "border-line"
+            dragActive ? "border-accent-line bg-accent-quiet" : "border-line bg-canvas/50"
           }`}
         >
-          <p className="text-secondary font-medium mb-3">Drag your resume PDF here</p>
-          <p className="text-faint text-sm mb-4">or</p>
+          <p className="mb-3 font-medium text-secondary">Drag your resume PDF here</p>
+          <p className="mb-4 text-small text-tertiary">or</p>
           <button
             type="button"
             onClick={() => inputRef.current?.click()}
             disabled={uploading}
-            className="rounded-lg bg-accent text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40 hover:bg-accent-dark transition-colors"
+            className="inline-flex h-9 shrink-0 items-center whitespace-nowrap rounded-md bg-accent px-4 text-small font-medium text-inverse transition-colors hover:bg-accent-hover disabled:opacity-45"
           >
             {uploading ? "Uploading resume…" : "Choose PDF"}
           </button>
@@ -218,55 +237,59 @@ export default function ResumeUploader({
               if (file) void handleFile(file);
             }}
           />
-          <p className="text-xs text-faint mt-4">
-            PDF only. Local development accepts up to 10 MB. Extracted text is used only to build your resume evidence and compare it with job descriptions.
+          <p className="mt-4 text-micro text-tertiary">
+            PDF only (up to 10 MB locally). Extracted facts immediately drive scoring and tailored application PDFs.
           </p>
         </div>
       )}
 
       {error && (
-        <div className="rounded-lg bg-critical-quiet border border-critical-line text-critical text-sm px-4 py-3">
+        <div className="rounded-lg border border-critical-line bg-critical-quiet px-4 py-3 text-small text-critical">
           {error}
         </div>
       )}
 
       {doc && (
         <div className="space-y-3">
-          <div className="flex items-center justify-between gap-4 text-xs text-tertiary">
-            <span className="truncate">
-              📄 {doc.filename} · {formatBytes(doc.sizeBytes)} · {doc.pageCount} page
+          <div className="flex items-center justify-between gap-4 text-micro text-tertiary">
+            <span className="truncate font-mono">
+              {doc.filename} · {formatBytes(doc.sizeBytes)} · {doc.pageCount} page
               {doc.pageCount === 1 ? "" : "s"}
             </span>
             <button
+              type="button"
               onClick={() => void handleRemove()}
               disabled={analyzing}
-              className="shrink-0 text-accent-text hover:underline disabled:opacity-40"
+              className="shrink-0 whitespace-nowrap font-medium text-accent-text hover:underline disabled:opacity-40"
             >
               Upload a different resume
             </button>
           </div>
 
           {warning && (
-            <div className="rounded-lg bg-caution-quiet border border-caution-line text-caution text-sm px-4 py-3">
+            <div className="rounded-lg border border-caution-line bg-caution-quiet px-4 py-3 text-small text-caution">
               {warning}
             </div>
           )}
 
           {doc.status === "scanned" || automaticProfile?.status === "scanned" ? (
-            <div className="rounded-lg bg-caution-quiet border border-caution-line text-caution text-sm px-4 py-3">
+            <div className="rounded-lg border border-caution-line bg-caution-quiet px-4 py-3 text-small text-caution">
               This PDF appears to be scanned, so its text could not be extracted. Upload a text-based PDF to enable automatic ATS scoring.
             </div>
           ) : automaticProfile?.status === "processing" ? (
-            <div className="rounded-lg bg-accent/5 border border-accent-line text-secondary text-sm px-4 py-3">
-              Resume uploaded. Local AI is extracting your resume evidence now. This can take a little longer the first time a model loads, but the PDF is already saved.
+            <div className="rounded-lg border border-accent-line bg-accent-quiet px-4 py-3 text-small text-secondary">
+              Resume uploaded. Extracting your evidence and scoring all active internships…
             </div>
           ) : automaticProfile?.status === "ready" ? (
-            <div className="rounded-lg bg-positive-quiet border border-positive-line text-positive text-sm px-4 py-3">
-              Resume ready. {automaticProfile.factCount} literal resume facts were extracted. ATS scoring is now queued automatically for every active internship, and future jobs will be scored too.
+            <div className="rounded-lg border border-positive-line bg-positive-quiet px-4 py-3 text-small text-positive">
+              Resume ready. Extracted {automaticProfile.factCount} facts and scored{" "}
+              {typeof automaticProfile.totalActive === "number"
+                ? `${automaticProfile.scoredJobs ?? automaticProfile.totalActive} / ${automaticProfile.totalActive} active internships (100%)`
+                : "every active internship"}.
             </div>
           ) : automaticProfile?.status === "failed" ? (
-            <div className="rounded-lg bg-critical-quiet border border-critical-line text-critical text-sm px-4 py-3">
-              The PDF was saved, but automatic resume analysis could not finish: {automaticProfile.error}
+            <div className="rounded-lg border border-critical-line bg-critical-quiet px-4 py-3 text-small text-critical">
+              Automatic resume analysis encountered an error: {automaticProfile.error}
             </div>
           ) : null}
         </div>

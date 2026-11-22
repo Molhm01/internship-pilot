@@ -41,51 +41,33 @@ describe("route proxy", () => {
     }
   });
 
-  it("keeps extension token issuance behind the session", () => {
-    // Minting and revoking extension tokens is a session action from Settings.
-    // Nothing holding only an extension token should be able to issue more.
+  it("lets autonomous workspace pages and APIs through without forcing sign-in by default", () => {
+    delete process.env.REQUIRE_AUTH;
     getSessionCookie.mockReturnValue(null);
 
-    expect(proxy(request("/api/extension/tokens")).status).toBe(401);
-  });
-
-  it("lets the local launcher read this server's instance identity", () => {
-    // `npm run local` asks this before any account exists — and specifically
-    // when the process on the port may be a stale build it needs to restart.
-    // Behind a session it could never answer, and the launcher would be back
-    // to trusting an HTTP 200. The route itself refuses in a cloud runtime.
-    getSessionCookie.mockReturnValue(null);
-
-    expect(proxy(request("/api/local/instance")).status).not.toBe(401);
-  });
-
-  it("lets every hosted ingestion lane reach its own CRON_SECRET check", () => {
-    getSessionCookie.mockReturnValue(null);
-
-    for (const path of [
-      "/api/cron/job-ingestion",
-      "/api/cron/job-ingestion/fresh",
-      "/api/cron/job-ingestion/standard",
-      "/api/cron/job-ingestion/maintenance",
-    ]) {
-      expect(proxy(request(path)).status, `${path} must reach its own auth check`).not.toBe(401);
-    }
-  });
-
-  it("still refuses every other private API route without a session", () => {
-    getSessionCookie.mockReturnValue(null);
-
+    expect(proxy(request("/dashboard")).status).toBe(200);
     for (const path of ["/api/jobs", "/api/documents", "/api/applications/run-1", "/api/profile"]) {
-      expect(proxy(request(path)).status, `${path} must require a session`).toBe(401);
+      expect(proxy(request(path)).status, `${path} must open in workspace mode`).toBe(200);
     }
   });
 
-  it("redirects a signed-out visitor away from a workspace page", () => {
-    getSessionCookie.mockReturnValue(null);
+  it("keeps extension token issuance, private APIs, and workspace redirects enforced when REQUIRE_AUTH=true", () => {
+    process.env.REQUIRE_AUTH = "true";
+    try {
+      getSessionCookie.mockReturnValue(null);
 
-    const response = proxy(request("/dashboard"));
-    expect(response.status).toBe(307);
-    expect(response.headers.get("location")).toContain("/login");
+      expect(proxy(request("/api/health")).status).toBe(200);
+      expect(proxy(request("/api/extension/tokens")).status).toBe(401);
+      for (const path of ["/api/jobs", "/api/documents", "/api/applications/run-1", "/api/profile"]) {
+        expect(proxy(request(path)).status, `${path} must require a session`).toBe(401);
+      }
+
+      const response = proxy(request("/dashboard"));
+      expect(response.status).toBe(307);
+      expect(response.headers.get("location")).toContain("/login");
+    } finally {
+      delete process.env.REQUIRE_AUTH;
+    }
   });
 
   it("lets a signed-in request through", () => {

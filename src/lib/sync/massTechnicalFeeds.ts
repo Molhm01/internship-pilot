@@ -10,6 +10,12 @@ import { parseFirstSourceDate } from "@/lib/sync/sourceDate";
 import { prisma } from "@/lib/db";
 
 const USER_AGENT = "Mozilla/5.0 Internship-Pilot/1.0";
+const SIMPLIFY_JSON_FEEDS = [
+  "https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/.github/scripts/listings.json",
+  "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/.github/scripts/listings.json",
+  "https://raw.githubusercontent.com/vanshb03/Summer2027-Internships/dev/.github/scripts/listings.json",
+  "https://raw.githubusercontent.com/vanshb03/Summer2026-Internships/dev/.github/scripts/listings.json",
+] as const;
 const SIMPLIFY_FEED =
   "https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/README.md";
 const ZAPPLY_FEED =
@@ -26,6 +32,19 @@ export type MassFeedCandidate = {
   postedAt: Date | null;
   postedAtText: string | null;
   officialUrl: string;
+};
+
+type SimplifyListingRow = {
+  id?: unknown;
+  company_name?: unknown;
+  title?: unknown;
+  locations?: unknown;
+  url?: unknown;
+  date_posted?: unknown;
+  date_updated?: unknown;
+  active?: unknown;
+  is_visible?: unknown;
+  category?: unknown;
 };
 
 function hashKey(value: string): string {
@@ -60,8 +79,8 @@ function cleanCompany(value: string): string {
     .trim();
 }
 
-function isTechnicalInternship(title: string): boolean {
-  return TECHNICAL_ROLE_PATTERN.test(title);
+function isTechnicalInternship(title: string, category = ""): boolean {
+  return TECHNICAL_ROLE_PATTERN.test(title) || TECHNICAL_ROLE_PATTERN.test(category);
 }
 
 function validDirectUrl(value: string | null): value is string {
@@ -69,9 +88,13 @@ function validDirectUrl(value: string | null): value is string {
   try {
     const url = new URL(value);
     if (url.protocol !== "https:" || url.username || url.password) return false;
-    const path = url.pathname.toLowerCase();
+    // Shorteners like go.vansh.nyc need redirect resolution rather than treating the shortener itself as final
+    if (/^go\.vansh\.nyc$/i.test(url.hostname)) return false;
+    const path = url.pathname.toLowerCase().replace(/\/+$/, "");
     const hasStrongJobPath =
       /\/(?:job|jobs|position|positions|requisition|requisitions|opening|openings|opportunity|opportunities|vacancy|vacancies)\/[^/]+/i.test(path) ||
+      /\/careers\/[a-z0-9_-]*intern[a-z0-9_-]*/i.test(path) ||
+      /\/careers\/[^/]+_[0-9a-f-]{6,}/i.test(path) ||
       /\/candidateexperience\/.*\/job\/[^/]+/i.test(path) ||
       /\/detail\/[^/]+/i.test(path) ||
       /\/position\/[^/]+\/detail/i.test(path);
@@ -100,8 +123,66 @@ async function fetchText(url: string): Promise<string | null> {
   }
 }
 
+async function fetchJsonArray<T>(url: string): Promise<T[] | null> {
+  try {
+    const response = await fetch(url, {
+      headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+      cache: "no-store",
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return Array.isArray(data) ? (data as T[]) : null;
+  } catch {
+    return null;
+  }
+}
+
 function hrefs(value: string): string[] {
   return [...value.matchAll(/href=["']([^"']+)["']/gi)].map((match) => decodeEntities(match[1]!));
+}
+
+export function parseSimplifyListingsJson(
+  rows: SimplifyListingRow[],
+  capturedAt = new Date(),
+  sourceTag = "simplify-json",
+): MassFeedCandidate[] {
+  const result: MassFeedCandidate[] = [];
+  for (const row of rows) {
+    if (row.active !== true || row.is_visible === false) continue;
+    const company = typeof row.company_name === "string" ? cleanCompany(row.company_name) : "";
+    const title = typeof row.title === "string" ? row.title.trim() : "";
+    const category = typeof row.category === "string" ? row.category.trim() : "";
+    const officialUrl = typeof row.url === "string" ? row.url.trim() : null;
+    if (!company || !title || !validDirectUrl(officialUrl)) continue;
+    if (!isTechnicalInternship(title, category)) continue;
+
+    const locations = Array.isArray(row.locations)
+      ? row.locations.filter((loc): loc is string => typeof loc === "string" && loc.trim().length > 0)
+      : [];
+    const location = locations.length > 0 ? locations.slice(0, 3).join(", ") : null;
+
+    const rawEpoch =
+      typeof row.date_posted === "number" && Number.isFinite(row.date_posted) && row.date_posted > 0
+        ? row.date_posted
+        : typeof row.date_updated === "number" && Number.isFinite(row.date_updated) && row.date_updated > 0
+          ? row.date_updated
+          : null;
+    const sourceDate = parseFirstSourceDate([rawEpoch], capturedAt);
+    const idPart = typeof row.id === "string" && row.id.trim() ? row.id.trim() : hashKey(`${company}|${title}|${officialUrl}`);
+
+    result.push({
+      discoverySource: "simplify",
+      sourceJobId: `${sourceTag}:${idPart}`,
+      title,
+      company,
+      location,
+      postedAt: sourceDate.sourcePostedAt,
+      postedAtText: sourceDate.sourcePostedText,
+      officialUrl,
+    });
+  }
+  return result;
 }
 
 export function parseSimplifyFeed(markdown: string, capturedAt = new Date()): MassFeedCandidate[] {
@@ -195,17 +276,28 @@ export async function fetchMassTechnicalCandidates(): Promise<{
   zapplyFetched: number;
 }> {
   const capturedAt = new Date();
-  const [simplifyText, zapplyText] = await Promise.all([fetchText(SIMPLIFY_FEED), fetchText(ZAPPLY_FEED)]);
-  const simplify = simplifyText ? parseSimplifyFeed(simplifyText, capturedAt) : [];
+  const [jsonFeeds, simplifyText, zapplyText] = await Promise.all([
+    Promise.all(SIMPLIFY_JSON_FEEDS.map((url) => fetchJsonArray<SimplifyListingRow>(url))),
+    fetchText(SIMPLIFY_FEED),
+    fetchText(ZAPPLY_FEED),
+  ]);
+
+  const simplifyJson = jsonFeeds.flatMap((rows, idx) =>
+    rows ? parseSimplifyListingsJson(rows, capturedAt, `simplify-json-${idx}`) : [],
+  );
+  const simplifyReadme = simplifyText ? parseSimplifyFeed(simplifyText, capturedAt) : [];
   const zapply = zapplyText ? parseZapplyFeed(zapplyText, capturedAt) : [];
 
+  // Put exact-timestamp JSON entries before coarse README rows when deduplicating
+  // so exact hour/minute `date_posted` timestamps always win!
   const seen = new Set<string>();
   const candidates: MassFeedCandidate[] = [];
-  const combined = [...simplify, ...zapply].sort((a, b) => {
+  const combined = [...simplifyJson, ...simplifyReadme, ...zapply].sort((a, b) => {
+    const timeDiff = (b.postedAt?.getTime() ?? 0) - (a.postedAt?.getTime() ?? 0);
+    if (timeDiff !== 0) return timeDiff;
     const aKnown = isValidOfficialApplicationUrl(a.officialUrl) ? 1 : 0;
     const bKnown = isValidOfficialApplicationUrl(b.officialUrl) ? 1 : 0;
-    if (aKnown !== bKnown) return bKnown - aKnown;
-    return (b.postedAt?.getTime() ?? 0) - (a.postedAt?.getTime() ?? 0);
+    return bKnown - aKnown;
   });
 
   for (const candidate of combined) {
@@ -215,7 +307,11 @@ export async function fetchMassTechnicalCandidates(): Promise<{
     candidates.push(candidate);
   }
 
-  return { candidates, simplifyFetched: simplify.length, zapplyFetched: zapply.length };
+  return {
+    candidates,
+    simplifyFetched: simplifyJson.length + simplifyReadme.length,
+    zapplyFetched: zapply.length,
+  };
 }
 
 export async function runMassTechnicalFeedDiscovery(limit = 1500): Promise<{
@@ -240,11 +336,14 @@ export async function runMassTechnicalFeedDiscovery(limit = 1500): Promise<{
       .map(canonicalizeJobUrl)
       .filter((value): value is string => Boolean(value)),
   );
-  const unseen = source.candidates.filter((candidate) => {
+  const freshUpgradeCutoff = Date.now() - 72 * 60 * 60 * 1000;
+  const toProcess = source.candidates.filter((candidate) => {
     const canonical = canonicalizeJobUrl(candidate.officialUrl);
-    return !canonical || !activeUrls.has(canonical);
+    if (!canonical || !activeUrls.has(canonical)) return true;
+    // Allow recent (< 72h) exact-timestamp sightings to upgrade coarse DATE_ONLY rows.
+    return Boolean(candidate.postedAt && candidate.postedAt.getTime() >= freshUpgradeCutoff);
   });
-  const selected = unseen.slice(0, boundedLimit);
+  const selected = toProcess.slice(0, boundedLimit);
 
   let cursor = 0;
   let newCount = 0;
@@ -272,6 +371,7 @@ export async function runMassTechnicalFeedDiscovery(limit = 1500): Promise<{
           source: resolved.source,
           atsType: resolved.atsType,
           atsTenant: resolved.atsTenant,
+          discoverySource: candidate.discoverySource,
           classification: "QUALIFYING_INTERNSHIP",
           classificationReason:
             `Discovered in the current ${candidate.discoverySource} technical internship index with an original employer/ATS application URL.`,
@@ -297,7 +397,7 @@ export async function runMassTechnicalFeedDiscovery(limit = 1500): Promise<{
     sourceFetched: source.candidates.length,
     simplifyFetched: source.simplifyFetched,
     zapplyFetched: source.zapplyFetched,
-    alreadyActive: source.candidates.length - unseen.length,
+    alreadyActive: source.candidates.length - toProcess.length,
     examined: selected.length,
     newCount,
     updatedCount,

@@ -52,7 +52,7 @@ export type PanelProps = {
 };
 
 const PANEL_TONES: Record<NonNullable<PanelProps["tone"]>, string> = {
-  default: "bg-surface border-hairline",
+  default: "bg-surface border-hairline shadow-raised",
   sunken: "bg-sunken border-hairline",
   accent: "bg-accent-quiet border-accent-line",
   critical: "bg-critical-quiet border-critical-line",

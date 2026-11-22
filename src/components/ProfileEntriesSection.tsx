@@ -163,7 +163,7 @@ function EntryEditor({
         <button
           type="submit"
           disabled={busy || !required}
-          className="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          className="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-inverse disabled:opacity-50"
         >
           {id ? "Save" : "Add"}
         </button>

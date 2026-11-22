@@ -15,6 +15,12 @@ import {
   getSupplementalRadarHealthFast,
 } from "@/lib/sync/radarQueueHealth";
 
+import {
+  getMultiSourceCrawlStatus,
+  runMultiSourceLiveCrawl,
+} from "@/lib/sync/liveMultiSourceCrawler";
+
+const HOURS_6_MS = 6 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;
 
@@ -73,6 +79,7 @@ export async function getLiveDiscoveryHealth() {
   const now = Date.now();
   const [
     active,
+    fresh6h,
     fresh24h,
     fresh72h,
     newest,
@@ -82,8 +89,12 @@ export async function getLiveDiscoveryHealth() {
     lastLiveRun,
     lastLiveError,
     directRadarCursor,
+    multiSourceStatus,
   ] = await Promise.all([
     prisma.job.count({ where: { activeFeed: true } }),
+    prisma.job.count({
+      where: { activeFeed: true, sourcePostedAt: { gte: new Date(now - HOURS_6_MS) } },
+    }),
     prisma.job.count({
       where: { activeFeed: true, sourcePostedAt: { gte: new Date(now - DAY_MS) } },
     }),
@@ -120,6 +131,7 @@ export async function getLiveDiscoveryHealth() {
       select: { finishedAt: true, errorMessage: true },
     }),
     prisma.appSetting.findUnique({ where: { key: "liveDiscovery:cursor:direct-radar" } }),
+    getMultiSourceCrawlStatus(),
   ]);
 
   const lagsMinutes = recentJobs
@@ -138,6 +150,7 @@ export async function getLiveDiscoveryHealth() {
 
   return {
     active,
+    fresh6h,
     fresh24h,
     fresh72h,
     newestSourcePostedAt: newest?.sourcePostedAt?.toISOString() ?? null,
@@ -150,6 +163,7 @@ export async function getLiveDiscoveryHealth() {
     queue,
     supplementalRadar,
     directRadar,
+    multiSourceStatus,
     lastLiveDiscoveryAt: lastLiveRun?.finishedAt?.toISOString() ?? null,
     lastLiveNewJobs: lastLiveRun?.newJobsCount ?? 0,
     lastLiveUpdatedJobs: lastLiveRun?.updatedJobsCount ?? 0,
@@ -180,9 +194,10 @@ export async function runLiveDiscoveryCycle(options: {
 
   // Fresh timestamped sources remain five-minute lanes. Deep Intern List keeps
   // the same 12-page/1,500-row recall target, just not five-minute repetition.
-  const [enqueue, directRadar, internListRadar] = await Promise.all([
+  const [enqueue, directRadar, multiSource, internListRadar] = await Promise.all([
     enqueueJobrightFreshSignals(),
     runLiveDirectRadar(directRadarLimit),
+    runMultiSourceLiveCrawl({ maxPerSource: 80 }),
     crawlDue
       ? enqueueInternListPublicRadar({
           maxPages: internListPages,
@@ -229,6 +244,7 @@ export async function runLiveDiscoveryCycle(options: {
     enqueue,
     internListRadar,
     directRadar,
+    multiSource,
     queue,
     supplementalQueue,
     prunedTerminalEvents,
@@ -240,9 +256,9 @@ export async function runLiveDiscoveryCycle(options: {
       unsupported: ats.results.filter((row) => row.status === "unsupported").length,
     },
     newJobs:
-      directRadar.newCount + queue.newCount + supplementalQueue.newCount + atsNew,
+      directRadar.newCount + multiSource.newCount + queue.newCount + supplementalQueue.newCount + atsNew,
     updatedJobs:
-      directRadar.updatedCount + queue.updatedCount + supplementalQueue.updatedCount + atsUpdated,
+      directRadar.updatedCount + multiSource.updatedCount + queue.updatedCount + supplementalQueue.updatedCount + atsUpdated,
     health,
   };
 }

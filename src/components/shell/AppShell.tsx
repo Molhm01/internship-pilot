@@ -24,7 +24,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [account, setAccount] = useState<{ user: { email: string } | null } | undefined>(
+  const [account, setAccount] = useState<{ user: { name?: string | null; email: string } | null } | undefined>(
     undefined,
   );
 
@@ -59,9 +59,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    * that knows.
    */
   useEffect(() => {
-    void fetch("/api/auth/get-session")
+    void fetch("/api/auth/get-session", { cache: "no-store" })
       .then((response) => (response.ok ? response.json() : null))
-      .then((data: { user?: { email: string } } | null) =>
+      .then((data: { user?: { name?: string | null; email: string } | null } | null) =>
         setAccount({ user: data?.user ?? null }),
       )
       .catch(() => setAccount({ user: null }));
@@ -126,12 +126,37 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </nav>
 
         <div className="shrink-0 border-t border-hairline p-2">
-          {account?.user && (
-            <div className={cn("mb-1.5", collapsed ? "hidden" : "px-2")}>
-              <p className="truncate text-micro text-faint" title={account.user.email}>
-                {account.user.email}
-              </p>
-            </div>
+          {account && !collapsed && (
+            account.user ? (
+              <div className="mb-1.5 px-2">
+                {account.user.name && (
+                  <p className="truncate text-micro font-medium text-secondary" title={account.user.name}>
+                    {account.user.name}
+                  </p>
+                )}
+                <p className="truncate text-micro text-faint" title={account.user.email}>
+                  {account.user.email}
+                </p>
+              </div>
+            ) : (
+              <div className="mb-2 space-y-1.5 px-1.5">
+                <p className="text-micro text-tertiary">Workspace ready</p>
+                <div className="flex items-center gap-1.5">
+                  <Link
+                    href="/login"
+                    className="inline-flex h-7 flex-1 items-center justify-center whitespace-nowrap shrink-0 rounded border border-line bg-canvas px-2 text-micro font-medium text-secondary hover:bg-n-50 hover:text-primary"
+                  >
+                    Sign in
+                  </Link>
+                  <Link
+                    href="/signup"
+                    className="inline-flex h-7 flex-1 items-center justify-center whitespace-nowrap shrink-0 rounded bg-accent px-2 text-micro font-medium text-inverse hover:bg-accent-hover"
+                  >
+                    Sign up
+                  </Link>
+                </div>
+              </div>
+            )
           )}
           <div className={cn("flex items-center gap-1", collapsed && "flex-col")}>
             <ThemeToggle />
@@ -140,7 +165,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               onClick={toggleCollapsed}
               aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
               title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-              className="inline-flex size-7 items-center justify-center rounded-md text-tertiary transition-colors duration-[120ms] ease-standard hover:bg-n-200 hover:text-primary"
+              className="inline-flex size-7 items-center justify-center rounded-md text-tertiary transition-colors duration-[120ms] ease-standard hover:bg-n-100 hover:text-primary"
             >
               {collapsed ? (
                 <PanelLeftOpen className="size-4" aria-hidden />
@@ -153,7 +178,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 href="/logout"
                 aria-label="Log out"
                 title="Log out"
-                className="ml-auto inline-flex size-7 items-center justify-center rounded-md text-tertiary transition-colors duration-[120ms] ease-standard hover:bg-n-200 hover:text-primary"
+                className="ml-auto inline-flex size-7 items-center justify-center rounded-md text-tertiary transition-colors duration-[120ms] ease-standard hover:bg-n-100 hover:text-primary"
               >
                 <LogOut className="size-4" aria-hidden />
               </Link>
@@ -169,7 +194,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             type="button"
             aria-label="Close navigation"
             onClick={() => setMobileOpen(false)}
-            className="absolute inset-0 bg-n-0/70 backdrop-blur-[2px]"
+            className="absolute inset-0 bg-n-950/40 backdrop-blur-[2px]"
           />
           <div className="absolute inset-y-0 left-0 flex w-[15rem] flex-col border-r border-line bg-surface shadow-overlay">
             <div className="flex h-12 shrink-0 items-center justify-between border-b border-hairline px-3">
@@ -178,7 +203,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 type="button"
                 onClick={() => setMobileOpen(false)}
                 aria-label="Close navigation"
-                className="inline-flex size-7 items-center justify-center rounded-md text-tertiary hover:bg-n-200 hover:text-primary"
+                className="inline-flex size-7 items-center justify-center rounded-md text-tertiary hover:bg-n-100 hover:text-primary"
               >
                 <X className="size-4" aria-hidden />
               </button>
@@ -205,12 +230,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* ---------------------------------------------------------- main */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-2 border-b border-hairline bg-canvas/85 px-3 backdrop-blur-md md:px-4">
+        <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-2 border-b border-hairline bg-surface/90 px-3 backdrop-blur-md md:px-5">
           <button
             type="button"
             onClick={() => setMobileOpen(true)}
             aria-label="Open navigation"
-            className="inline-flex size-7 items-center justify-center rounded-md text-tertiary hover:bg-n-200 hover:text-primary md:hidden"
+            className="inline-flex size-7 items-center justify-center rounded-md text-tertiary hover:bg-n-100 hover:text-primary md:hidden"
           >
             <Menu className="size-4" aria-hidden />
           </button>
@@ -219,20 +244,47 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             type="button"
             onClick={() => setPaletteOpen(true)}
             className={cn(
-              "group flex h-7 min-w-0 flex-1 items-center gap-2 rounded-md border border-line bg-surface px-2",
-              "text-left text-small text-faint transition-colors duration-[120ms] ease-standard",
-              "hover:border-line-strong hover:text-tertiary md:max-w-xs",
+              "group flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md border border-line bg-canvas px-2.5",
+              "text-left text-small text-tertiary transition-colors duration-[120ms] ease-standard",
+              "hover:border-line-strong hover:text-primary md:max-w-xs",
             )}
           >
             <Search className="size-3.5 shrink-0" aria-hidden />
             <span className="truncate">Search or jump to…</span>
-            <kbd className="ml-auto hidden shrink-0 rounded-xs border border-line px-1 font-mono text-micro text-faint sm:block">
+            <kbd className="ml-auto hidden shrink-0 rounded-xs border border-line bg-surface px-1 font-mono text-micro text-tertiary sm:block">
               ⌘K
             </kbd>
           </button>
 
-          <div className="ml-auto flex items-center gap-1 md:hidden">
-            <ThemeToggle />
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            {account && !account.user && (
+              <>
+                <Link
+                  href="/login"
+                  className="inline-flex h-8 shrink-0 items-center whitespace-nowrap rounded-md border border-line bg-surface px-3 text-micro font-medium text-secondary hover:bg-n-50 hover:text-primary"
+                >
+                  Sign in
+                </Link>
+                <Link
+                  href="/signup"
+                  className="inline-flex h-8 shrink-0 items-center whitespace-nowrap rounded-md bg-accent px-3 text-micro font-medium text-inverse hover:bg-accent-hover"
+                >
+                  Create account
+                </Link>
+              </>
+            )}
+            {account?.user && (
+              <Link
+                href="/logout"
+                className="inline-flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-line bg-surface px-2.5 text-micro text-secondary hover:bg-n-50 hover:text-primary md:hidden"
+              >
+                <LogOut className="size-3" aria-hidden />
+                Log out
+              </Link>
+            )}
+            <div className="md:hidden">
+              <ThemeToggle />
+            </div>
           </div>
         </header>
 

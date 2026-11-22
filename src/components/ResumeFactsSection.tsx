@@ -64,34 +64,36 @@ export default function ResumeFactsSection() {
 
   return (
     <div className="space-y-8">
-      <header className="space-y-1">
-        <h1 className="text-2xl font-semibold">Resume & ATS scoring</h1>
-        <p className="text-secondary text-sm max-w-3xl">
-          Upload one resume. Internship Pilot automatically extracts only evidence written in the PDF, scores it against every active internship, and scores new jobs as they arrive. Uploading a replacement resume automatically refreshes the scores.
+      <header className="space-y-1.5">
+        <h1 className="font-display text-[1.5rem] leading-[1.2] font-semibold tracking-[-0.02em] text-primary">
+          Resume &amp; ATS Scoring
+        </h1>
+        <p className="max-w-3xl text-small text-secondary">
+          Upload one resume PDF. Internship Pilot extracts your facts automatically, immediately scores 100% of active internships, and tailors your resume and cover letters hands-free.
         </p>
       </header>
 
       <ResumeUploader onProcessed={loadApproved} />
 
       {error && (
-        <div className="rounded-lg bg-critical-quiet border border-critical-line text-critical text-sm px-4 py-3">
+        <div className="rounded-lg border border-critical-line bg-critical-quiet px-4 py-3 text-small text-critical">
           {error}
         </div>
       )}
 
       <section className="space-y-4">
         <div>
-          <h2 className="font-medium text-primary">Resume evidence</h2>
-          <p className="mt-1 text-xs text-tertiary">
-            Optional review. Scoring starts automatically; you do not need to approve these first. Edit or remove anything that is not represented correctly and affected jobs will be re-scored automatically.
+          <h2 className="font-display text-subhead font-semibold text-primary">Extracted resume evidence</h2>
+          <p className="mt-1 text-micro text-tertiary">
+            All extracted facts are immediately active for 100% catalog scoring and autonomous document generation — no manual approval needed.
           </p>
         </div>
 
         {loadingApproved ? (
-          <p className="text-sm text-tertiary">Loading…</p>
+          <p className="text-small text-tertiary">Loading…</p>
         ) : approved.length === 0 ? (
-          <p className="text-sm text-tertiary">
-            Upload a text-based resume PDF above to create the scoring evidence automatically.
+          <p className="text-small text-tertiary">
+            Upload a text-based resume PDF above to populate your evidence and trigger immediate scoring.
           </p>
         ) : (
           <div className="space-y-6">

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { MatchError, runMatchForJob } from "@/lib/matching";
+import { MatchError, runMatchForJob, scoreSingleJobImmediate } from "@/lib/matching";
+import { ensureStarterProfile } from "@/lib/bootstrap";
 import { withUser } from "@/lib/auth/session";
 
 type PublicMatch = {
@@ -99,7 +100,17 @@ export const POST = withUser(async (req, user) => {
 
   progress(jobId, "request_received");
   try {
-    const matchResult = await runMatchForJob(jobId, { userId: user.id, origin: "MANUAL" });
+    await ensureStarterProfile(user.id).catch(() => undefined);
+    let matchResult;
+    try {
+      matchResult = await runMatchForJob(jobId, { userId: user.id, origin: "MANUAL" });
+    } catch (innerErr) {
+      if (innerErr instanceof MatchError && innerErr.code === "JOB_DESCRIPTION_INSUFFICIENT") {
+        matchResult = await scoreSingleJobImmediate(jobId, user.id, "MANUAL");
+      } else {
+        throw innerErr;
+      }
+    }
     const match = publicMatch(matchResult);
     progress(jobId, "response_returned", { ok: true });
     return NextResponse.json({ ok: true, match });

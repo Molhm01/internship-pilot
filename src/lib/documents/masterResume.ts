@@ -6,8 +6,8 @@ export type MasterSkillGroup = { label: string; items: string[] };
 // Tailoring may make audited, evidence-backed bullet substitutions and
 // reorder content, but the master remains the canonical factual/layout source.
 export const MASTER_EDUCATION: MasterEducation[] = [
-  { school: "New Jersey Institute of Technology", degree: "B.S. Electrical Engineering (Transferred).", coursework: "Relevant Coursework: Digital Design, Circuits & Systems I, Differential Equations", location: "Newark, NJ", dates: "Expected May 2029" },
-  { school: "Stevens Institute of Technology", degree: "B.E. Computer Engineering. Dean's List | Presidential Achievement Scholarship. GPA: 3.76.", coursework: "Relevant Coursework: Engineering Design, Programming & Algorithmic Thinking (C++), Sustainable Systems with Sensors", location: "Hoboken, NJ", dates: "Sep 2025 – May 2026" },
+  { school: "New Jersey Institute of Technology", degree: "B.S. Electrical Engineering.", coursework: "Relevant Coursework: Digital Design, Circuits & Systems I, Differential Equations", location: "Newark, NJ", dates: "Expected May 2029" },
+  { school: "Stevens Institute of Technology", degree: "B.E. Computer Engineering (Transferred). Dean's List | Presidential Achievement Scholarship. GPA: 3.76.", coursework: "Relevant Coursework: Engineering Design, Programming & Algorithmic Thinking (C++), Sustainable Systems with Sensors", location: "Hoboken, NJ", dates: "Sep 2025 – May 2026" },
 ];
 
 export const MASTER_EXPERIENCE: MasterEntry[] = [

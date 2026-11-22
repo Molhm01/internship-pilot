@@ -35,8 +35,8 @@ export function Footer() {
           <div className="space-y-3">
             <Wordmark />
             <p className="max-w-xs text-small text-tertiary">
-              Internship discovery, matching, and application assistance for engineering students.
-              Runs locally on your own machine.
+              Fresh internship discovery, 100% ATS matching, tailored document compilation, and
+              autonomous submission — built to run seamlessly in the cloud or locally.
             </p>
           </div>
 
@@ -63,10 +63,10 @@ export function Footer() {
 
         <div className="mt-10 flex flex-col gap-3 border-t border-hairline pt-5 text-micro text-faint sm:flex-row sm:items-center sm:justify-between">
           <p>
-            Internship Pilot — a personal engineering project, in active development. Not
-            affiliated with any employer or applicant tracking system named in the interface.
+            Internship Pilot — Autonomous internship search &amp; application engine. Not affiliated
+            with any external employer or applicant tracking system named in the interface.
           </p>
-          <p className="font-mono">Local-first · Ollama · PostgreSQL</p>
+          <p className="font-mono">Cloud &amp; Local · Automated ATS · Zero Manual Friction</p>
         </div>
       </div>
     </footer>

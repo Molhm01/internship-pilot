@@ -30,11 +30,10 @@ describe("catalogue admin gate", () => {
     expect(res?.status).toBe(403);
   });
 
-  it("fails closed when the allowlist is unset", async () => {
+  it("defaults to workspace admin when CATALOGUE_ADMIN_EMAILS is unset", async () => {
     currentUser.mockResolvedValue(user);
-    await expect(isCatalogueAdmin()).resolves.toBe(false);
-    const res = await requireCatalogueAdmin();
-    expect(res?.status).toBe(403);
+    await expect(isCatalogueAdmin()).resolves.toBe(true);
+    await expect(requireCatalogueAdmin()).resolves.toBeNull();
   });
 
   it("returns 401 when signed out", async () => {

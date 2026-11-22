@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 import { DocumentGenerationError, generateDocumentsForJob } from "@/lib/documents/generate";
+import { prisma } from "@/lib/db";
+import { buildEffectiveMatchDescription } from "@/lib/matching";
+import { hasUsableJobDescription } from "@/lib/matchWorkflow";
+import { ensureStarterProfile } from "@/lib/bootstrap";
 import { LocalOnlyFeatureError } from "@/lib/runtime/deployment";
 import type { AgentDeliveryOutcome } from "@/lib/documents/agentDelivery";
 import { withUser } from "@/lib/auth/session";
@@ -48,20 +52,34 @@ export const POST = withUser<Params>(async (req, user, { params }) => {
     progress(id, "request_received");
     const body = await req.json().catch(() => ({}));
     const includeCoverLetter = body?.includeCoverLetter !== false;
+    await ensureStarterProfile(user.id).catch(() => undefined);
+
+    const existingJob = await prisma.job.findUnique({ where: { id } });
+    if (existingJob && !hasUsableJobDescription(existingJob)) {
+      await prisma.job.update({
+        where: { id },
+        data: { description: buildEffectiveMatchDescription(existingJob) },
+      }).catch(() => undefined);
+    }
+
     const result = await generateDocumentsForJob(id, user.id, { includeCoverLetter });
+    const coverDoc = "coverLetter" in result ? result.coverLetter : undefined;
+    const coverDelivery = result.agentDelivery && "coverLetter" in result.agentDelivery
+      ? result.agentDelivery.coverLetter ?? null
+      : null;
     const payload: GenerationResponse = {
       ok: true,
       resumeDocumentId: result.resume.id,
-      ...(result.coverLetter ? { coverLetterDocumentId: result.coverLetter.id } : {}),
+      ...(coverDoc ? { coverLetterDocumentId: coverDoc.id } : {}),
       agentDelivery: {
         resume: result.agentDelivery?.resume ?? null,
-        coverLetter: result.agentDelivery?.coverLetter ?? null,
+        coverLetter: coverDelivery,
       },
     };
     progress(id, "response_returned", {
       ok: true,
       resumeDelivered: result.agentDelivery?.resume.delivered ?? null,
-      coverLetterDelivered: result.agentDelivery?.coverLetter?.delivered ?? null,
+      coverLetterDelivered: coverDelivery?.delivered ?? null,
     });
     return NextResponse.json(payload);
   } catch (err) {

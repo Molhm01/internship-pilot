@@ -8,6 +8,7 @@ import {
   resolveOfficialJobDestination,
 } from "@/lib/applications/officialDestination";
 import { scheduleInitialAiMatch } from "@/lib/matching/initialAiMatchQueue";
+import { ensureWorkspaceBootstrapped } from "@/lib/bootstrap";
 import { withUser } from "@/lib/auth/session";
 import { jobOrderBy, parseJobSort, sortJobs } from "@/lib/jobs/jobSort";
 import { jobsQueryErrorDevDetail, jobsQueryErrorLog } from "@/lib/jobs/jobsQueryError";
@@ -55,6 +56,7 @@ function withUserState<T extends { userStates?: unknown[] }>(job: T) {
 }
 
 async function getJobsResponse(req: Request, userId: string) {
+  await ensureWorkspaceBootstrapped(userId);
   const { searchParams } = new URL(req.url);
   const location = searchParams.get("location");
   const status = searchParams.get("status");
@@ -76,6 +78,8 @@ async function getJobsResponse(req: Request, userId: string) {
   const compMin = searchParams.get("compMin");
   const matchScoreMin = searchParams.get("matchScoreMin");
   const verificationStatus = parseListParam(searchParams.get("verificationStatus"));
+  const freshHoursRaw = searchParams.get("freshHours");
+  const sourceFilter = searchParams.get("source")?.trim().toLowerCase() ?? "";
   // feed=active (default) | needsReview | all. Visibility is decided by the
   // central Active-feed policy (computeActiveFeed) stored on Job.activeFeed —
   // NOT by verificationStatus. Trusted-aggregator listings appear here even
@@ -86,6 +90,7 @@ async function getJobsResponse(req: Request, userId: string) {
   const sort = parseJobSort(searchParams.get("sort"));
 
   const where: Prisma.JobWhereInput = {};
+  const andClauses: Prisma.JobWhereInput[] = [];
   // Case-insensitive by request. SQLite's LIKE ignored ASCII case for free;
   // PostgreSQL's does not, and a filter for "remote" that stops matching
   // "Remote" reads as a broken feed rather than a changed database.
@@ -140,10 +145,46 @@ async function getJobsResponse(req: Request, userId: string) {
 
   if (maxDistanceMiles) {
     const max = parseFloat(maxDistanceMiles);
-    where.OR = [
-      { distanceMilesFromClifton: { lte: max } },
-      ...(includeRemoteRegardlessOfDistance ? [{ workplaceType: "Remote" as const }] : []),
-    ];
+    andClauses.push({
+      OR: [
+        { distanceMilesFromClifton: { lte: max } },
+        ...(includeRemoteRegardlessOfDistance ? [{ workplaceType: "Remote" as const }] : []),
+      ],
+    });
+  }
+
+  if (freshHoursRaw) {
+    const hours = Number.parseInt(freshHoursRaw, 10);
+    if (Number.isFinite(hours) && hours > 0 && hours <= 720) {
+      andClauses.push({
+        sourcePostedAt: { gte: new Date(Date.now() - hours * 60 * 60 * 1000) },
+      });
+    }
+  }
+
+  if (sourceFilter) {
+    if (sourceFilter === "radars") {
+      andClauses.push({
+        OR: [
+          { discoverySource: { in: ["intern-list", "simplify", "zapply", "applyguy", "dreamwork", "jobright"] } },
+          { source: { in: ["intern-list", "simplify", "jobright"] } },
+        ],
+      });
+    } else if (sourceFilter === "direct-ats") {
+      andClauses.push({
+        source: {
+          in: ["greenhouse", "lever", "ashby", "smartrecruiters", "workday", "icims", "successfactors", "eightfold", "phenom", "usajobs"],
+        },
+      });
+    } else {
+      andClauses.push({
+        OR: [{ source: sourceFilter }, { discoverySource: sourceFilter }],
+      });
+    }
+  }
+
+  if (andClauses.length > 0) {
+    where.AND = andClauses;
   }
 
   // Newest SOURCE POSTING first — never newest row-insert first. Ordering is

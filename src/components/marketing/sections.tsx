@@ -45,7 +45,9 @@ export function SectionTitle({
   className?: string;
 }) {
   return (
-    <h2 className={cn("text-title text-primary text-balance", className)}>{children}</h2>
+    <h2 className={cn("font-display text-title font-semibold tracking-tight text-primary text-balance", className)}>
+      {children}
+    </h2>
   );
 }
 
@@ -69,11 +71,13 @@ export function Reveal({
   delay?: number;
   className?: string;
 }) {
-  const reduceMotion = useReducedMotion();
+  const prefersReducedMotion = useReducedMotion();
+  const [mounted, setMounted] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     const element = ref.current;
     if (!element || typeof IntersectionObserver === "undefined") {
       setShown(true);
@@ -103,15 +107,15 @@ export function Reveal({
     };
   }, []);
 
-  if (reduceMotion) return <div className={className}>{children}</div>;
+  const reduceMotion = mounted && Boolean(prefersReducedMotion);
 
   return (
     <motion.div
       ref={ref}
       className={className}
-      initial={{ opacity: 0, y: 8 }}
-      animate={shown ? { opacity: 1, y: 0 } : { opacity: 0, y: 8 }}
-      transition={{ duration: 0.5, delay, ease: [0.2, 0, 0, 1] }}
+      initial={false}
+      animate={shown || reduceMotion ? { opacity: 1, y: 0 } : { opacity: 0.01, y: 6 }}
+      transition={{ duration: reduceMotion ? 0 : 0.45, delay: reduceMotion ? 0 : delay, ease: [0.2, 0, 0, 1] }}
     >
       {children}
     </motion.div>

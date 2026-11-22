@@ -13,6 +13,9 @@ export type CanonicalSource =
   | "jobright"
   | "simplify"
   | "intern-list"
+  | "linkedin"
+  | "indeed"
+  | "handshake"
   | "greenhouse"
   | "lever"
   | "ashby"
@@ -32,6 +35,16 @@ export const TRUSTED_AGGREGATORS: ReadonlySet<CanonicalSource> = new Set<Canonic
   "jobright",
   "simplify",
   "intern-list",
+]);
+
+// Live high-velocity internship job boards where postings open hours before
+// static curated lists update. When an official employer ATS URL is resolved,
+// rows are ingested under that ATS; when listed natively on the live board,
+// they remain visible when official_destination_verified or source_listed.
+export const LIVE_JOB_BOARD_SOURCES: ReadonlySet<CanonicalSource> = new Set<CanonicalSource>([
+  "linkedin",
+  "indeed",
+  "handshake",
 ]);
 
 // Sources where Internship Pilot now has a first-class adapter that reads a
@@ -97,6 +110,9 @@ export function canonicalizeSource(raw: string | null | undefined): CanonicalSou
   if (/jobright/.test(flat)) return "jobright";
   if (/simplify/.test(flat)) return "simplify";
   if (/internlist/.test(flat)) return "intern-list";
+  if (/linkedin/.test(flat)) return "linkedin";
+  if (/indeed/.test(flat)) return "indeed";
+  if (/handshake/.test(flat)) return "handshake";
   if (/greenhouse/.test(flat)) return "greenhouse";
   if (/lever/.test(flat)) return "lever";
   if (/ashby/.test(flat)) return "ashby";
@@ -115,6 +131,11 @@ export function canonicalizeSource(raw: string | null | undefined): CanonicalSou
 export function isTrustedAggregatorSource(raw: string | null | undefined): boolean {
   const canonical = canonicalizeSource(raw);
   return canonical !== null && TRUSTED_AGGREGATORS.has(canonical);
+}
+
+export function isLiveJobBoardSource(raw: string | null | undefined): boolean {
+  const canonical = canonicalizeSource(raw);
+  return canonical !== null && LIVE_JOB_BOARD_SOURCES.has(canonical);
 }
 
 export function isDirectOfficialSource(raw: string | null | undefined): boolean {
@@ -158,10 +179,58 @@ export function verificationStateOf(verificationStatus: string): VerificationSta
   }
 }
 
+export const MAX_ACTIVE_FEED_AGE_DAYS = 7;
+export const MAX_UNDATED_ACTIVE_AGE_DAYS = 14;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export function isWithinActiveFreshnessWindow(
+  input: {
+    sourcePostedAt?: Date | string | null;
+    createdAt?: Date | string | null;
+    source?: string | null;
+  },
+  maxAgeDays = MAX_ACTIVE_FEED_AGE_DAYS,
+  now = new Date(),
+): boolean {
+  const source = canonicalizeSource(input.source);
+  if (source === "manual") return true;
+
+  // Preserve test/caller invocations that intentionally evaluate source/verification policy without dates.
+  if (input.sourcePostedAt === undefined && input.createdAt === undefined) {
+    return true;
+  }
+
+  const nowMs = now.getTime();
+  if (input.sourcePostedAt != null) {
+    const postedMs =
+      input.sourcePostedAt instanceof Date
+        ? input.sourcePostedAt.getTime()
+        : new Date(input.sourcePostedAt).getTime();
+    if (Number.isFinite(postedMs)) {
+      return nowMs - postedMs <= maxAgeDays * DAY_MS;
+    }
+  }
+
+  if (input.createdAt != null) {
+    const createdMs =
+      input.createdAt instanceof Date
+        ? input.createdAt.getTime()
+        : new Date(input.createdAt).getTime();
+    if (Number.isFinite(createdMs)) {
+      return nowMs - createdMs <= MAX_UNDATED_ACTIVE_AGE_DAYS * DAY_MS;
+    }
+  }
+
+  return true;
+}
+
 export type ActiveFeedInput = {
   source: string | null;
   verificationStatus: string;
   company: string;
+  sourcePostedAt?: Date | string | null;
+  createdAt?: Date | string | null;
+  now?: Date;
 };
 
 /**
@@ -170,7 +239,8 @@ export type ActiveFeedInput = {
  * Third-party aggregator rows are intentionally hidden even if an old row was
  * previously verified. They remain in the database for deduplication and source
  * evidence, but the canonical visible catalogue comes from direct official
- * systems (or explicit manual entries).
+ * systems, live job board crawls (LinkedIn/Indeed/Handshake), or explicit manual entries.
+ * Weeks-old postings outside the active freshness window are excluded.
  */
 export function computeActiveFeed(job: ActiveFeedInput): boolean {
   const state = verificationStateOf(job.verificationStatus);
@@ -185,8 +255,18 @@ export function computeActiveFeed(job: ActiveFeedInput): boolean {
     return false;
   }
 
+  if (!isWithinActiveFreshnessWindow(job, MAX_ACTIVE_FEED_AGE_DAYS, job.now)) {
+    return false;
+  }
+
   // A direct/officially verified destination is visible.
   if (state === "official_destination_verified") return true;
+
+  // Live job board sightings (LinkedIn / Indeed / Handshake) are visible immediately
+  // while destination resolution completes or when natively hosted on the board.
+  if (source !== null && LIVE_JOB_BOARD_SOURCES.has(source) && state === "source_listed") {
+    return true;
+  }
 
   // Manual entries are trusted by construction.
   if (source === "manual") return true;

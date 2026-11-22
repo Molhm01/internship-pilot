@@ -107,11 +107,16 @@ export async function savePersonal(userId: string, body: Record<string, unknown>
     githubUrl: text(body.githubUrl),
     portfolioUrl: text(body.portfolioUrl),
   };
-  return prisma.userProfile.upsert({
+  const saved = await prisma.userProfile.upsert({
     where: { userId },
     update: data,
     create: { userId, ...data },
   });
+  await prisma.generatedDocument?.updateMany?.({
+    where: { userId },
+    data: { identityVerified: false },
+  }).catch(() => undefined);
+  return saved;
 }
 
 export async function saveApplicationPreferences(userId: string, body: Record<string, unknown>) {

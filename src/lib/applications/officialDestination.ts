@@ -18,6 +18,7 @@ const ATS_HOST_PATTERNS = [
   /(^|\.)oraclecloud\.com$/,
   /(^|\.)taleo\.net$/,
   /(^|\.)successfactors\.(com|eu)$/,
+  /(^|\.)ultipro\.com$/,
 ] as const;
 
 export const MAX_DESTINATION_DEPTH = 5;
@@ -124,13 +125,16 @@ export function isSupportedAtsUrl(value: string | null | undefined): boolean {
   }
   if (hostMatches(host, "oraclecloud.com")) return /\/job\/[^/]+/.test(path) || hasJobQuery;
   if (hostMatches(host, "taleo.net")) return /jobdetail/i.test(path) || hasJobQuery;
+  if (hostMatches(host, "ultipro.com")) {
+    return /\/opportunitydetail/i.test(path) || url.searchParams.has("opportunityId");
+  }
   return /\/job\/[^/]+/.test(path) || hasJobQuery;
 }
 
 function isForbiddenDestination(url: URL): boolean {
   const path = url.pathname.toLowerCase();
   if (/(^|\/)(login|log-in|signin|sign-in|auth|account)(\/|$)/.test(path)) return true;
-  if (/(^|\/)(search|job-search|jobs-search)(\/|$)/.test(path)) return true;
+  if (/(^|\/)(search|job-search|jobs-search)\/?$/.test(path)) return true;
   if ([...url.searchParams.keys()].some((key) => /^(q|query|keyword|search)$/.test(key))) {
     return true;
   }
@@ -257,17 +261,31 @@ export function extractOriginalJobPost(html: string, baseUrl: string): string | 
 
 function extractOutboundDestination(html: string, baseUrl: string): string | null {
   const base = parsedWebUrl(baseUrl);
+  // Check JSON-embedded apply/redirect URLs and HTML href attributes
+  const candidates: string[] = [];
+  for (const jsonKey of ["applyUrl", "companyApplyUrl", "externalApplyUrl", "offsiteApplyUrl"]) {
+    const match = html.match(new RegExp(`"${jsonKey}"\\s*:\\s*"((?:\\\\.|[^"\\\\])+)`, "i"));
+    const decoded = match?.[1] ? decodeJsonString(match[1]) : null;
+    if (decoded) candidates.push(decoded);
+  }
   for (const match of html.matchAll(/<a\b[^>]*href=["']([^"'#]+)["']/gi)) {
+    if (match[1]) candidates.push(match[1]);
+  }
+
+  for (const rawHref of candidates) {
     try {
-      const candidate = new URL(match[1]!, baseUrl).toString();
-      const parsed = parsedWebUrl(candidate);
+      const candidateUrl = new URL(rawHref.replace(/&amp;/g, "&"), baseUrl);
+      // Unwrap LinkedIn/aggregator outbound redirect links carrying ?url=...
+      const wrappedUrl = candidateUrl.searchParams.get("url");
+      const unwrapped = wrappedUrl ? new URL(wrappedUrl, baseUrl).toString() : candidateUrl.toString();
+      const parsed = parsedWebUrl(unwrapped);
       if (
         parsed &&
         parsed.toString() !== base?.toString() &&
-        (isValidOfficialApplicationUrl(candidate) ||
-          (isAggregatorUrl(candidate) && parsed.hostname !== base?.hostname))
+        (isValidOfficialApplicationUrl(unwrapped) ||
+          (isAggregatorUrl(unwrapped) && parsed.hostname !== base?.hostname))
       ) {
-        return candidate;
+        return unwrapped;
       }
     } catch {
       // Ignore malformed outbound links.
@@ -386,7 +404,7 @@ async function resolveCandidate(
     const original = extractOriginalJobPost(fetched.html, current);
     const outbound =
       original ??
-      (hostMatches(host, "intern-list.com")
+      (isAggregatorUrl(current)
         ? extractOutboundDestination(fetched.html, current)
         : null);
     if (!outbound) {

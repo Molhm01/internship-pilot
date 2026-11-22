@@ -245,6 +245,7 @@ export type ProfileRow = {
   portfolio: string | null;
   preferredWebsiteField: string | null;
   school: string | null;
+  previousSchool?: string | null;
   addressStreet: string | null;
   addressLine2: string | null;
   metroRegion: string | null;

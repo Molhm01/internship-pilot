@@ -56,9 +56,9 @@ export function checkHeadingOrder(text: string, expectedHeadingsInOrder: string[
 // should never change.
 export function checkCriticalTextPreserved(text: string, criticalStrings: string[]): string[] {
   const issues: string[] = [];
-  const normalized = text.replace(/\s+/g, " ");
+  const normalized = text.replace(/\u2011/g, "-").replace(/\s+/g, " ");
   for (const s of criticalStrings) {
-    const target = s.replace(/\s+/g, " ").trim();
+    const target = s.replace(/\u2011/g, "-").replace(/\s+/g, " ").trim();
     if (!target) continue;
     if (!normalized.includes(target)) {
       issues.push(`Expected text "${s}" was not found verbatim in the generated document.`);

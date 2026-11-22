@@ -54,7 +54,9 @@ function isPublic(pathname: string): boolean {
   // Aggregate-only production health/coverage diagnostics. These endpoints
   // expose counts/timestamps only — never user data, job details, credentials,
   // or secrets.
-  if (pathname === "/api/health/catalog" || pathname.startsWith("/api/health/catalog/")) return true;
+  if (pathname === "/api/health" || pathname === "/api/health/catalog" || pathname.startsWith("/api/health/catalog/")) {
+    return true;
+  }
   // Vercel invokes cron routes without a user session cookie. These handlers
   // authenticate themselves with CRON_SECRET, so the proxy must let the
   // request reach the route instead of replacing it with the normal API 401.
@@ -110,6 +112,10 @@ export function proxy(request: NextRequest) {
   }
 
   if (isPublic(pathname)) return NextResponse.next();
+
+  if (process.env.REQUIRE_AUTH !== "true") {
+    return NextResponse.next();
+  }
 
   const cookie = getSessionCookie(request);
   if (cookie) return NextResponse.next();

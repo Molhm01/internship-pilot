@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { geminiGenerateJSON, hasGeminiApiKey } from "@/lib/gemini";
 import { ollamaGenerateJSON } from "@/lib/ollama";
+import { isCloudRuntime } from "@/lib/runtime/deployment";
 
 type BulletForPrompt = { id: string; category: string; text: string };
 type FactForPrompt = { id: string; type: string; content: string; detail: string | null };
@@ -8,10 +10,22 @@ const selectionSchema = z.object({
   experienceBulletIds: z.array(z.string()).default([]),
   projectBulletIds: z.array(z.string()).default([]),
   activityBulletIds: z.array(z.string()).default([]),
-  coverLetterParagraphs: z.array(z.string().trim().min(1).max(1100)).min(2).max(4).default([]),
+  coverLetterParagraphs: z.array(z.string().trim().min(1).max(1100)).min(0).max(4).default([]),
 });
 export type ContentSelection = z.infer<typeof selectionSchema>;
 export const DOCUMENT_SELECTION_MODEL_TIMEOUT_MS = 30_000;
+
+const selectionJsonSchema: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["experienceBulletIds", "projectBulletIds", "activityBulletIds", "coverLetterParagraphs"],
+  properties: {
+    experienceBulletIds: { type: "array", items: { type: "string" } },
+    projectBulletIds: { type: "array", items: { type: "string" } },
+    activityBulletIds: { type: "array", items: { type: "string" } },
+    coverLetterParagraphs: { type: "array", items: { type: "string" } },
+  },
+};
 
 function buildPrompt(
   job: { title: string; company: string; description: string },
@@ -50,28 +64,71 @@ Return ONLY valid JSON, no commentary, no markdown fences:
 }`;
 }
 
+function deterministicSelectBullets(
+  job: { title: string; company: string; description: string },
+  bullets: BulletForPrompt[],
+): ContentSelection {
+  const terms = `${job.title} ${job.description}`
+    .toLowerCase()
+    .split(/[^a-z0-9+.#]+/)
+    .filter((t) => t.length > 2);
+  const scored = bullets
+    .map((b, index) => {
+      const text = b.text.toLowerCase();
+      const score = terms.reduce((acc, term) => acc + (text.includes(term) ? 1 : 0), 0);
+      return { bullet: b, index, score };
+    })
+    .sort((a, b) => b.score - a.score || a.index - b.index);
+
+  return {
+    experienceBulletIds: scored.filter((s) => s.bullet.category === "experience").slice(0, 3).map((s) => s.bullet.id),
+    projectBulletIds: scored.filter((s) => s.bullet.category === "project").slice(0, 2).map((s) => s.bullet.id),
+    activityBulletIds: scored.filter((s) => s.bullet.category === "activity").slice(0, 1).map((s) => s.bullet.id),
+    coverLetterParagraphs: [],
+  };
+}
+
 export async function selectContentForJob(
   job: { title: string; company: string; description: string },
   bullets: BulletForPrompt[],
   facts: FactForPrompt[],
 ): Promise<ContentSelection> {
   const prompt = buildPrompt(job, bullets, facts);
-  const raw = await ollamaGenerateJSON(prompt, { timeoutMs: DOCUMENT_SELECTION_MODEL_TIMEOUT_MS });
-  const parsed = selectionSchema.safeParse(raw);
-  if (!parsed.success) {
-    throw new Error("The AI model returned document content in an unexpected format. Try again.");
+  let raw: unknown = null;
+
+  if (hasGeminiApiKey()) {
+    try {
+      raw = await geminiGenerateJSON(prompt, {
+        schema: selectionJsonSchema,
+        timeoutMs: DOCUMENT_SELECTION_MODEL_TIMEOUT_MS,
+      });
+    } catch {
+      raw = null;
+    }
   }
 
-  // Defense in depth: only ids that actually exist in the provided bullet
-  // list survive, exactly like the skill-grounding check in validation.ts —
-  // the model's word alone is never enough.
-  const validIds = new Set(bullets.map((b) => b.id));
-  return {
-    experienceBulletIds: parsed.data.experienceBulletIds.filter((id) => validIds.has(id)),
-    projectBulletIds: parsed.data.projectBulletIds.filter((id) => validIds.has(id)),
-    activityBulletIds: parsed.data.activityBulletIds.filter((id) => validIds.has(id)),
-    coverLetterParagraphs: parsed.data.coverLetterParagraphs,
-  };
+  if (!raw && !isCloudRuntime()) {
+    try {
+      raw = await ollamaGenerateJSON(prompt, { timeoutMs: DOCUMENT_SELECTION_MODEL_TIMEOUT_MS });
+    } catch {
+      raw = null;
+    }
+  }
+
+  if (raw) {
+    const parsed = selectionSchema.safeParse(raw);
+    if (parsed.success) {
+      const validIds = new Set(bullets.map((b) => b.id));
+      return {
+        experienceBulletIds: parsed.data.experienceBulletIds.filter((id) => validIds.has(id)),
+        projectBulletIds: parsed.data.projectBulletIds.filter((id) => validIds.has(id)),
+        activityBulletIds: parsed.data.activityBulletIds.filter((id) => validIds.has(id)),
+        coverLetterParagraphs: parsed.data.coverLetterParagraphs,
+      };
+    }
+  }
+
+  return deterministicSelectBullets(job, bullets);
 }
 
 // Normalizes a token for comparison: lowercase, drop a trailing possessive

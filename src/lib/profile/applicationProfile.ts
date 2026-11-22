@@ -37,14 +37,17 @@ import type { ProfileRow } from "@/lib/applications/profileSnapshot";
  * would break that at the source.
  */
 export async function applicationProfileForUser(userId: string): Promise<ProfileRow | null> {
-  const [profile, preferences, sensitive, education] = await Promise.all([
+  const [profile, preferences, sensitive, educations] = await Promise.all([
     prisma.userProfile.findUnique({ where: { userId } }),
     prisma.applicationPreferences.findUnique({ where: { userId } }),
     prisma.sensitiveAnswerPreferences.findUnique({ where: { userId } }),
     // The current or most recent course of study answers a form's "Degree",
-    // "Major", "GPA" and "Graduation date" boxes.
-    prisma.education.findFirst({ where: { userId }, orderBy: { sortOrder: "asc" } }),
+    // "Major", "GPA" and "Graduation date" boxes; the prior row captures a transfer school.
+    prisma.education.findMany({ where: { userId }, orderBy: { sortOrder: "asc" }, take: 2 }),
   ]);
+
+  const education = educations[0] ?? null;
+  const previousEducation = educations[1] ?? null;
 
   // No profile row and no preferences means this account has entered nothing.
   // That is a real state — a brand-new user — and the callers already handle a
@@ -88,6 +91,7 @@ export async function applicationProfileForUser(userId: string): Promise<Profile
     portfolio: profile?.portfolioUrl ?? null,
     preferredWebsiteField: null,
     school: education?.school ?? null,
+    previousSchool: previousEducation?.school ?? null,
     addressStreet: profile?.addressLine1 ?? null,
     addressLine2: profile?.addressLine2 ?? null,
     metroRegion: null,

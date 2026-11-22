@@ -3,7 +3,7 @@ const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
 export const GEMINI_MATCH_MODEL =
   process.env.GEMINI_MATCH_MODEL?.trim()
   || process.env.GEMINI_MODEL?.trim()
-  || "gemini-3.5-flash-lite";
+  || "gemini-4-hydrogen";
 
 export type GeminiErrorCode =
   | "GEMINI_API_KEY_MISSING"
@@ -43,6 +43,38 @@ function responseText(body: GeminiGenerateResponse): string {
     .trim();
 }
 
+function sanitizeSchemaForGemini(node: unknown): unknown {
+  if (Array.isArray(node)) {
+    return node.map(sanitizeSchemaForGemini);
+  }
+  if (!node || typeof node !== "object") return node;
+
+  const obj = node as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+
+  for (const [key, rawVal] of Object.entries(obj)) {
+    // Gemini v1beta responseSchema rejects JSON-Schema-only keywords like additionalProperties
+    if (key === "additionalProperties" || key === "$schema") continue;
+
+    if (key === "type" && Array.isArray(rawVal)) {
+      const nonNull = rawVal.filter((item) => item !== "null");
+      const primary = typeof nonNull[0] === "string" ? nonNull[0].toUpperCase() : "STRING";
+      out.type = primary;
+      if (rawVal.includes("null")) out.nullable = true;
+      continue;
+    }
+
+    if (key === "type" && typeof rawVal === "string") {
+      out.type = rawVal.toUpperCase();
+      continue;
+    }
+
+    out[key] = sanitizeSchemaForGemini(rawVal);
+  }
+
+  return out;
+}
+
 /**
  * Small server-only Gemini client for deterministic scoring JSON.
  *
@@ -69,6 +101,7 @@ export async function geminiGenerateJSON<T = unknown>(
 
   const model = options.model?.trim() || GEMINI_MATCH_MODEL;
   const endpoint = `${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:generateContent`;
+  const sanitizedSchema = sanitizeSchemaForGemini(options.schema);
 
   let response: Response;
   try {
@@ -82,11 +115,8 @@ export async function geminiGenerateJSON<T = unknown>(
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           responseMimeType: "application/json",
-          // matchResponseJsonSchema is real JSON Schema (including
-          // additionalProperties), so use Google's JSON-Schema-specific field
-          // rather than the older OpenAPI-style responseSchema field.
-          responseJsonSchema: options.schema,
-          thinkingConfig: { thinkingLevel: "minimal" },
+          responseSchema: sanitizedSchema,
+          thinkingConfig: { thinkingLevel: "LOW" },
           maxOutputTokens: 2400,
         },
       }),

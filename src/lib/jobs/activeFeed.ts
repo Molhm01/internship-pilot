@@ -6,6 +6,8 @@ import {
   computeActiveFeed,
   isLegacyAutoPromotableDirectSource,
   isTrustedAggregatorSource,
+  isWithinActiveFreshnessWindow,
+  MAX_ACTIVE_FEED_AGE_DAYS,
 } from "@/lib/jobs/sourcePolicy";
 
 function verificationMethodFor(source: string): string {
@@ -14,11 +16,49 @@ function verificationMethodFor(source: string): string {
     : `${source}-board-api`;
 }
 
+/** Deactivate any non-manual active feed jobs older than the active freshness window. */
+export async function pruneStaleActiveJobs(
+  maxAgeDays = MAX_ACTIVE_FEED_AGE_DAYS,
+  now = new Date(),
+): Promise<{ checked: number; pruned: number }> {
+  const activeJobs = await prisma.job.findMany({
+    where: { activeFeed: true },
+    select: {
+      id: true,
+      source: true,
+      sourcePostedAt: true,
+      createdAt: true,
+    },
+  });
+
+  const staleIds = activeJobs
+    .filter((job) => !isWithinActiveFreshnessWindow(job, maxAgeDays, now))
+    .map((job) => job.id);
+
+  if (staleIds.length === 0) {
+    return { checked: activeJobs.length, pruned: 0 };
+  }
+
+  const res = await prisma.job.updateMany({
+    where: { id: { in: staleIds } },
+    data: { activeFeed: false },
+  });
+
+  return { checked: activeJobs.length, pruned: res.count };
+}
+
 /** Recompute and persist the Active-feed flag for one job. */
 export async function recomputeJobActiveFeed(jobId: string): Promise<boolean> {
   const job = await prisma.job.findUnique({
     where: { id: jobId },
-    select: { source: true, verificationStatus: true, company: true, activeFeed: true },
+    select: {
+      source: true,
+      verificationStatus: true,
+      company: true,
+      activeFeed: true,
+      sourcePostedAt: true,
+      createdAt: true,
+    },
   });
   if (!job) return false;
   const next = computeActiveFeed(job);
@@ -50,6 +90,8 @@ export async function promoteCanonicalDirectJob(
       officialApplyUrl: true,
       officialJobUrl: true,
       url: true,
+      sourcePostedAt: true,
+      createdAt: true,
     },
   });
 
@@ -67,6 +109,16 @@ export async function promoteCanonicalDirectJob(
   if (!match) return;
 
   const now = new Date();
+  const effectivePostedAt = job.postedAt ?? match.sourcePostedAt;
+  const activeFeed = computeActiveFeed({
+    source: atsType,
+    verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK",
+    company: job.company,
+    sourcePostedAt: effectivePostedAt,
+    createdAt: match.createdAt,
+    now,
+  });
+
   await prisma.job.update({
     where: { id: match.id },
     data: {
@@ -87,7 +139,7 @@ export async function promoteCanonicalDirectJob(
       classification: "QUALIFYING_INTERNSHIP",
       classificationReason:
         "Read from an official source and matched the engineering internship/co-op role filter.",
-      activeFeed: true,
+      activeFeed,
     },
   });
 }
@@ -103,6 +155,7 @@ export async function promoteCanonicalDirectJob(
 export async function reconcileDirectOfficialFeed(): Promise<{
   scanned: number;
   hiddenAggregators: number;
+  prunedStale: number;
   promotedDirect: number;
   visibilityUpdated: number;
 }> {
@@ -115,8 +168,12 @@ export async function reconcileDirectOfficialFeed(): Promise<{
       activeFeed: true,
       officialApplicationUrl: true,
       sourceUrl: true,
+      sourcePostedAt: true,
+      createdAt: true,
     },
   });
+
+  const now = new Date();
 
   const aggregatorIds = jobs
     .filter((job) => isTrustedAggregatorSource(job.source) && job.activeFeed)
@@ -131,10 +188,24 @@ export async function reconcileDirectOfficialFeed(): Promise<{
     hiddenAggregators = result.count;
   }
 
+  const staleIds = jobs
+    .filter((job) => job.activeFeed && !isWithinActiveFreshnessWindow(job, MAX_ACTIVE_FEED_AGE_DAYS, now))
+    .map((job) => job.id);
+
+  let prunedStale = 0;
+  if (staleIds.length > 0) {
+    const staleResult = await prisma.job.updateMany({
+      where: { id: { in: staleIds } },
+      data: { activeFeed: false },
+    });
+    prunedStale = staleResult.count;
+  }
+
   const directGroups = new Map<string, { ids: string[]; inactive: number }>();
   for (const job of jobs) {
     if (!isLegacyAutoPromotableDirectSource(job.source)) continue;
     if (!job.officialApplicationUrl && !job.sourceUrl) continue;
+    if (!isWithinActiveFreshnessWindow(job, MAX_ACTIVE_FEED_AGE_DAYS, now)) continue;
     const canonical = canonicalizeSource(job.source);
     if (!canonical) continue;
     if (job.verificationStatus === "VERIFIED_OFFICIAL_AT_LAST_CHECK" && job.activeFeed) continue;
@@ -146,7 +217,6 @@ export async function reconcileDirectOfficialFeed(): Promise<{
 
   let promotedDirect = 0;
   let directVisibilityUpdates = 0;
-  const now = new Date();
   for (const [source, group] of directGroups) {
     const result = await prisma.job.updateMany({
       where: { id: { in: group.ids } },
@@ -166,19 +236,29 @@ export async function reconcileDirectOfficialFeed(): Promise<{
   return {
     scanned: jobs.length,
     hiddenAggregators,
+    prunedStale,
     promotedDirect,
-    visibilityUpdated: hiddenAggregators + directVisibilityUpdates,
+    visibilityUpdated: hiddenAggregators + prunedStale + directVisibilityUpdates,
   };
 }
 
 /** Idempotent full visibility backfill. */
 export async function backfillActiveFeed(): Promise<{ scanned: number; updated: number }> {
   const jobs = await prisma.job.findMany({
-    select: { id: true, source: true, verificationStatus: true, company: true, activeFeed: true },
+    select: {
+      id: true,
+      source: true,
+      verificationStatus: true,
+      company: true,
+      activeFeed: true,
+      sourcePostedAt: true,
+      createdAt: true,
+    },
   });
+  const now = new Date();
   let updated = 0;
   for (const job of jobs) {
-    const next = computeActiveFeed(job);
+    const next = computeActiveFeed({ ...job, now });
     if (next !== job.activeFeed) {
       await prisma.job.update({ where: { id: job.id }, data: { activeFeed: next } });
       updated += 1;

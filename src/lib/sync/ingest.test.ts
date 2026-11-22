@@ -52,7 +52,7 @@ const importedJob = {
   title: "Firmware Engineering Intern",
   company: "Signal Labs",
   location: "Newark, NJ",
-  postedAt: new Date("2026-08-01T00:00:00.000Z"),
+  postedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
   description: "Build and test embedded firmware, analyze device data, document results, and collaborate with engineers throughout the product lifecycle.",
   applyUrl: "https://employer.example/jobs/1",
   workplaceType: "Hybrid",

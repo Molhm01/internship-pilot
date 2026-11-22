@@ -2,17 +2,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Compass, FileText, RefreshCw, UserRound } from "lucide-react";
+import { ArrowRight, Bot, CheckCircle2, Compass, FileText, RefreshCw, UserRound } from "lucide-react";
 import { PageBody, PageHeader } from "@/components/ui/PageHeader";
 import { Metric, MetricRow } from "@/components/ui/Metric";
 import { Section, Panel } from "@/components/ui/Panel";
 import { Button } from "@/components/ui/Button";
 import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/State";
-import { Badge } from "@/components/ui/Badge";
 import { fetchJobCounts, fetchJobsPage } from "@/lib/jobs/jobsApi";
 import { postedLabel } from "@/lib/jobs/postedAge";
 import { MatchScore } from "@/components/product/MatchScore";
-import { AvailabilityBadge } from "@/components/product/AvailabilityBadge";
 import type { JobCardData } from "@/components/product/JobCard";
 
 type JobCounts = {
@@ -49,14 +47,15 @@ export function DashboardClient({ scoringConfigured = true }: { scoringConfigure
   const [recent, setRecent] = useState<JobCardData[]>([]);
   const [strong, setStrong] = useState<JobCardData[]>([]);
   const [loading, setLoading] = useState(true);
+  const [scoringNow, setScoringNow] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const newestQuery = new URLSearchParams({ limit: "5", offset: "0", sort: "newest" });
-      const matchQuery = new URLSearchParams({ limit: "5", offset: "0", sort: "match" });
+      const newestQuery = new URLSearchParams({ limit: "6", offset: "0", sort: "newest" });
+      const matchQuery = new URLSearchParams({ limit: "6", offset: "0", sort: "match" });
       const [countsResult, newest, byMatch] = await Promise.all([
         fetchJobCounts<JobCounts>(),
         fetchJobsPage<JobCardData>(newestQuery),
@@ -76,13 +75,27 @@ export function DashboardClient({ scoringConfigured = true }: { scoringConfigure
     void load();
   }, [load]);
 
+  async function scoreRemainingNow() {
+    setScoringNow(true);
+    try {
+      await fetch("/api/jobs/score-unscored", { method: "POST" });
+      await load();
+    } finally {
+      setScoringNow(false);
+    }
+  }
+
+  const scoredPct = counts && counts.active > 0
+    ? Math.round((counts.scored / counts.active) * 100)
+    : 100;
+
   return (
     <PageBody>
       <PageHeader
         title={`${greeting()}.`}
         description={
           counts
-            ? `${counts.active.toLocaleString()} active internships tracked. ${counts.scored.toLocaleString()} currently matched to your resume.`
+            ? `${counts.active.toLocaleString()} fresh active internships (<=7d) · ${scoredPct}% ATS scored.`
             : "Loading your workspace…"
         }
         actions={
@@ -92,8 +105,15 @@ export function DashboardClient({ scoringConfigured = true }: { scoringConfigure
               Refresh
             </Button>
             <Link
+              href="/agent"
+              className="inline-flex h-7 shrink-0 whitespace-nowrap items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-small font-medium text-primary shadow-raised transition-colors duration-[120ms] ease-standard hover:bg-n-150"
+            >
+              <Bot className="size-3.5 text-accent" aria-hidden />
+              Auto-Pilot
+            </Link>
+            <Link
               href="/jobs"
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-accent bg-accent px-2.5 text-small font-medium text-inverse transition-colors duration-[120ms] ease-standard hover:bg-accent-hover"
+              className="inline-flex h-7 shrink-0 whitespace-nowrap items-center gap-1.5 rounded-md border border-accent bg-accent px-2.5 text-small font-medium text-inverse transition-colors duration-[120ms] ease-standard hover:bg-accent-hover"
             >
               <Compass className="size-3.5" aria-hidden />
               Discover
@@ -114,13 +134,14 @@ export function DashboardClient({ scoringConfigured = true }: { scoringConfigure
       {counts && (
         <Panel flush className="mb-8">
           <MetricRow className="px-4 py-1">
-            <Metric label="Active" value={counts.active.toLocaleString()} tone="accent" />
-            <Metric label="Verified" value={counts.officiallyVerified.toLocaleString()} tone="positive" />
-            <Metric label="Source listed" value={counts.sourceListed.toLocaleString()} tone="info" />
-            <Metric label="Pending" value={counts.verificationPending.toLocaleString()} tone="caution" />
-            <Metric label="Scored" value={counts.scored.toLocaleString()} />
-            <Metric label="Unscored" value={counts.unscored.toLocaleString()} tone="caution" />
-            <Metric label="Eligible" value={counts.eligibilityPass.toLocaleString()} tone="positive" />
+            <Metric label="Fresh Active (<=7d)" value={counts.active.toLocaleString()} tone="accent" />
+            <Metric
+              label={`Scored (${scoredPct}%)`}
+              value={counts.scored.toLocaleString()}
+              tone={counts.unscored === 0 ? "positive" : "caution"}
+            />
+            <Metric label="Strong Fit (>=75%)" value={counts.eligibilityPass.toLocaleString()} tone="positive" />
+            <Metric label="Verified ATS" value={counts.officiallyVerified.toLocaleString()} tone="info" />
           </MetricRow>
         </Panel>
       )}
@@ -129,11 +150,11 @@ export function DashboardClient({ scoringConfigured = true }: { scoringConfigure
         <div className="space-y-8">
           <Section
             title="Strong matches"
-            description="Current-resume ATS matches scored 75 or above."
+            description="Top fresh internships scored 75 or above against your resume."
             actions={
               <Link
                 href="/jobs?sort=match"
-                className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-micro text-tertiary transition-colors hover:text-primary"
+                className="inline-flex h-6 shrink-0 whitespace-nowrap items-center gap-1 rounded-md px-1.5 text-micro font-medium text-tertiary transition-colors hover:text-primary"
               >
                 View all <ArrowRight className="size-3" aria-hidden />
               </Link>
@@ -146,20 +167,20 @@ export function DashboardClient({ scoringConfigured = true }: { scoringConfigure
                 title="No strong matches yet"
                 description={
                   scoringConfigured
-                    ? "Upload your resume once. Internship Pilot scores jobs automatically as their job descriptions become available."
-                    : "Upload your resume once. Hosted AI matching is currently paused on this deployment - jobs will be scored here once an API key is configured, or on your own machine with the local desktop agent."
+                    ? "Upload your resume once. Internship Pilot scores every active internship immediately."
+                    : "Upload your resume on the Resume page to score all active internships automatically."
                 }
                 action={
                   <Link
                     href="/profile"
-                    className="inline-flex h-7 items-center rounded-md border border-line bg-surface px-2.5 text-small text-primary hover:bg-n-150"
+                    className="inline-flex h-7 items-center rounded-md border border-line bg-surface px-2.5 text-small font-medium text-primary hover:bg-n-150"
                   >
-                    Resume profile
+                    Upload resume
                   </Link>
                 }
               />
             ) : (
-              <ul className="divide-y divide-hairline border-y border-hairline">
+              <ul className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline bg-surface shadow-raised">
                 {strong.map((job) => (
                   <JobRow key={job.id} job={job} />
                 ))}
@@ -168,18 +189,18 @@ export function DashboardClient({ scoringConfigured = true }: { scoringConfigure
           </Section>
 
           <Section
-            title="Recently discovered"
-            description="Newest by the date the source published, not when it was ingested."
+            title="Newest fresh openings (<= 7d)"
+            description="Ordered by the timestamp the employer or radar source published."
           >
             {loading ? (
               <SkeletonRows rows={3} />
             ) : recent.length === 0 ? (
               <EmptyState
-                title="Nothing discovered yet"
-                description="Automatic discovery will add internships from your approved sources."
+                title="No fresh openings in cache"
+                description="Run a live discovery sweep from Discover or Auto-Pilot to ingest fresh roles."
               />
             ) : (
-              <ul className="divide-y divide-hairline border-y border-hairline">
+              <ul className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline bg-surface shadow-raised">
                 {recent.map((job) => (
                   <JobRow key={job.id} job={job} />
                 ))}
@@ -188,50 +209,53 @@ export function DashboardClient({ scoringConfigured = true }: { scoringConfigure
           </Section>
         </div>
 
-        <div className="space-y-8">
-          <Section title="Next actions">
-            <div className="space-y-px overflow-hidden rounded-lg border border-hairline">
+        <div className="space-y-6">
+          <Section title="Workspace shortcuts">
+            <div className="space-y-px overflow-hidden rounded-lg border border-hairline shadow-raised">
               <ActionRow
                 href="/profile"
                 icon={UserRound}
                 title="Resume profile"
-                body="Upload or replace the one resume used for automatic ATS matching."
+                body="Upload your PDF once — scores 100% of active internships immediately."
+              />
+              <ActionRow
+                href="/agent"
+                icon={Bot}
+                title="Autonomous Auto-Pilot"
+                body="Run hands-free applications, inspect live submissions, and track confirmations."
               />
               <ActionRow
                 href="/documents"
                 icon={FileText}
-                title="Review documents"
-                body="Master résumé and reusable bullet library."
-              />
-              <ActionRow
-                href="/agent"
-                icon={Compass}
-                title="Open the Agent"
-                body="Review runs and answer pending application questions."
+                title="Documents & candidate vault"
+                body="Cover letters, reusable resume bullets, and application defaults."
               />
             </div>
           </Section>
 
-          {counts && counts.unscored > 0 && (
-            <Panel tone="caution">
+          {counts && counts.unscored > 0 ? (
+            <Panel tone="caution" className="space-y-3">
               <p className="text-small font-medium text-primary">
-                {scoringConfigured
-                  ? `${counts.unscored.toLocaleString()} internships are awaiting a current ATS score`
-                  : `${counts.unscored.toLocaleString()} internships do not have an ATS score yet`}
+                {counts.unscored.toLocaleString()} new posting(s) queued for instant scoring
               </p>
-              <p className="mt-1 text-small text-secondary">
-                {scoringConfigured
-                  ? "Matching is automatic. Internship Pilot is scoring queued jobs and preparing missing official job descriptions in the background."
-                  : "Automatic scoring is paused because hosted AI matching is not configured on this deployment. Discovery keeps running and new internships keep arriving. Scores resume once an API key is configured; with the local desktop agent, matching runs on your own machine."}
+              <p className="text-micro text-secondary">
+                All active postings score automatically on upload or click below to score immediately.
               </p>
-              <Link
-                href="/jobs"
-                className="mt-3 inline-flex h-7 items-center rounded-md border border-line bg-surface px-2.5 text-small text-primary transition-colors hover:bg-n-150"
-              >
-                View Discover
-              </Link>
+              <Button size="sm" variant="primary" onClick={() => void scoreRemainingNow()} disabled={scoringNow}>
+                {scoringNow ? "Scoring…" : "Score all now"}
+              </Button>
             </Panel>
-          )}
+          ) : counts && counts.active > 0 ? (
+            <Panel tone="accent" className="flex items-start gap-2.5">
+              <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-verified" aria-hidden />
+              <div>
+                <p className="text-small font-medium text-primary">100% catalog scored</p>
+                <p className="text-micro text-secondary">
+                  All {counts.active.toLocaleString()} fresh internships have current ATS scores.
+                </p>
+              </div>
+            </Panel>
+          ) : null}
         </div>
       </div>
     </PageBody>
@@ -245,23 +269,21 @@ function JobRow({ job }: { job: JobCardData }) {
     <li>
       <Link
         href={`/jobs/${job.id}`}
-        className="flex items-center gap-3 px-1 py-2.5 transition-colors duration-[120ms] ease-standard hover:bg-n-100"
+        className="flex items-center gap-3 px-4 py-3 transition-colors duration-[120ms] ease-standard hover:bg-n-100"
       >
         <div className="min-w-0 flex-1">
-          <p className="truncate text-small font-medium text-primary">{job.title}</p>
+          <p className="truncate font-display text-small font-medium text-primary">{job.title}</p>
           <p className="truncate text-micro text-tertiary">
             {job.company}
             {job.location ? ` · ${job.location}` : ""}
+            {job.verificationStatus === "OFFICIALLY_VERIFIED" ? " · Verified ATS" : ""}
           </p>
         </div>
-        {job.verificationStatus && (
-          <AvailabilityBadge status={job.verificationStatus} className="hidden sm:inline-flex" />
-        )}
-        <span className="shrink-0 font-mono text-micro text-faint tabular">{posted.text}</span>
+        <span className="shrink-0 font-mono text-micro text-faint tabular-nums">{posted.text}</span>
         {score !== null ? (
           <MatchScore score={score} size="sm" />
         ) : (
-          <Badge tone="neutral">Awaiting ATS</Badge>
+          <span className="shrink-0 font-mono text-micro text-faint tabular-nums">—</span>
         )}
       </Link>
     </li>
@@ -282,11 +304,11 @@ function ActionRow({
   return (
     <Link
       href={href}
-      className="flex items-start gap-3 bg-surface px-3 py-3 transition-colors duration-[120ms] ease-standard hover:bg-n-100"
+      className="flex items-start gap-3 bg-surface px-4 py-3 transition-colors duration-[120ms] ease-standard hover:bg-n-100"
     >
-      <Icon className="mt-0.5 size-4 shrink-0 text-tertiary" aria-hidden />
+      <Icon className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden />
       <span className="min-w-0 flex-1">
-        <span className="block text-small text-primary">{title}</span>
+        <span className="block font-display text-small font-medium text-primary">{title}</span>
         <span className="block text-micro text-tertiary">{body}</span>
       </span>
       <ArrowRight className="mt-0.5 size-3.5 shrink-0 text-faint" aria-hidden />

@@ -43,43 +43,41 @@ export default function SchedulerHealthPanel() {
   if (!health) return null;
 
   return (
-    <details className="bg-surface rounded-lg border border-hairline p-4">
-      <summary className="cursor-pointer flex items-center justify-between text-sm font-medium text-secondary">
+    <details className="rounded-lg border border-hairline bg-surface p-4 shadow-raised">
+      <summary className="flex cursor-pointer items-center justify-between text-small font-medium text-secondary">
         <span>
-          Monitoring control{" "}
-          <span className={health.paused ? "text-amber-600" : "text-emerald-600"}>
-            ({health.paused ? "Paused" : "Enabled"})
+          Scheduler &amp; Crawler Health{" "}
+          <span className={health.paused ? "text-caution" : "text-positive"}>
+            ({health.paused ? "Paused" : "Active"})
           </span>
         </span>
         <button
+          type="button"
           onClick={(e) => {
             e.preventDefault();
             togglePause();
           }}
           disabled={busy}
-          className="rounded-lg border border-line text-xs font-medium px-3 py-1.5 hover:bg-sunken disabled:opacity-40"
+          className="inline-flex h-7 shrink-0 items-center whitespace-nowrap rounded-md border border-line bg-canvas px-3 text-micro font-medium text-primary hover:bg-n-50 disabled:opacity-45"
         >
-          {busy ? "…" : health.paused ? "Resume Monitoring" : "Pause Monitoring"}
+          {busy ? "…" : health.paused ? "Resume" : "Pause"}
         </button>
       </summary>
-      <p className="mt-3 text-xs text-tertiary">
-        This switch only controls whether scheduled ingestion is allowed to run. It does not prove the external scheduler is firing; the real hosted-sync health is shown above.
-      </p>
-      <div className="mt-3 grid grid-cols-2 gap-3">
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
         {Object.entries(health.ticks).map(([key, tick]) => (
-          <div key={key} className="rounded-lg border border-hairline p-3 text-xs">
-            <p className="font-medium text-secondary">{tick.label}</p>
+          <div key={key} className="rounded-md border border-hairline bg-canvas/50 p-3 text-micro">
+            <p className="font-medium text-primary">{tick.label}</p>
             <p className="text-tertiary">
-              Last local tick: {tick.lastRunAt ? new Date(tick.lastRunAt).toLocaleString() : "never"}
+              Last tick: {tick.lastRunAt ? new Date(tick.lastRunAt).toLocaleString() : "never"}
             </p>
             <p className="text-tertiary">
-              Next local tick: {tick.nextRunAt ? new Date(tick.nextRunAt).toLocaleString() : "—"}
+              Next tick: {tick.nextRunAt ? new Date(tick.nextRunAt).toLocaleString() : "—"}
             </p>
             {tick.lastSummary && (
-              <p className={tick.lastStatus === "error" ? "text-rose-600" : "text-tertiary"}>{tick.lastSummary}</p>
+              <p className={tick.lastStatus === "error" ? "text-critical" : "text-tertiary"}>{tick.lastSummary}</p>
             )}
-            <p className="text-faint">
-              New jobs total: {tick.newJobsTotal} · Errors total: {tick.errorsTotal}
+            <p className="text-faint tabular font-mono">
+              New jobs: {tick.newJobsTotal} · Errors: {tick.errorsTotal}
             </p>
           </div>
         ))}

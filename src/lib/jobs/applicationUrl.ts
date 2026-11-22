@@ -53,6 +53,16 @@ export function openStoredApplicationUrl(
     return true;
   }
 
-  window.location.assign(applicationUrl);
+  const opened = window.open(applicationUrl, "_blank", "noopener,noreferrer");
+  if (!opened) {
+    const anchor = document.createElement("a");
+    anchor.href = applicationUrl;
+    anchor.target = "_blank";
+    anchor.rel = "noopener noreferrer";
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  }
   return true;
 }

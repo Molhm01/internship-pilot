@@ -155,6 +155,23 @@ export type ResumeCorrectionResult = {
   validationPasses: number;
 };
 
+function stripUnsupportedClauses(text: string, unsupportedPhrases: string[]): string {
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .filter((sentence) => !unsupportedPhrases.some((phrase) => containsQualificationMeaning(sentence, phrase)));
+  if (sentences.length > 0 && sentences.join(" ").trim() !== text.trim()) {
+    return sentences.join(" ").trim();
+  }
+  const clauses = text
+    .split(/\s*[,;]\s*/)
+    .filter((clause) => !unsupportedPhrases.some((phrase) => containsQualificationMeaning(clause, phrase)));
+  if (clauses.length > 0 && clauses.join(", ").trim() !== text.trim()) {
+    const joined = clauses.join(", ").trim();
+    return /[.!?]$/.test(joined) ? joined : `${joined}.`;
+  }
+  return "";
+}
+
 export function correctAndValidateResumeContent(
   original: ResumeClaimContent,
   unsupportedQualifications: string[],
@@ -193,6 +210,49 @@ export function correctAndValidateResumeContent(
       return replacements.length ? Array.from(new Set(replacements)) : [];
     }),
   }));
+
+  // Clean remaining unsupported phrases from bullet points, activities, and coursework
+  // while leaving education degrees intact so fabricated degree credentials stay blocked.
+  const activeUnsupported = unsupportedQualifications.filter(
+    (phrase) => !isQualificationSupportedByFacts(phrase, approvedFacts),
+  );
+  if (activeUnsupported.length > 0) {
+    content.experience = content.experience.map((entry) => ({
+      ...entry,
+      bullets: entry.bullets
+        .map((bullet) => {
+          const hit = activeUnsupported.some((p) => containsQualificationMeaning(bullet, p));
+          return hit ? stripUnsupportedClauses(bullet, activeUnsupported) : bullet;
+        })
+        .filter((bullet) => bullet.length > 0 && !activeUnsupported.some((p) => containsQualificationMeaning(bullet, p))),
+    }));
+    content.projects = content.projects.map((entry) => ({
+      ...entry,
+      bullets: entry.bullets
+        .map((bullet) => {
+          const hit = activeUnsupported.some((p) => containsQualificationMeaning(bullet, p));
+          return hit ? stripUnsupportedClauses(bullet, activeUnsupported) : bullet;
+        })
+        .filter((bullet) => bullet.length > 0 && !activeUnsupported.some((p) => containsQualificationMeaning(bullet, p))),
+    }));
+    content.activities = content.activities.filter(
+      (activity) => !activeUnsupported.some((p) => containsQualificationMeaning(activity, p)),
+    );
+    content.education = content.education.map((edu) => {
+      if (!activeUnsupported.some((p) => containsQualificationMeaning(edu.coursework, p))) {
+        return edu;
+      }
+      const cleaned = edu.coursework
+        .replace(/^Relevant Coursework:\s*/i, "")
+        .split(/\s*,\s*/)
+        .filter((item) => !activeUnsupported.some((p) => containsQualificationMeaning(item, p)))
+        .join(", ");
+      return {
+        ...edu,
+        coursework: cleaned ? `Relevant Coursework: ${cleaned}` : "",
+      };
+    });
+  }
 
   const remaining = validateUnsupportedClaims(
     resumeClaimSources(content),

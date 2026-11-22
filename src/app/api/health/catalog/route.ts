@@ -7,20 +7,6 @@ const ACTIVE_TARGET = 500;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export async function GET() {
-  // Keep database-dependent imports inside the handler. If a deployment is
-  // missing/has an invalid DATABASE_URL, a top-level import can fail before
-  // GET() exists and Vercel can only return an opaque framework 500.
-  if (!process.env.DATABASE_URL?.trim()) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "Catalog database is not configured.",
-        code: "DATABASE_NOT_CONFIGURED",
-      },
-      { status: 503, headers: { "cache-control": "no-store, max-age=0" } },
-    );
-  }
-
   try {
     const [{ prisma }, { getLiveDiscoveryHealth }] = await Promise.all([
       import("@/lib/db"),

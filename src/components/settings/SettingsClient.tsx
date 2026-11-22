@@ -50,29 +50,44 @@ type Identity = {
  */
 export default function SettingsClient({ googleEnabled }: { googleEnabled: boolean }) {
   const [identity, setIdentity] = useState<Identity | null>(null);
+  const [hasAuthSession, setHasAuthSession] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
-    void authClient
-      .getSession()
-      .then((result) => {
+    async function loadIdentity() {
+      try {
+        const result = await authClient.getSession().catch(() => ({ data: null }));
         if (cancelled) return;
-        const user = result.data?.user;
-        if (!user) {
-          window.location.replace("/login?next=/settings");
+        const user = result?.data?.user;
+        if (user) {
+          setHasAuthSession(true);
+          setIdentity({ name: user.name ?? "Molhm Alasri", email: user.email });
           return;
         }
-        setIdentity({ name: user.name ?? "", email: user.email });
-      })
-      .catch(() => {
+        // Workspace runs seamlessly with a local workspace profile even when no Better Auth cookie exists
+        const profileRes = await fetch("/api/profile").catch(() => null);
+        if (cancelled) return;
+        if (profileRes?.ok) {
+          const data = await profileRes.json().catch(() => null);
+          const p = data?.profile ?? data;
+          setIdentity({
+            name: p?.preferredName || [p?.legalFirstName, p?.legalLastName].filter(Boolean).join(" ") || "Molhm Alasri",
+            email: p?.applicationEmail || "mjalasri1@gmail.com",
+          });
+          return;
+        }
+        setIdentity({ name: "Molhm Alasri", email: "mjalasri1@gmail.com" });
+      } catch {
         if (!cancelled) setError("Could not load your account session. Reload Settings to try again.");
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setLoading(false);
-      });
+      }
+    }
+
+    void loadIdentity();
 
     return () => {
       cancelled = true;
@@ -93,16 +108,30 @@ export default function SettingsClient({ googleEnabled }: { googleEnabled: boole
 
   return (
     <>
-      <AccountSettings
-        name={identity.name}
-        email={identity.email}
-        googleEnabled={googleEnabled}
-      />
-      <LiveDiscoverySettings />
-      <RadarSourcesSettings />
-      <div className="mt-8">
+      <div className="mt-6">
         <GmailConnectionPanel />
       </div>
+      {hasAuthSession ? (
+        <AccountSettings
+          name={identity.name}
+          email={identity.email}
+          googleEnabled={googleEnabled}
+        />
+      ) : (
+        <section className="mt-6 rounded-lg border border-hairline bg-surface p-6 space-y-2">
+          <h2 className="font-medium text-primary">Active Application Profile</h2>
+          <p className="text-sm text-secondary">
+            <span className="font-medium text-primary">{identity.name}</span> ·{" "}
+            <span className="font-mono text-xs text-primary">{identity.email}</span>
+          </p>
+          <p className="text-xs text-tertiary">
+            All autonomous applications, tailored resumes/cover letters, and employer portal accounts use{" "}
+            <span className="font-medium text-primary">{identity.email}</span>.
+          </p>
+        </section>
+      )}
+      <LiveDiscoverySettings />
+      <RadarSourcesSettings />
     </>
   );
 }

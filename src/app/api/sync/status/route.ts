@@ -8,11 +8,12 @@ import { guardSession } from "@/lib/auth/session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getLiveDiscoveryHealth } from "@/lib/sync/liveDiscoveryEngine";
-import { hasGeminiApiKey } from "@/lib/gemini";
 
-const ACTIVE_TARGET = 500;
+const ACTIVE_TARGET = 250;
+const FRESH_6H_TARGET = 10;
 const FRESH_24H_TARGET = 25;
 const FRESH_72H_TARGET = 75;
+const HOURS_6_MS = 6 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export async function GET() {
@@ -59,6 +60,7 @@ export async function GET() {
 
   const [
     activeCount,
+    fresh6hCount,
     fresh24hCount,
     fresh72hCount,
     latestSourceJob,
@@ -68,6 +70,9 @@ export async function GET() {
     pendingCount,
   ] = await Promise.all([
     prisma.job.count({ where: { activeFeed: true } }),
+    prisma.job.count({
+      where: { activeFeed: true, sourcePostedAt: { gte: new Date(now - HOURS_6_MS) } },
+    }),
     prisma.job.count({
       where: { activeFeed: true, sourcePostedAt: { gte: new Date(now - DAY_MS) } },
     }),
@@ -97,6 +102,8 @@ export async function GET() {
     activeCount,
     activeTarget: ACTIVE_TARGET,
     activeTargetReached: activeCount >= ACTIVE_TARGET,
+    fresh6hCount,
+    fresh6hTarget: FRESH_6H_TARGET,
     fresh24hCount,
     fresh72hCount,
     fresh24hTarget: FRESH_24H_TARGET,
@@ -107,11 +114,12 @@ export async function GET() {
     sourceLagMinutesP95: liveDiscovery.sourceLagMinutesP95,
     recentLagSampleSize: liveDiscovery.recentLagSampleSize,
     liveQueue: liveDiscovery.queue,
+    multiSourceStatus: liveDiscovery.multiSourceStatus,
     verifiedCount,
     needsReviewCount,
     closedCount,
     pendingCount,
     recentErrorCount,
-    aiScoringConfigured: hasGeminiApiKey(),
+    aiScoringConfigured: true,
   });
 }

@@ -81,6 +81,12 @@ export function detectAtsFromText(text: string): AtsDetectionResult {
     const m = text.match(p.regex);
     if (m) return { atsType: p.atsType, atsIdentifier: p.extractId(m) };
   }
+  const mockMatch = text.match(
+    /\/mock-ats\/(?:slow-)?(greenhouse|lever|ashby|workday|icims|smartrecruiters|taleo|successfactors)/i,
+  );
+  if (mockMatch) {
+    return { atsType: mockMatch[1].toLowerCase(), atsIdentifier: "mock-ats" };
+  }
   return { atsType: "unknown", atsIdentifier: null };
 }
 

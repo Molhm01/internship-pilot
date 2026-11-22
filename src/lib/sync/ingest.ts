@@ -11,7 +11,12 @@ import {
   distanceFromCliftonMiles,
   parseCompensation,
 } from "@/lib/sync/classify";
-import { computeActiveFeed, isDirectOfficialSource } from "@/lib/jobs/sourcePolicy";
+import {
+  computeActiveFeed,
+  isDirectOfficialSource,
+  isWithinActiveFreshnessWindow,
+  MAX_ACTIVE_FEED_AGE_DAYS,
+} from "@/lib/jobs/sourcePolicy";
 import {
   destinationPersistenceData,
   isAggregatorUrl,
@@ -128,6 +133,7 @@ type NormalizedJobInput = {
   classificationReason?: string | null;
   atsType?: string | null;
   atsTenant?: string | null;
+  discoverySource?: string | null;
 };
 
 // How a newly created job should describe its own provenance.
@@ -157,6 +163,15 @@ export function directAtsProfile(atsType: string): VerificationProfile {
     reasonCode: "OFFICIAL_ATS_BOARD",
     verificationReason: `Read directly from the employer's official ${atsType} job board API.`,
     verificationMethod: `${atsType}-board-api`,
+  };
+}
+
+export function liveJobBoardProfile(source: string): VerificationProfile {
+  return {
+    verificationStatus: "ACTIVE_SOURCE_LISTED",
+    reasonCode: "SOURCE_LISTED",
+    verificationReason: `Discovered live from ${source} right after posting.`,
+    verificationMethod: `${source}-live-crawler`,
   };
 }
 
@@ -358,7 +373,15 @@ async function upsertNormalizedJob(
               lastVerifiedAt: now,
               atsType: input.atsType ?? existing.atsType,
               atsTenant: input.atsTenant ?? existing.atsTenant,
-              activeFeed: true,
+              activeFeed: isWithinActiveFreshnessWindow(
+                {
+                  source: input.source,
+                  sourcePostedAt: replacePostedAt ? sourceDate.sourcePostedAt : existing.sourcePostedAt,
+                  createdAt: existing.createdAt,
+                },
+                MAX_ACTIVE_FEED_AGE_DAYS,
+                now,
+              ),
               consecutiveBoardMisses: 0,
               boardMissingSince: null,
               closedAt: null,
@@ -366,6 +389,9 @@ async function upsertNormalizedJob(
                 ? { officialFirstSeenAt: now, discoveryPipeline: "official-first-v2" }
                 : {}),
             }
+          : {}),
+        ...(input.discoverySource && !existing.discoverySource
+          ? { discoverySource: input.discoverySource }
           : {}),
         // Refresh classification on rediscovery so a classifier improvement
         // reaches existing rows without a separate backfill.
@@ -419,6 +445,7 @@ async function upsertNormalizedJob(
       ...(profile.verificationStatus === "VERIFIED_OFFICIAL_AT_LAST_CHECK" ? { lastVerifiedAt: now } : {}),
       atsType: input.atsType ?? null,
       atsTenant: input.atsTenant ?? null,
+      ...(input.discoverySource ? { discoverySource: input.discoverySource } : {}),
       classification: input.classification ?? null,
       classificationReason: input.classificationReason ?? null,
       // Visibility is decided centrally by source policy. Never by whether an
@@ -427,6 +454,9 @@ async function upsertNormalizedJob(
         source: input.source,
         verificationStatus: profile.verificationStatus,
         company: input.company,
+        sourcePostedAt: sourceDate.sourcePostedAt,
+        createdAt: now,
+        now,
       }),
       disciplineTags: JSON.stringify(disciplineTags),
       sophomoreEligible: classifySophomoreEligible(input.description),
@@ -628,6 +658,9 @@ export async function upsertClassifiedAtsJob(args: {
   atsTenant: string;
   classification: InternshipClassification;
   classificationReason: string;
+  discoverySource?: string | null;
+  sourceListingUrl?: string | null;
+  verificationProfile?: VerificationProfile;
   now?: Date;
   syncRunId?: string | null;
   rowIndex?: number | null;
@@ -637,6 +670,7 @@ export async function upsertClassifiedAtsJob(args: {
 }): Promise<"new" | "updated" | "unchanged"> {
   const capturedAt = args.capturedAt ?? args.now ?? new Date();
   const sourceDate = parseFirstSourceDate([args.job.postedAt, args.job.postedAtText], capturedAt);
+  const profile = args.verificationProfile ?? directAtsProfile(args.atsType);
   return upsertNormalizedJob(
     {
       source: args.source,
@@ -656,8 +690,10 @@ export async function upsertClassifiedAtsJob(args: {
       // For a direct ATS read these are the same URL, and it is the
       // employer's own application page — not an aggregator listing.
       sourceUrl: args.job.applyUrl,
-      sourceListingUrl: null,
-      officialApplicationUrl: stripTrackingParameters(args.job.applyUrl),
+      sourceListingUrl: args.sourceListingUrl ?? null,
+      officialApplicationUrl: isAggregatorUrl(args.job.applyUrl)
+        ? null
+        : stripTrackingParameters(args.job.applyUrl),
       workplaceType: args.job.workplaceType,
       compensation: null,
       sponsorshipRaw: null,
@@ -665,9 +701,10 @@ export async function upsertClassifiedAtsJob(args: {
       classificationReason: args.classificationReason,
       atsType: args.atsType,
       atsTenant: args.atsTenant,
+      discoverySource: args.discoverySource ?? null,
     },
     args.now ?? new Date(),
-    directAtsProfile(args.atsType),
+    profile,
     { scheduleInitialMatch: args.scheduleInitialMatch },
   );
 }

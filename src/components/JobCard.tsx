@@ -154,7 +154,7 @@ export default function JobCard({ job }: { job: JobCardData }) {
             <button
               type="button"
               onClick={handleApply}
-              className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-hover transition-colors"
+              className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-accent text-inverse hover:bg-accent-hover transition-colors"
             >
               Apply ↗
             </button>

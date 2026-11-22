@@ -1,6 +1,17 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  output: "standalone",
+  allowedDevOrigins: [
+    "127.0.0.1",
+    "localhost",
+    "0.0.0.0",
+    "**.run.app",
+    "**.a.run.app",
+    "**.googleusercontent.com",
+    "**.google.com",
+    "**.vercel.app",
+  ],
   // pdf-parse (via pdfjs-dist) dynamically loads a worker file at a path
   // relative to its own package location at runtime. Bundling it breaks that
   // resolution, so it must run as a plain Node require() instead.

@@ -6,7 +6,7 @@ import {
   replaceResumeDerivedEvidence,
 } from "@/lib/resume/autoProfile";
 import { queueEntireCatalogForResume } from "@/lib/matching/resumeUploadScoring";
-import { triggerInitialAiMatchWorker } from "@/lib/matching/initialAiMatchQueue";
+import { scoreAllActiveJobsImmediately } from "@/lib/matching";
 
 /**
  * Analyze an already-uploaded resume document and activate its evidence for ATS
@@ -50,14 +50,24 @@ export const POST = withUser(async (req, user) => {
 
   try {
     const facts = await analyzeResumeForAutomaticScoring(resumeText);
-    const profile = await replaceResumeDerivedEvidence(user.id, facts);
-    const scheduled = await queueEntireCatalogForResume(user.id);
-    triggerInitialAiMatchWorker();
+    const profile = await replaceResumeDerivedEvidence(user.id, facts, resumeText);
+    const scheduled = await queueEntireCatalogForResume(user.id).catch(() => ({
+      activeJobs: 0,
+      eligibleJobs: 0,
+      queuedRows: 0,
+      skippedNoDescription: 0,
+    }));
+    const scoredResult = await scoreAllActiveJobsImmediately(user.id, {
+      forceRefresh: true,
+      origin: "PROFILE_AUTO",
+    });
 
     console.info(JSON.stringify({
       event: "resume-first-ats-scoring",
-      stage: "queued",
+      stage: "scored_all",
       userId: user.id,
+      scored: scoredResult.scored,
+      totalActive: scoredResult.totalActive,
       ...scheduled,
     }));
 
@@ -65,6 +75,8 @@ export const POST = withUser(async (req, user) => {
       status: "ready",
       factCount: profile.factCount,
       queuedJobs: scheduled.queuedRows,
+      scoredJobs: scoredResult.scored,
+      totalActive: scoredResult.totalActive,
     });
   } catch (error) {
     return NextResponse.json(

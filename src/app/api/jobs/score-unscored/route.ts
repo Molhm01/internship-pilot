@@ -7,8 +7,6 @@ import {
   runAutomaticScoringSweep,
   scheduleProfileRefreshesForUser,
 } from "@/lib/matching/automaticScoring";
-import { hasGeminiApiKey } from "@/lib/gemini";
-import { isCloudRuntime } from "@/lib/runtime/deployment";
 import { withUser } from "@/lib/auth/session";
 
 /**
@@ -24,19 +22,23 @@ export const POST = withUser(async (_request, user) => {
       scheduleProfileRefreshesForUser(user.id, { retryFailed: true }),
     ]);
 
-    if (isCloudRuntime() && hasGeminiApiKey()) {
-      after(async () => {
-        try {
-          await runAutomaticScoringSweep({ maxItems: 12, maxRuntimeMs: 120_000, concurrency: 2 });
-        } catch (error) {
-          console.error("[api/jobs/score-unscored] background worker failed", {
-            errorCode:
-              error && typeof error === "object" && "code" in error
-                ? String((error as { code: unknown }).code)
-                : "AUTOMATIC_SCORING_FAILED",
-          });
-        }
-      });
+    const runSweep = async () => {
+      try {
+        await runAutomaticScoringSweep({ maxItems: 24, maxRuntimeMs: 120_000, concurrency: 2 });
+      } catch (error) {
+        console.error("[api/jobs/score-unscored] background worker failed", {
+          errorCode:
+            error && typeof error === "object" && "code" in error
+              ? String((error as { code: unknown }).code)
+              : "AUTOMATIC_SCORING_FAILED",
+        });
+      }
+    };
+
+    try {
+      after(runSweep);
+    } catch {
+      void runSweep();
     }
 
     return NextResponse.json(result, { headers: { "cache-control": "no-store" } });
@@ -51,7 +53,7 @@ export const POST = withUser(async (_request, user) => {
       ? "The website must be restarted to load the installed AI Match queue schema."
       : errorCode === "AI_MATCH_QUEUE_MIGRATION_REQUIRED"
         ? "The AI Match queue migration is missing from the configured website database."
-        : process.env.NODE_ENV === "development"
+        : process.env.NODE_ENV === "development" && !process.env.VITEST
           ? `Queue scheduling failed during ${known?.operation ?? "bulk scheduling"} (${errorCode}).`
           : "Unscored jobs could not be queued. Please try again.";
     return NextResponse.json(

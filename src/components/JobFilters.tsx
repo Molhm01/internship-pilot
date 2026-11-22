@@ -26,6 +26,8 @@ export type JobFiltersState = {
   citizenshipOrClearance: string;
   compMin: string;
   matchScoreMin: string;
+  freshHours: string;
+  source: string;
 };
 
 export const EMPTY_FILTERS: JobFiltersState = {
@@ -50,6 +52,8 @@ export const EMPTY_FILTERS: JobFiltersState = {
   citizenshipOrClearance: "",
   compMin: "",
   matchScoreMin: "",
+  freshHours: "",
+  source: "",
 };
 
 const DISCIPLINE_LABELS: Record<DisciplineTag, string> = {
@@ -120,6 +124,8 @@ export function buildJobsQuery(filters: JobFiltersState): URLSearchParams {
   if (filters.citizenshipOrClearance) params.set("citizenshipOrClearance", filters.citizenshipOrClearance);
   if (filters.compMin) params.set("compMin", filters.compMin);
   if (filters.matchScoreMin) params.set("matchScoreMin", filters.matchScoreMin);
+  if (filters.freshHours) params.set("freshHours", filters.freshHours);
+  if (filters.source) params.set("source", filters.source);
   return params;
 }
 
@@ -223,8 +229,35 @@ export default function JobFilters({
       </details>
 
       <details className="group">
-        <summary className="cursor-pointer text-sm font-medium text-secondary">Timing</summary>
+        <summary className="cursor-pointer text-sm font-medium text-secondary">Timing &amp; source</summary>
         <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
+          <SelectField
+            label="Freshness window"
+            value={filters.freshHours}
+            onChange={(v) => set("freshHours", v)}
+            options={[
+              { value: "", label: "Any time" },
+              { value: "6", label: "Live (< 6 hours)" },
+              { value: "24", label: "Last 24 hours" },
+              { value: "72", label: "Last 72 hours" },
+              { value: "168", label: "Last 7 days" },
+            ]}
+          />
+          <SelectField
+            label="Discovery source"
+            value={filters.source}
+            onChange={(v) => set("source", v)}
+            options={[
+              { value: "", label: "All sources" },
+              { value: "linkedin", label: "LinkedIn" },
+              { value: "indeed", label: "Indeed" },
+              { value: "handshake", label: "Handshake" },
+              { value: "intern-list", label: "Intern-List" },
+              { value: "jobright", label: "Jobright" },
+              { value: "direct-ats", label: "Direct ATS" },
+              { value: "radars", label: "All Live Radars" },
+            ]}
+          />
           <SelectField
             label="Season"
             value={filters.season}

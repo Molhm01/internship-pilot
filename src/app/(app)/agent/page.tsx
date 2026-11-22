@@ -1,4 +1,7 @@
-export const metadata = { title: "agent" };
-export default function Page() {
-  return <div className="px-6 py-8"><h1 className="text-title">agent</h1></div>;
+import { AgentCommandCenter } from "./AgentCommandCenter";
+
+export const metadata = { title: "Autonomous Agent" };
+
+export default function AgentPage() {
+  return <AgentCommandCenter />;
 }

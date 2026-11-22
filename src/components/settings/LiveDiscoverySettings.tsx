@@ -142,7 +142,7 @@ export default function LiveDiscoverySettings() {
             type="button"
             disabled={busy || !configured}
             onClick={enable}
-            className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-40"
+            className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-inverse disabled:opacity-40"
           >
             {busy ? "Enabling…" : "Enable 5-minute live discovery"}
           </button>

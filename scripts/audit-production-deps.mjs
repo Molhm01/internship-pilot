@@ -34,7 +34,6 @@ const BUILD_ONLY = [
   ["prisma", "the Prisma CLI: schema, generate and migrate tooling. The server imports @prisma/client, never this."],
   ["@libsql/client", "the SQLite driver, kept only for the one-shot SQLite-to-PostgreSQL import utility."],
   ["@prisma/adapter-libsql", "the retired SQLite Prisma adapter."],
-  ["pdf-lib", "a fixture-only PDF writer used to build test documents."],
 ];
 
 for (const [name, why] of BUILD_ONLY) {
@@ -52,6 +51,7 @@ const RUNTIME_REQUIRED = [
   ["@prisma/client", "the query client every server module imports."],
   ["@prisma/adapter-pg", "the PostgreSQL driver adapter src/lib/db.ts constructs."],
   ["pg", "the connection pool that adapter drives."],
+  ["pdf-lib", "the runtime PDF fallback generator imported by src/lib/documents/pdfFallback.ts."],
 ];
 
 for (const [name, why] of RUNTIME_REQUIRED) {

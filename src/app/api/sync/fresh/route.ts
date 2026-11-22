@@ -3,6 +3,7 @@ import { requireCatalogueAdmin } from "@/lib/auth/catalogueAdmin";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { runLiveDiscoveryCycle } from "@/lib/sync/liveDiscoveryEngine";
+import { pruneStaleActiveJobs } from "@/lib/jobs/activeFeed";
 
 export const runtime = "nodejs";
 export const maxDuration = 180;
@@ -45,6 +46,7 @@ export async function POST() {
       atsCheckLimit: 20,
       queueProcessLimit: 80,
     });
+    await pruneStaleActiveJobs();
     const now = Date.now();
     const [active, fresh24h, fresh72h] = await Promise.all([
       prisma.job.count({ where: { activeFeed: true } }),

@@ -36,10 +36,10 @@ export function Wordmark({
   compact?: boolean;
 }) {
   return (
-    <span className={cn("flex items-center gap-2 text-primary", className)}>
+    <span className={cn("flex items-center gap-2 text-primary whitespace-nowrap shrink-0", className)}>
       <Mark className="shrink-0 text-accent" />
       {!compact && (
-        <span className="text-small font-medium tracking-[-0.01em] whitespace-nowrap">
+        <span className="font-display text-small font-semibold tracking-[-0.015em] whitespace-nowrap">
           Internship Pilot
         </span>
       )}

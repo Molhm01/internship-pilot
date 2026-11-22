@@ -399,7 +399,7 @@ export default function CanonicalProfileForm() {
         <button
           type="submit"
           disabled={status === "saving"}
-          className="rounded-lg bg-accent px-5 py-2 text-sm font-medium text-white disabled:opacity-50"
+          className="rounded-lg bg-accent px-5 py-2 text-sm font-medium text-inverse disabled:opacity-50"
         >
           {status === "saving" ? "Saving…" : "Save profile"}
         </button>

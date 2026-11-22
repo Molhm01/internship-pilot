@@ -151,9 +151,13 @@ export async function runLiveDirectRadar(limit = 250): Promise<{
       .filter((value): value is string => Boolean(value)),
   );
   const activeSourceIds = new Set(activeRows.map((row) => row.sourceJobId).filter(Boolean));
+  const freshUpgradeCutoff = now.getTime() - 72 * 60 * 60 * 1000;
   const unseen = candidates.filter((candidate) => {
     const canonical = canonicalizeJobUrl(candidate.officialUrl);
-    return !activeSourceIds.has(candidate.sourceJobId) && (!canonical || !activeUrlKeys.has(canonical));
+    const alreadySeen =
+      activeSourceIds.has(candidate.sourceJobId) || Boolean(canonical && activeUrlKeys.has(canonical));
+    if (!alreadySeen) return true;
+    return candidate.postedAt.getTime() >= freshUpgradeCutoff;
   });
   const selected = unseen.slice(0, Math.max(1, Math.min(limit, 500)));
 
@@ -173,6 +177,7 @@ export async function runLiveDirectRadar(limit = 250): Promise<{
           source: resolved.source,
           atsType: resolved.atsType,
           atsTenant: resolved.atsTenant,
+          discoverySource: candidate.discoverySource,
           classification: "QUALIFYING_INTERNSHIP",
           classificationReason:
             `Live ${candidate.discoverySource} radar supplied a current job-specific original employer/ATS URL.`,

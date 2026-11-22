@@ -6,7 +6,6 @@
  * request still has no business here, and the proxy's cookie check is not an
  * authorization layer. The session is verified on the server, per request.
  */
-import { guardSession } from "@/lib/auth/session";
 import { requireCatalogueAdmin } from "@/lib/auth/catalogueAdmin";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";

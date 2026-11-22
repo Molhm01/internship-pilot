@@ -16,13 +16,14 @@ import { runFreshnessVerificationBatch } from "@/lib/sync/freshness";
 import { runExpandedPublicDirectFeedDiscovery } from "@/lib/sync/publicDirectFeedsExpanded";
 import { runMassTechnicalFeedDiscovery } from "@/lib/sync/massTechnicalFeeds";
 import { runJobrightFreshDiscovery } from "@/lib/sync/jobrightFreshDiscovery";
-import { reconcileDirectOfficialFeed } from "@/lib/jobs/activeFeed";
+import { runMultiSourceLiveCrawl } from "@/lib/sync/liveMultiSourceCrawler";
+import { pruneStaleActiveJobs, reconcileDirectOfficialFeed } from "@/lib/jobs/activeFeed";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const RECENT_RUNNING_WINDOW_MS = 7 * 60 * 1000;
-const ACTIVE_TARGET = 500;
+const ACTIVE_TARGET = 250;
 
 async function recentRunningSync() {
   return prisma.syncLog.findFirst({
@@ -58,9 +59,13 @@ export async function POST() {
   try {
     const cutover = await reconcileDirectOfficialFeed();
 
-    // First priority is speed-to-post: exact source timestamps from public
-    // Jobright internship categories, resolved back to employer ATS pages.
-    const freshDiscovery = await runJobrightFreshDiscovery(400);
+    // First priority is speed-to-post: exact source timestamps from live boards
+    // (LinkedIn, Indeed, Handshake, Intern-List, Fast ATS), public Jobright
+    // categories, and exact-timestamp technical repo JSON feeds.
+    const [multiSource, freshDiscovery] = await Promise.all([
+      runMultiSourceLiveCrawl({ maxPerSource: 100 }),
+      runJobrightFreshDiscovery(400),
+    ]);
 
     // Then maintain broad 500+ catalogue depth.
     const massTechnical = await runMassTechnicalFeedDiscovery(1500);
@@ -79,6 +84,7 @@ export async function POST() {
 
     const newJobsCount =
       companies.results.reduce((sum, company) => sum + company.newCount, 0) +
+      multiSource.newCount +
       freshDiscovery.newJobs +
       massTechnical.newCount +
       publicDirect.newCount +
@@ -86,12 +92,14 @@ export async function POST() {
       usajobs.newCount;
     const updatedJobsCount =
       companies.results.reduce((sum, company) => sum + company.updatedCount, 0) +
+      multiSource.updatedCount +
       freshDiscovery.updatedJobs +
       massTechnical.updatedCount +
       publicDirect.updatedCount +
       discovery.updatedCount +
       usajobs.updatedCount;
     const companyErrors = companies.results.filter((company) => company.status === "error").length;
+    await pruneStaleActiveJobs();
     const activeAfterRun = await prisma.job.count({ where: { activeFeed: true } });
 
     await prisma.syncLog.update({
@@ -111,6 +119,7 @@ export async function POST() {
       activeAfterRun,
       targetReached: activeAfterRun >= ACTIVE_TARGET,
       cutover,
+      multiSource,
       freshDiscovery,
       massTechnical,
       publicDirect,

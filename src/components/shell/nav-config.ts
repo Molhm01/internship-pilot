@@ -9,11 +9,8 @@ import {
   Activity,
   Building2,
   ShieldCheck,
-  ClipboardCheck,
   MapPin,
   Settings,
-  Stethoscope,
-  Palette,
 } from "lucide-react";
 
 export type NavItem = {
@@ -31,13 +28,6 @@ export type NavGroup = {
   items: NavItem[];
 };
 
-/**
- * Authenticated navigation.
- *
- * Grouped by what the user is doing rather than by which subsystem owns the
- * route. The resume is the primary candidate input; the larger application
- * autofill profile remains an optional child route reached from /profile.
- */
 export const NAV_GROUPS: NavGroup[] = [
   {
     label: "Workspace",
@@ -50,11 +40,10 @@ export const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    label: "Agent",
+    label: "Autonomous Agent",
     items: [
-      { href: "/agent", label: "Agent", icon: Bot, badgeKey: "pendingQuestions" },
+      { href: "/agent", label: "Auto-Pilot", icon: Bot },
       { href: "/activity", label: "Activity", icon: Activity },
-      { href: "/agent-diagnostics", label: "Diagnostics", icon: Stethoscope },
     ],
   },
   {
@@ -66,17 +55,9 @@ export const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    label: "Review",
-    items: [
-      { href: "/assessments", label: "Assessments", icon: ClipboardCheck },
-      { href: "/security-quarantine", label: "Quarantine", icon: ShieldCheck },
-    ],
-  },
-  {
     label: "System",
     items: [
       { href: "/settings", label: "Settings", icon: Settings },
-      { href: "/design-system", label: "Design system", icon: Palette },
     ],
   },
 ];

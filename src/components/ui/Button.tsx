@@ -17,11 +17,9 @@ const VARIANTS: Record<ButtonVariant, string> = {
 };
 
 const SIZES: Record<ButtonSize, string> = {
-  // Not uppercased. Uppercase micro is the Badge and Label role; using it here
-  // too made the size scale read as three unrelated styles.
-  sm: "h-6 px-2 text-micro gap-1.5",
-  md: "h-7 px-2.5 text-small gap-1.5",
-  lg: "h-[34px] px-3.5 text-body gap-2",
+  sm: "h-7 px-2.5 text-micro gap-1.5",
+  md: "h-8 px-3 text-small gap-1.5",
+  lg: "h-[38px] px-4 text-body gap-2",
 };
 
 export type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -40,7 +38,7 @@ export function Button({
     <button
       type={type}
       className={cn(
-        "inline-flex items-center justify-center rounded-md font-medium whitespace-nowrap",
+        "inline-flex shrink-0 items-center justify-center rounded-md font-medium whitespace-nowrap",
         "transition-colors duration-[120ms] ease-standard",
         "disabled:cursor-not-allowed disabled:opacity-55",
         VARIANTS[variant],
@@ -52,11 +50,6 @@ export function Button({
   );
 }
 
-/**
- * A link that carries button weight. Kept separate from Button rather than
- * given an `asChild` prop — this codebase has exactly two cases and a
- * polymorphic component would cost more than it saves.
- */
 export type ButtonLinkProps = React.AnchorHTMLAttributes<HTMLAnchorElement> & {
   variant?: ButtonVariant;
   size?: ButtonSize;
@@ -71,7 +64,7 @@ export function ButtonLink({
   return (
     <a
       className={cn(
-        "inline-flex items-center justify-center rounded-md font-medium whitespace-nowrap",
+        "inline-flex shrink-0 items-center justify-center rounded-md font-medium whitespace-nowrap",
         "transition-colors duration-[120ms] ease-standard",
         VARIANTS[variant],
         SIZES[size],

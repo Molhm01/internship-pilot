@@ -41,7 +41,6 @@ export function Badge({
   tone?: BadgeTone;
   children: React.ReactNode;
   className?: string;
-  /** Shows a status dot — for live/eventful states rather than static labels. */
   dot?: boolean;
   title?: string;
 }) {
@@ -49,7 +48,7 @@ export function Badge({
     <span
       title={title}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-sm border px-1.5 py-0.5",
+        "inline-flex shrink-0 items-center gap-1.5 rounded-sm border px-1.5 py-0.5",
         "text-micro font-medium uppercase tracking-[0.06em] whitespace-nowrap",
         TONES[tone],
         className,

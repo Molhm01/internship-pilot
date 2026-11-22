@@ -17,7 +17,6 @@ export function PageHeader({
   title: React.ReactNode;
   description?: React.ReactNode;
   actions?: React.ReactNode;
-  /** Small technical metadata shown under the title — counts, sync time, ids. */
   meta?: React.ReactNode;
   className?: string;
 }) {
@@ -25,17 +24,17 @@ export function PageHeader({
     <header className={cn("mb-6", className)}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="text-heading text-primary">{title}</h1>
+          <h1 className="font-display text-[1.5rem] leading-[1.2] font-semibold tracking-[-0.02em] text-primary">{title}</h1>
           {description && (
             <p className="mt-1.5 max-w-2xl text-small text-secondary text-pretty">{description}</p>
           )}
           {meta && (
-            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-micro text-faint">
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-micro text-tertiary">
               {meta}
             </div>
           )}
         </div>
-        {actions && <div className="flex shrink-0 flex-wrap items-center gap-1.5">{actions}</div>}
+        {actions && <div className="flex max-w-full flex-wrap items-center gap-2">{actions}</div>}
       </div>
     </header>
   );

@@ -1,146 +1,113 @@
 @import "tailwindcss";
 
 /* ============================================================================
-   Internship Pilot — design tokens
-   ----------------------------------------------------------------------------
-   Dark-first. Light is a complete, first-class alternate rather than an
-   afterthought, selected with `data-theme="light"` on <html>.
+   Internship Pilot — Daylight Atelier (Light-first) & Midnight Slate (Dark)
+   ============================================================================ */
 
-   The visual language is instrument-like: layered surfaces separated by
-   hairlines rather than stacked cards, radii small enough to read as machined,
-   no gradient wash, and glow reserved exclusively for live Agent activity —
-   where it carries meaning rather than decoration.
+:root,
+[data-theme="light"] {
+  color-scheme: light;
 
-   The `--brand` / `--background` / `--foreground` group is the ORIGINAL palette,
-   still referenced by pages that have not been migrated yet. It is kept
-   deliberately and retired page by page.
-   ========================================================================== */
+  /* --- Neutral ramp (Daylight Atelier cool slate) ------------------------- */
+  --n-0: #ffffff;
+  --n-25: #f8fafc;
+  --n-50: #f1f5f9;
+  --n-100: #e2e8f0;
+  --n-150: #cbd5e1;
+  --n-200: #cbd5e1;
+  --n-300: #94a3b8;
+  --n-400: #64748b;
+  --n-500: #475569;
+  --n-600: #334155;
+  --n-700: #1e293b;
+  --n-800: #0f172a;
+  --n-900: #0f172a;
+  --n-950: #020617;
 
-:root {
-  color-scheme: dark;
+  /* --- Surfaces ----------------------------------------------------------- */
+  --canvas: #f8fafc;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-overlay: #ffffff;
+  --surface-sunken: #f1f5f9;
 
-  /* --- Neutral ramp (dark) ------------------------------------------------
-     Very slightly blue. The low end is near-black but never pure #000, which
-     kills the sense of depth that layered surfaces depend on. */
-  --n-0: #08090b;
-  --n-25: #0a0c0f;
-  --n-50: #0e1014;
-  --n-100: #131519;
-  --n-150: #171a1f;
-  --n-200: #1d2026;
-  --n-300: #262a32;
-  --n-400: #333843;
-  --n-500: #4a505d;
-  --n-600: #6b7280;
-  --n-700: #8f97a3;
-  --n-800: #b7bec8;
-  --n-900: #e2e6eb;
-  --n-950: #f5f7f9;
+  /* --- Lines -------------------------------------------------------------- */
+  --hairline: rgb(15 23 42 / 0.08);
+  --line: rgb(15 23 42 / 0.13);
+  --line-strong: rgb(15 23 42 / 0.22);
 
-  /* --- Surfaces -----------------------------------------------------------
-     Four levels. Anything needing a fifth is over-nested and should be
-     restructured rather than given another surface. */
-  --canvas: #0a0c0f;
-  --surface: #0e1014;
-  --surface-raised: #131519;
-  --surface-overlay: #171a1f;
-  --surface-sunken: #08090b;
+  /* --- Text --------------------------------------------------------------- */
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-tertiary: #64748b;
+  --text-faint: #94a3b8;
+  --text-inverse: #ffffff;
 
-  /* --- Lines --------------------------------------------------------------
-     Alpha rather than solid, so lines sit correctly on any surface level. */
-  --hairline: rgb(255 255 255 / 0.06);
-  --line: rgb(255 255 255 / 0.10);
-  --line-strong: rgb(255 255 255 / 0.16);
+  /* --- Accent (Deep Cobalt Indigo) --------------------------------------- */
+  --accent: #254edb;
+  --accent-hover: #1d4ed8;
+  --accent-active: #1e40af;
+  --accent-dark: #1e40af;
+  --accent-quiet: rgb(37 78 219 / 0.08);
+  --accent-line: rgb(37 78 219 / 0.24);
+  --accent-text: #1e40af;
 
-  /* --- Text ---------------------------------------------------------------- */
-  --text-primary: #e8ecf1;
-  --text-secondary: #9aa3b0;
-  --text-tertiary: #6e7684;
-  --text-faint: #545b68;
-  --text-inverse: #08090b;
+  /* --- Status ------------------------------------------------------------- */
+  --positive: #15803d;
+  --positive-quiet: rgb(21 128 61 / 0.08);
+  --positive-line: rgb(21 128 61 / 0.24);
 
-  /* --- Accent -------------------------------------------------------------
-     One accent, continuous with the product's original teal but lifted to sit
-     on dark surfaces. Deliberately not purple, and never used as a gradient. */
-  --accent: #17bfa9;
-  --accent-hover: #29d6c0;
-  --accent-active: #12a08e;
-  --accent-quiet: rgb(23 191 169 / 0.10);
-  --accent-line: rgb(23 191 169 / 0.30);
-  --accent-text: #4fded0;
+  --caution: #b45309;
+  --caution-quiet: rgb(180 83 9 / 0.08);
+  --caution-line: rgb(180 83 9 / 0.24);
 
-  /* --- Status -------------------------------------------------------------- */
-  --positive: #35c48a;
-  --positive-quiet: rgb(53 196 138 / 0.10);
-  --positive-line: rgb(53 196 138 / 0.28);
+  --critical: #b91c1c;
+  --critical-quiet: rgb(185 28 28 / 0.08);
+  --critical-line: rgb(185 28 28 / 0.24);
 
-  --caution: #e0a92e;
-  --caution-quiet: rgb(224 169 46 / 0.10);
-  --caution-line: rgb(224 169 46 / 0.28);
+  --info: #1d4ed8;
+  --info-quiet: rgb(29 78 216 / 0.08);
+  --info-line: rgb(29 78 216 / 0.24);
 
-  --critical: #ef6a6a;
-  --critical-quiet: rgb(239 106 106 / 0.10);
-  --critical-line: rgb(239 106 106 / 0.28);
+  /* --- Semantic tokens ---------------------------------------------------- */
+  --pending: #475569;
+  --pending-quiet: rgb(71 85 105 / 0.08);
+  --pending-line: rgb(71 85 105 / 0.24);
 
-  --info: #5b9df9;
-  --info-quiet: rgb(91 157 249 / 0.10);
-  --info-line: rgb(91 157 249 / 0.28);
+  --verified: #15803d;
+  --verified-quiet: rgb(21 128 61 / 0.09);
+  --verified-line: rgb(21 128 61 / 0.28);
 
-  /* --- Product-specific semantic tokens -----------------------------------
-     These encode meanings this product must express constantly and must never
-     be conflated. Section 4 of the brief turns on the distinction between an
-     action ATTEMPTED and an action VERIFIED, and between a trusted fact and a
-     generated suggestion. */
+  --ai: #254edb;
+  --ai-quiet: rgb(37 78 219 / 0.08);
+  --ai-line: rgb(37 78 219 / 0.24);
 
-  /* Agent is mid-flight: observing, reading options, acting. */
-  --pending: #7c8794;
-  --pending-quiet: rgb(124 135 148 / 0.10);
-  --pending-line: rgb(124 135 148 / 0.28);
+  --sensitive: #6d28d9;
+  --sensitive-quiet: rgb(109 40 217 / 0.08);
+  --sensitive-line: rgb(109 40 217 / 0.24);
 
-  /* Employer confirmed the action actually took. The product's core claim. */
-  --verified: #35c48a;
-  --verified-quiet: rgb(53 196 138 / 0.12);
-  --verified-line: rgb(53 196 138 / 0.32);
+  --needs-input: #b45309;
+  --needs-input-quiet: rgb(180 83 9 / 0.09);
+  --needs-input-line: rgb(180 83 9 / 0.28);
 
-  /* Machine-generated and not yet reviewed by the user. Blue, not purple. */
-  --ai: #6e9bff;
-  --ai-quiet: rgb(110 155 255 / 0.10);
-  --ai-line: rgb(110 155 255 / 0.30);
+  /* --- Radii -------------------------------------------------------------- */
+  --r-xs: 3px;
+  --r-sm: 5px;
+  --r-md: 7px;
+  --r-lg: 10px;
+  --r-xl: 12px;
 
-  /* Demographic / protected information. Never inferred, always user-set. */
-  --sensitive: #a98fd6;
-  --sensitive-quiet: rgb(169 143 214 / 0.10);
-  --sensitive-line: rgb(169 143 214 / 0.28);
-
-  /* Agent stopped and needs a human. Not an error — an intentional handoff. */
-  --needs-input: #e0a92e;
-  --needs-input-quiet: rgb(224 169 46 / 0.12);
-  --needs-input-line: rgb(224 169 46 / 0.32);
-
-  /* --- Radii --------------------------------------------------------------
-     Ceiling is 10px and almost nothing reaches it. Pills are reserved for
-     status dots and nothing else. */
-  --r-xs: 2px;
-  --r-sm: 3px;
-  --r-md: 5px;
-  --r-lg: 7px;
-  --r-xl: 10px;
-
-  /* --- Elevation ----------------------------------------------------------
-     Shadows on dark do very little; depth comes from surface level and
-     hairlines. Overlay shadow exists for things that genuinely float. */
-  --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.30);
+  /* --- Elevation ---------------------------------------------------------- */
+  --shadow-raised: 0 1px 2px rgb(15 23 42 / 0.04), 0 1px 1px rgb(15 23 42 / 0.03);
   --shadow-overlay:
-    0 16px 48px -12px rgb(0 0 0 / 0.64),
-    0 4px 12px -4px rgb(0 0 0 / 0.40);
+    0 18px 40px -12px rgb(15 23 42 / 0.14),
+    0 4px 12px -4px rgb(15 23 42 / 0.07);
 
-  /* --- Agent activity glow ------------------------------------------------
-     The ONLY glow in the system. It means "the Agent is doing something right
-     now". Using it decoratively destroys its signal value. */
-  --glow-agent: 0 0 0 1px rgb(23 191 169 / 0.30), 0 0 16px -2px rgb(23 191 169 / 0.35);
-  --glow-attention: 0 0 0 1px rgb(224 169 46 / 0.32), 0 0 16px -2px rgb(224 169 46 / 0.30);
+  /* --- Activity highlight ------------------------------------------------- */
+  --glow-agent: 0 0 0 1px rgb(37 78 219 / 0.24), 0 4px 14px -4px rgb(37 78 219 / 0.18);
+  --glow-attention: 0 0 0 1px rgb(180 83 9 / 0.24), 0 4px 14px -4px rgb(180 83 9 / 0.16);
 
-  /* --- Motion -------------------------------------------------------------- */
+  /* --- Motion ------------------------------------------------------------- */
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
   --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
@@ -148,12 +115,12 @@
   --dur-base: 180ms;
   --dur-slow: 280ms;
 
-  /* --- Control heights ----------------------------------------------------- */
-  --control-sm: 24px;
-  --control-md: 28px;
-  --control-lg: 34px;
+  /* --- Control heights ---------------------------------------------------- */
+  --control-sm: 26px;
+  --control-md: 32px;
+  --control-lg: 38px;
 
-  /* --- Legacy. Do not add usages; deleted once no page reads them. --------- */
+  /* --- Legacy aliases ----------------------------------------------------- */
   --background: var(--canvas);
   --foreground: var(--text-primary);
   --brand: var(--accent);
@@ -161,97 +128,94 @@
 }
 
 /* ============================================================================
-   Light theme
-   ----------------------------------------------------------------------------
-   Not a tint of the dark theme — the ramp inverts and the accent darkens so it
-   still passes contrast on white. Status hues are desaturated relative to their
-   dark counterparts, because saturated status colour on white reads as a toy.
-   ========================================================================== */
+   Midnight Slate (Dark theme)
+   ============================================================================ */
 
-[data-theme="light"] {
-  color-scheme: light;
+[data-theme="dark"] {
+  color-scheme: dark;
 
-  --n-0: #ffffff;
-  --n-25: #fbfbfc;
-  --n-50: #f6f7f9;
-  --n-100: #eef0f3;
-  --n-150: #e5e8ec;
-  --n-200: #dbdfe5;
-  --n-300: #c4cad3;
-  --n-400: #9aa2ae;
-  --n-500: #757d8a;
-  --n-600: #5a616d;
-  --n-700: #414751;
-  --n-800: #2a2f37;
-  --n-900: #16181d;
-  --n-950: #0b0d10;
+  --n-0: #070b14;
+  --n-25: #0b1120;
+  --n-50: #111827;
+  --n-100: #161f33;
+  --n-150: #1e293b;
+  --n-200: #243247;
+  --n-300: #334155;
+  --n-400: #475569;
+  --n-500: #64748b;
+  --n-600: #94a3b8;
+  --n-700: #cbd5e1;
+  --n-800: #e2e8f0;
+  --n-900: #f1f5f9;
+  --n-950: #f8fafc;
 
-  --canvas: #fbfbfc;
-  --surface: #ffffff;
-  --surface-raised: #ffffff;
-  --surface-overlay: #ffffff;
-  --surface-sunken: #f6f7f9;
+  --canvas: #0b1120;
+  --surface: #111827;
+  --surface-raised: #161f33;
+  --surface-overlay: #1e293b;
+  --surface-sunken: #070b14;
 
-  --hairline: rgb(16 20 26 / 0.07);
-  --line: rgb(16 20 26 / 0.12);
-  --line-strong: rgb(16 20 26 / 0.20);
+  --hairline: rgb(255 255 255 / 0.07);
+  --line: rgb(255 255 255 / 0.12);
+  --line-strong: rgb(255 255 255 / 0.20);
 
-  --text-primary: #16181d;
-  --text-secondary: #5a616d;
-  --text-tertiary: #757d8a;
-  --text-faint: #9aa2ae;
+  --text-primary: #f1f5f9;
+  --text-secondary: #cbd5e1;
+  --text-tertiary: #94a3b8;
+  --text-faint: #64748b;
   --text-inverse: #ffffff;
 
-  --accent: #0d6d63;
-  --accent-hover: #0a5b52;
-  --accent-active: #084a43;
-  --accent-quiet: rgb(13 109 99 / 0.08);
-  --accent-line: rgb(13 109 99 / 0.28);
-  --accent-text: #0a5b52;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --accent-active: #1d4ed8;
+  --accent-dark: #1d4ed8;
+  --accent-quiet: rgb(59 130 246 / 0.13);
+  --accent-line: rgb(59 130 246 / 0.34);
+  --accent-text: #60a5fa;
 
-  --positive: #1a7f5a;
-  --positive-quiet: rgb(26 127 90 / 0.08);
-  --positive-line: rgb(26 127 90 / 0.26);
+  --positive: #34d399;
+  --positive-quiet: rgb(52 211 153 / 0.11);
+  --positive-line: rgb(52 211 153 / 0.30);
 
-  --caution: #8a6212;
-  --caution-quiet: rgb(138 98 18 / 0.09);
-  --caution-line: rgb(138 98 18 / 0.26);
+  --caution: #fbbf24;
+  --caution-quiet: rgb(251 191 36 / 0.11);
+  --caution-line: rgb(251 191 36 / 0.30);
 
-  --critical: #a93636;
-  --critical-quiet: rgb(169 54 54 / 0.08);
-  --critical-line: rgb(169 54 54 / 0.26);
+  --critical: #f87171;
+  --critical-quiet: rgb(248 113 113 / 0.11);
+  --critical-line: rgb(248 113 113 / 0.30);
 
-  --info: #2a5f9e;
-  --info-quiet: rgb(42 95 158 / 0.08);
-  --info-line: rgb(42 95 158 / 0.26);
+  --info: #60a5fa;
+  --info-quiet: rgb(96 165 250 / 0.11);
+  --info-line: rgb(96 165 250 / 0.30);
 
-  --pending: #6b7280;
-  --pending-quiet: rgb(107 114 128 / 0.09);
-  --pending-line: rgb(107 114 128 / 0.26);
+  --pending: #94a3b8;
+  --pending-quiet: rgb(148 163 184 / 0.10);
+  --pending-line: rgb(148 163 184 / 0.28);
 
-  --verified: #1a7f5a;
-  --verified-quiet: rgb(26 127 90 / 0.10);
-  --verified-line: rgb(26 127 90 / 0.30);
+  --verified: #34d399;
+  --verified-quiet: rgb(52 211 153 / 0.12);
+  --verified-line: rgb(52 211 153 / 0.32);
 
-  --ai: #3b64c4;
-  --ai-quiet: rgb(59 100 196 / 0.08);
-  --ai-line: rgb(59 100 196 / 0.28);
+  --ai: #60a5fa;
+  --ai-quiet: rgb(96 165 250 / 0.12);
+  --ai-line: rgb(96 165 250 / 0.32);
 
-  --sensitive: #6d55a3;
-  --sensitive-quiet: rgb(109 85 163 / 0.08);
-  --sensitive-line: rgb(109 85 163 / 0.26);
+  --sensitive: #a78bfa;
+  --sensitive-quiet: rgb(167 139 250 / 0.12);
+  --sensitive-line: rgb(167 139 250 / 0.30);
 
-  --needs-input: #8a6212;
-  --needs-input-quiet: rgb(138 98 18 / 0.11);
-  --needs-input-line: rgb(138 98 18 / 0.30);
+  --needs-input: #fbbf24;
+  --needs-input-quiet: rgb(251 191 36 / 0.12);
+  --needs-input-line: rgb(251 191 36 / 0.32);
 
-  --shadow-raised: 0 1px 2px rgb(11 13 16 / 0.05);
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.35);
   --shadow-overlay:
-    0 16px 40px -12px rgb(11 13 16 / 0.18),
-    0 4px 10px -4px rgb(11 13 16 / 0.08);
+    0 18px 48px -12px rgb(0 0 0 / 0.65),
+    0 4px 12px -4px rgb(0 0 0 / 0.45);
 
-  --glow-agent: 0 0 0 1px rgb(13 109 99 / 0.28), 0 0 14px -3px rgb(13 109 99 / 0.28);
-  --glow-attention: 0 0 0 1px rgb(138 98 18 / 0.30), 0 0 14px -3px rgb(138 98 18 / 0.26);
+  --glow-agent: 0 0 0 1px rgb(59 130 246 / 0.32), 0 0 18px -2px rgb(59 130 246 / 0.30);
+  --glow-attention: 0 0 0 1px rgb(251 191 36 / 0.32), 0 0 18px -2px rgb(251 191 36 / 0.26);
 }
 
 /* ============================================================================
@@ -293,6 +257,7 @@
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
   --color-accent-active: var(--accent-active);
+  --color-accent-dark: var(--accent-dark);
   --color-accent-quiet: var(--accent-quiet);
   --color-accent-line: var(--accent-line);
   --color-accent-text: var(--accent-text);
@@ -347,21 +312,20 @@
   --ease-exit: var(--ease-exit);
   --ease-spring: var(--ease-spring);
 
-  /* Type families. Geist is self-hosted via the `geist` package — no build-time
-     or runtime network fetch, which matters for an offline-first local app. */
+  --font-display: var(--font-geist-sans), "Segoe UI", system-ui, -apple-system, sans-serif;
   --font-sans: var(--font-geist-sans), "Segoe UI", system-ui, -apple-system, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
 
   /* Type scale */
-  --text-hero: 4rem;
-  --text-hero--line-height: 1.0;
-  --text-hero--letter-spacing: -0.038em;
-  --text-hero--font-weight: 500;
+  --text-hero: 3.5rem;
+  --text-hero--line-height: 1.04;
+  --text-hero--letter-spacing: -0.032em;
+  --text-hero--font-weight: 700;
 
-  --text-display: 3rem;
-  --text-display--line-height: 1.04;
-  --text-display--letter-spacing: -0.032em;
-  --text-display--font-weight: 500;
+  --text-display: 2.5rem;
+  --text-display--line-height: 1.08;
+  --text-display--letter-spacing: -0.028em;
+  --text-display--font-weight: 700;
 
   --text-title: 2rem;
   --text-title--line-height: 1.12;

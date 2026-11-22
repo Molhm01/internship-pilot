@@ -7,8 +7,8 @@ import { cn } from "@/components/ui/cn";
 export type Theme = "dark" | "light";
 
 export function readTheme(): Theme {
-  if (typeof document === "undefined") return "dark";
-  return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+  if (typeof document === "undefined") return "light";
+  return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
 }
 
 export function applyTheme(theme: Theme) {
@@ -20,14 +20,8 @@ export function applyTheme(theme: Theme) {
   }
 }
 
-/**
- * Theme toggle.
- *
- * Reads the value the bootstrap script already applied rather than holding its
- * own default, so the button never disagrees with what is on screen.
- */
 export function ThemeToggle({ className }: { className?: string }) {
-  const [theme, setTheme] = useState<Theme>("dark");
+  const [theme, setTheme] = useState<Theme>("light");
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -53,11 +47,10 @@ export function ThemeToggle({ className }: { className?: string }) {
         className,
       )}
     >
-      {/* Renders the dark icon until mounted so SSR and first paint agree. */}
-      {mounted && theme === "light" ? (
-        <Sun className="size-4" aria-hidden />
-      ) : (
+      {mounted && theme === "dark" ? (
         <Moon className="size-4" aria-hidden />
+      ) : (
+        <Sun className="size-4" aria-hidden />
       )}
     </button>
   );

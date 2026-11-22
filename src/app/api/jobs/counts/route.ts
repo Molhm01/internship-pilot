@@ -2,20 +2,10 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { jobsQueryErrorDevDetail, jobsQueryErrorLog } from "@/lib/jobs/jobsQueryError";
 import { withUser } from "@/lib/auth/session";
+import { ensureWorkspaceBootstrapped } from "@/lib/bootstrap";
 
-// Authoritative, always-fresh counts for the Jobs header. Computed directly
-// from stored state so the numbers can never drift from what the feed returns.
-// no-store so a backfill/sync/repair is reflected immediately. There is no
-// "Needs Review" pool counter — availability is reported as badges instead.
-/**
- * The Jobs header counts.
- *
- * Split down the middle. Availability counts — active, verified, closed,
- * quarantined, total — describe the shared catalogue and are the same number
- * for everybody. Scoring and eligibility counts describe one person's progress
- * through it, and are computed from their own state rows.
- */
 async function getJobCountsResponse(userId: string) {
+  await ensureWorkspaceBootstrapped(userId);
   const [
     active,
     officiallyVerified,
@@ -31,9 +21,9 @@ async function getJobCountsResponse(userId: string) {
     total,
   ] = await Promise.all([
     prisma.job.count({ where: { activeFeed: true } }),
-    prisma.job.count({ where: { verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK" } }),
-    prisma.job.count({ where: { verificationStatus: "ACTIVE_SOURCE_LISTED" } }),
-    prisma.job.count({ where: { verificationStatus: { in: ["VERIFICATION_PENDING", "Pending", "NeedsReview"] } } }),
+    prisma.job.count({ where: { activeFeed: true, verificationStatus: "VERIFIED_OFFICIAL_AT_LAST_CHECK" } }),
+    prisma.job.count({ where: { activeFeed: true, verificationStatus: "ACTIVE_SOURCE_LISTED" } }),
+    prisma.job.count({ where: { activeFeed: true, verificationStatus: { in: ["VERIFICATION_PENDING", "Pending", "NeedsReview"] } } }),
     prisma.job.count({ where: { verificationStatus: "Closed" } }),
     prisma.job.count({ where: { verificationStatus: "SecurityQuarantine" } }),
     prisma.job.count({

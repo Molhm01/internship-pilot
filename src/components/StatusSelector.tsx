@@ -9,13 +9,14 @@ export default function StatusSelector({
   value: string;
   onChange: (status: string) => void;
 }) {
+  const options = TRACKER_STATUSES.filter((s) => s !== "NEEDS_USER_ACTION" || s === value);
   return (
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
       className="input-sm font-medium"
     >
-      {TRACKER_STATUSES.map((s) => (
+      {options.map((s) => (
         <option key={s} value={s}>
           {STATUS_LABELS[s]}
         </option>

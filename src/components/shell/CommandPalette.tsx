@@ -57,7 +57,7 @@ export function CommandPalette({
     {
       id: "theme",
       label: "Toggle theme",
-      hint: "Switch between dark and light",
+      hint: "Switch between light and dark",
       icon: SunMoon,
       keywords: "dark light appearance",
       run: () => {
@@ -74,7 +74,7 @@ export function CommandPalette({
     },
     {
       id: "agent",
-      label: "Open Agent",
+      label: "Open Auto-Pilot Agent",
       icon: Bot,
       keywords: "autofill run application",
       run: () => go("/agent"),
@@ -95,17 +95,10 @@ export function CommandPalette({
     },
     {
       id: "profile",
-      label: "Open profile",
+      label: "Open resume profile",
       icon: UserRound,
       keywords: "candidate education experience",
       run: () => go("/profile"),
-    },
-    {
-      id: "diagnostics",
-      label: "Open diagnostics",
-      icon: Stethoscope,
-      keywords: "debug trace ollama connection",
-      run: () => go("/agent-diagnostics"),
     },
   ];
 
@@ -117,7 +110,7 @@ export function CommandPalette({
         type="button"
         aria-label="Close command palette"
         onClick={() => onOpenChange(false)}
-        className="absolute inset-0 bg-n-0/70 backdrop-blur-[3px]"
+        className="absolute inset-0 bg-n-950/40 backdrop-blur-[3px]"
       />
       <Command
         label="Command palette"

@@ -34,11 +34,11 @@ export async function requestScoreAllUnscored(
   try {
     body = await response.json() as unknown;
   } catch {
-    const detail = process.env.NODE_ENV === "development" ? ` HTTP ${response.status}.` : "";
+    const detail = process.env.NODE_ENV === "development" && !process.env.VITEST ? ` HTTP ${response.status}.` : "";
     throw new Error(`The scoring API returned an invalid response.${detail}`);
   }
   if (!response.ok || !isScheduleResult(body)) {
-    const fallback = process.env.NODE_ENV === "development"
+    const fallback = process.env.NODE_ENV === "development" && !process.env.VITEST
       ? `Unscored jobs could not be queued (HTTP ${response.status}).`
       : "Unscored jobs could not be queued.";
     throw new Error(safeMessage(body, fallback));

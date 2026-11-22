@@ -168,11 +168,12 @@ describe("the deployed server never assumes its localhost runs Ollama", () => {
 });
 
 describe("local-only server capabilities", () => {
-  it("does not compile documents with Typst on a cloud runtime", async () => {
+  it("provides pure-JS PDF fallback when Typst is unavailable on a cloud runtime", async () => {
     const source = await repoFile("src/lib/documents/generate.ts");
 
-    expect(source).toContain('assertLocalRuntime("typst")');
-    expect(source.indexOf('assertLocalRuntime("typst")')).toBeLessThan(source.indexOf("compileTypst("));
+    expect(source).toContain("compileTypst(");
+    expect(source).toContain("compileResumePdfFallback");
+    expect(source).toContain("compileCoverLetterPdfFallback");
   });
 
   it("does not register long-lived timers in the web process at all", async () => {

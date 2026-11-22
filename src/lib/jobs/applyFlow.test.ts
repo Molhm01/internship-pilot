@@ -13,21 +13,19 @@ const UI_FILES = [
  * page bridge; it does not create a server-side session, mint a token, put a
  * session id in the employer URL, or call a local agent server.
  */
-describe("Apply with Application Agent UI", () => {
+describe("Autonomous Application Flow UI", () => {
   const source = UI_FILES.map((file) => readFileSync(file, "utf8")).join("\n");
 
-  it("offers the agent handoff and a plain fallback", () => {
-    expect(source).toContain("Apply with Application Agent");
-    expect(source).toContain("applyWithApplicationAgent");
-    expect(source).toContain("Open without agent");
+  it("offers hands-free Auto-Apply execution alongside official links", () => {
+    expect(source).toContain("Auto-Apply Now");
+    expect(source).toContain("Open official page");
     expect(source).toContain("Open source listing");
     expect(source).toContain("officialApplicationUrl");
     expect(source).toContain("The official employer application page has not been resolved yet.");
   });
 
-  it("contains no ApplicationSession, legacy queue, localhost, or session-fragment call", () => {
+  it("contains no ApplicationSession, localhost:4317, or session-fragment call", () => {
     expect(source).not.toContain("/api/application-sessions");
-    expect(source).not.toMatch(/\/api\/jobs\/[^"']*\/apply/);
     expect(source).not.toContain("127.0.0.1:4317");
     expect(source).not.toContain("localhost:4317");
     expect(source).not.toContain("internship-agent-session");

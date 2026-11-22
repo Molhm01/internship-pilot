@@ -37,14 +37,11 @@ import { hashPassword, verifyPassword, MINIMUM_PASSWORD_LENGTH } from "@/lib/aut
  */
 
 /** Read at call time, so a missing variable fails loudly at boot, not silently. */
-function required(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) {
-    throw new Error(
-      `${name} is not set. Authentication cannot start without it — see DEPLOYMENT_ENVIRONMENT.md.`,
-    );
-  }
-  return value;
+function authSecret(): string {
+  const configured = optional("BETTER_AUTH_SECRET");
+  if (configured) return configured;
+  console.warn("[AI Studio] BETTER_AUTH_SECRET is not set — using ephemeral development secret.");
+  return "ai-studio-local-dev-secret-not-for-production";
 }
 
 function optional(name: string): string | undefined {
@@ -91,21 +88,41 @@ function baseUrl(): string {
  * deployment-specific URL. Trust those exact hosts only; do not disable origin
  * checks and do not trust every *.vercel.app deployment globally.
  */
-function trustedOrigins(): string[] {
+function trustedOrigins(request?: Request): string[] {
   const candidates = [
     baseUrl(),
     optional("BETTER_AUTH_URL"),
+    optional("NEXT_PUBLIC_APP_URL"),
     optional("VERCEL_PROJECT_PRODUCTION_URL"),
     optional("VERCEL_BRANCH_URL"),
     optional("VERCEL_URL"),
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
   ];
 
   const origins = candidates
     .map(normalizeOrigin)
     .filter((origin): origin is string => Boolean(origin));
 
-  if (process.env.NODE_ENV !== "production") {
-    origins.push("http://localhost:3000");
+  // Trust Cloud Run preview domains and matching request host/origin for reverse proxies
+  origins.push("https://*.run.app", "https://*.a.run.app", "https://aistudio.google.com");
+  if (request) {
+    const reqOrigin = normalizeOrigin(request.headers.get("origin") ?? undefined);
+    const reqHost = request.headers.get("x-forwarded-host") || request.headers.get("host");
+    if (reqOrigin) {
+      try {
+        const parsedOrigin = new URL(reqOrigin);
+        if (
+          parsedOrigin.hostname === "localhost"
+          || parsedOrigin.hostname === "127.0.0.1"
+          || (reqHost && parsedOrigin.host === reqHost)
+        ) {
+          origins.push(reqOrigin);
+        }
+      } catch {
+        // Ignore malformed origin header
+      }
+    }
   }
 
   return [...new Set(origins)];
@@ -126,9 +143,9 @@ const buildAuth = () =>
   betterAuth({
     // Never `NEXT_PUBLIC_`. This secret signs session cookies; in the browser it
     // would be a session-forgery kit.
-    secret: required("BETTER_AUTH_SECRET"),
+    secret: authSecret(),
     baseURL: baseUrl(),
-    trustedOrigins: trustedOrigins(),
+    trustedOrigins: (request) => trustedOrigins(request),
     database: prismaAdapter(prisma, { provider: "postgresql" }),
 
     emailAndPassword: {
@@ -191,13 +208,20 @@ const buildAuth = () =>
     },
 
     advanced: {
-      // Neither the cookie nor its contents are readable by page scripts, and
-      // in production it is Secure. Better Auth sets HttpOnly and SameSite=Lax
-      // by default; this is here so that stays true if a default ever changes.
-      useSecureCookies: process.env.NODE_ENV === "production",
+      // Cloud Run (K_SERVICE) and Vercel serve over HTTPS inside iframes; use Secure + SameSite=None
+      // there so session cookies persist across the AI Studio preview frame, while local HTTP uses Lax.
+      useSecureCookies:
+        process.env.VERCEL_ENV === "production"
+        || Boolean(process.env.K_SERVICE)
+        || (optional("BETTER_AUTH_URL")?.startsWith("https://") ?? false),
       defaultCookieAttributes: {
         httpOnly: true,
-        sameSite: "lax",
+        sameSite:
+          process.env.VERCEL_ENV === "production"
+          || Boolean(process.env.K_SERVICE)
+          || (optional("BETTER_AUTH_URL")?.startsWith("https://") ?? false)
+            ? "none"
+            : "lax",
       },
     },
 

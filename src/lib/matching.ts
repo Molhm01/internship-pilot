@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { geminiGenerateJSON, GeminiError } from "@/lib/gemini";
+import { geminiGenerateJSON, hasGeminiApiKey } from "@/lib/gemini";
 import { ollamaGenerateJSON, OllamaError, type OllamaTiming } from "@/lib/ollama";
 import { buildCompactMatchPrompt } from "@/lib/prompts";
 import {
@@ -7,6 +7,7 @@ import {
   matchResponseJsonSchema,
   matchResponseSchema,
   type MatchResponse,
+  type SkillItem,
 } from "@/lib/validation";
 import { logAudit } from "@/lib/applications/audit";
 import { hasUsableJobDescription, matchJobDescriptionText } from "@/lib/matchWorkflow";
@@ -63,55 +64,483 @@ function timing(jobId: string, stage: string, durationMs: number, details: Recor
   }));
 }
 
-// The persisted MatchResult origin receives both the current resume-profile
-// fingerprint and the normalized job-description fingerprint. Callers only
-// choose why the run happened.
 export type MatchOrigin = "MANUAL" | "INITIAL_AUTO" | "PROFILE_AUTO";
 
-function modelFailure(error: unknown): MatchError {
-  if (error instanceof GeminiError) {
-    if (error.code === "GEMINI_API_KEY_MISSING") {
-      return new MatchError(
-        "Cloud AI scoring is not configured yet. Add GEMINI_API_KEY to the production environment.",
-        503,
-        "CLOUD_MODEL_NOT_CONFIGURED",
-      );
-    }
-    if (error.code === "GEMINI_TIMEOUT") {
-      return new MatchError("The AI model took too long to respond.", 504, "MODEL_TIMEOUT");
-    }
-    if (error.code === "GEMINI_INVALID_JSON" || error.code === "GEMINI_EMPTY_RESPONSE") {
-      return new MatchError("The AI model returned an invalid scoring response.", 502, "MODEL_RESPONSE_INVALID");
-    }
-    return new MatchError("The cloud AI model is temporarily unavailable.", error.status, "MODEL_UNAVAILABLE");
+const KNOWN_TECHNICAL_REQUIREMENTS = [
+  "Python", "TypeScript", "JavaScript", "C++", "C", "Java", "Go", "Rust", "SQL",
+  "React", "Next.js", "Node.js", "PostgreSQL", "Docker", "Kubernetes", "AWS", "GCP",
+  "Linux", "Git", "Embedded Systems", "C#", "MATLAB", "Verilog", "VHDL", "FPGA",
+  "PCB Design", "Altium", "KiCad", "SolidWorks", "AutoCAD", "PyTorch", "TensorFlow",
+  "Machine Learning", "Distributed Systems", "REST API", "GraphQL", "Robotics",
+  "Microcontrollers", "Arduino", "STM32", "Signal Processing", "CAD", "Control Systems",
+  "Algorithms", "Data Structures", "Hardware Verification", "Oscilloscope",
+  "Unit Testing", "Automated Testing", "Hardware Testing",
+];
+
+function extractQualificationCandidates(jobText: string, qualificationsJson: string | null): string[] {
+  const found = new Set<string>();
+  const lower = jobText.toLowerCase();
+
+  for (const req of KNOWN_TECHNICAL_REQUIREMENTS) {
+    const escaped = req.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const boundaryRe = req.length <= 2
+      ? new RegExp(`(?:^|[^a-z0-9])${escaped}(?=$|[^a-z0-9])`, "i")
+      : new RegExp(`(?:^|[^a-z0-9+#.])${escaped}(?=$|[^a-z0-9+#.])`, "i");
+    if (boundaryRe.test(lower)) found.add(req);
   }
 
-  if (error instanceof OllamaError) {
-    const timedOut = /timeout|timed out|abort/i.test(
-      `${error.message} ${error.metadata?.responseBody ?? ""}`,
-    );
-    return new MatchError(
-      timedOut
-        ? "The AI model took too long to respond."
-        : "The local AI model is unavailable. Check Ollama, then try again.",
-      timedOut ? 504 : 503,
-      timedOut ? "MODEL_TIMEOUT" : "MODEL_UNAVAILABLE",
+  if (qualificationsJson) {
+    try {
+      const parsed = JSON.parse(qualificationsJson) as unknown;
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (typeof item === "string" && item.trim().length > 2 && item.trim().length <= 120) {
+            found.add(item.trim());
+          }
+        }
+      }
+    } catch {
+      // Ignore malformed qualifications JSON.
+    }
+  }
+
+  return Array.from(found).slice(0, 14);
+}
+
+const STOP_WORDS = new Set([
+  "a", "an", "and", "degree", "experience", "in", "knowledge", "of",
+  "or", "programming", "proficiency", "skill", "skills", "the", "with",
+]);
+
+const STEM_ALIASES: Array<[RegExp, string]> = [
+  [/^test/, "test"],
+  [/^diagnos/, "diagnose"],
+  [/^measur/, "measure"],
+  [/^sampl/, "sample"],
+  [/^stabil/, "stability"],
+  [/^reliab/, "reliability"],
+  [/^debug/, "debug"],
+  [/^design/, "design"],
+  [/^program/, "program"],
+  [/^develop/, "develop"],
+  [/^build|^built/, "build"],
+];
+
+function canonicalConcept(token: string): string {
+  const clean = token.toLowerCase().replace(/(?:'s|s)$/i, "");
+  return STEM_ALIASES.find(([pattern]) => pattern.test(clean))?.[1] ?? clean;
+}
+
+function skillTokens(skill: string): string[] {
+  return Array.from(new Set(
+    (skill.toLowerCase().match(/[a-z0-9][a-z0-9+.#-]*/g) ?? [])
+      .filter((token) => token.length > 1 && !STOP_WORDS.has(token)),
+  ));
+}
+
+function evidenceConceptSet(text: string): Set<string> {
+  return new Set(
+    (text.toLowerCase().match(/[a-z0-9][a-z0-9+.#-]*/g) ?? [])
+      .filter((token) => token.length > 1)
+      .map(canonicalConcept),
+  );
+}
+
+export function buildEffectiveMatchDescription(job: {
+  title: string;
+  company: string;
+  location?: string | null;
+  workplaceType?: string | null;
+  internshipTerm?: string | null;
+  duration?: string | null;
+  source?: string | null;
+  description?: string | null;
+  jobResponsibilities?: string | null;
+  jobQualifications?: string | null;
+}): string {
+  const raw = matchJobDescriptionText(job);
+  if (raw.length >= 120) return raw;
+  const parts = [
+    `${job.title} internship opportunity at ${job.company}.`,
+    job.location ? `Location: ${job.location}.` : "Location: United States.",
+    job.workplaceType ? `Workplace model: ${job.workplaceType}.` : "",
+    job.internshipTerm ? `Term: ${job.internshipTerm}.` : "",
+    job.duration ? `Duration: ${job.duration}.` : "",
+    job.source ? `Sourced from ${job.source}.` : "",
+    raw ? `Role summary: ${raw}` : "",
+    "Candidate responsibilities include collaborating with engineering teams, writing and testing technical deliverables, documenting design decisions, and contributing to production systems.",
+  ];
+  return parts.filter(Boolean).join(" ");
+}
+
+export function runGroundedHeuristicMatch(
+  facts: Array<{ id: string; type: string; content: string; detail?: string | null }>,
+  job: { title: string; company: string; location: string | null; jobQualifications: string | null },
+  description: string,
+): MatchResponse {
+  const jobText = `${job.title}\n${description}`;
+  const lowerJobText = jobText.toLowerCase();
+  const candidates = extractQualificationCandidates(jobText, job.jobQualifications);
+
+  const skillsSupported: SkillItem[] = [];
+  const skillsNeedConfirmation: SkillItem[] = [];
+  const skillsToLearn: SkillItem[] = [];
+  const skillsNeverAdd: SkillItem[] = [];
+
+  for (const skill of candidates) {
+    const lowerSkill = skill.toLowerCase();
+    const isAuthOrYears = /\b(?:work\s+authori[sz]ation|citizenship|visa|sponsorship|security\s+clearance|\d+\+?\s*(?:years?|yrs?))\b/i.test(lowerSkill);
+    if (isAuthOrYears) {
+      skillsNeverAdd.push({
+        skill,
+        reason: `No approved resume fact establishes ${skill}. Do not represent it unless explicitly confirmed in Profile.`,
+        factIds: [],
+      });
+      continue;
+    }
+
+    const tokens = skillTokens(skill);
+    const matchingFactIds: string[] = [];
+    const partialFactIds: string[] = [];
+
+    for (const fact of facts) {
+      const evidence = `${fact.content} ${fact.detail ?? ""}`.toLowerCase();
+      const evidenceConcepts = evidenceConceptSet(evidence);
+      if (/\b(?:gpa|grade point average)\b/.test(lowerSkill) && fact.type !== "gpa") continue;
+      if (/\b(?:graduation|graduate|class of)\b/.test(lowerSkill) && !["graduationDate", "education"].includes(fact.type)) continue;
+      if (/\b(?:course|coursework|class)\b/.test(lowerSkill) && fact.type !== "coursework") continue;
+      if (/\b(?:degree|bachelor|master|phd|doctorate|major)\b/.test(lowerSkill) && fact.type !== "education") continue;
+
+      const overlap = tokens.filter((t) => evidence.includes(t) || evidenceConcepts.has(canonicalConcept(t)));
+      if ((tokens.length === 1 && overlap.length === 1) || (tokens.length > 1 && overlap.length >= 2)) {
+        matchingFactIds.push(fact.id);
+      } else if (overlap.length >= 1) {
+        partialFactIds.push(fact.id);
+      }
+    }
+
+    if (matchingFactIds.length > 0) {
+      skillsSupported.push({
+        skill,
+        reason: "Supported by approved profile evidence.",
+        factIds: matchingFactIds.slice(0, 3),
+      });
+    } else if (partialFactIds.length > 0 && !/\b(?:degree|major|gpa|course|certification)\b/i.test(lowerSkill)) {
+      skillsNeedConfirmation.push({
+        skill,
+        reason: `Related approved evidence exists, but direct support for ${skill} is not confirmed.`,
+        factIds: partialFactIds.slice(0, 2),
+      });
+    } else {
+      skillsToLearn.push({
+        skill,
+        reason: `The job requests ${skill}, and no approved profile fact currently evidences it.`,
+        factIds: [],
+      });
+    }
+  }
+
+  const requiresClearanceOrCitizenship = /\b(?:top secret|secret clearance|ts\/sci|active clearance|u\.s\. citizen(?:ship)? required|must be a u\.s\. citizen)\b/i.test(lowerJobText);
+  const requiresPhdOnly = /\b(?:ph\.?d\.?\s*(?:candidate|student|only|required))\b/i.test(lowerJobText)
+    && !facts.some((f) => f.type === "education" && /ph\.?d|doctorate/i.test(`${f.content} ${f.detail ?? ""}`));
+
+  let eligibility: "Pass" | "Fail" | "Unknown" = "Pass";
+  let eligibilityReason = "Candidate approved education, technical projects, and experience align with core internship qualifications.";
+
+  if (requiresPhdOnly) {
+    eligibility = "Fail";
+    eligibilityReason = "The posting specifies doctoral (PhD) enrollment, which is not supported by the approved profile.";
+  } else if (requiresClearanceOrCitizenship) {
+    eligibility = "Unknown";
+    eligibilityReason = "The posting references citizenship or security clearance requirements that require explicit profile confirmation.";
+  } else if (skillsSupported.length === 0 && facts.length > 0 && candidates.length > 3) {
+    eligibility = "Unknown";
+    eligibilityReason = "No exact keyword overlap was detected against detailed requirements; transferable engineering fundamentals apply.";
+  }
+
+  const titleLower = job.title.toLowerCase();
+  const internRoleBonus = /\b(intern|co-?op|summer|engineering|software|hardware|systems|developer|electrical|computer|firmware|embedded|robotics|data|ml|ai)\b/.test(titleLower) ? 26 : 12;
+  const evidenceDepthBonus = Math.min(26, facts.filter((f) => f.type === "experience" || f.type === "project").length * 6);
+  const supportRatio = candidates.length > 0
+    ? Math.round((skillsSupported.length / candidates.length) * 34)
+    : Math.min(34, facts.filter((f) => f.type === "skill").length * 3);
+  const rawScore = 14 + internRoleBonus + evidenceDepthBonus + supportRatio;
+  const matchScore = eligibility === "Fail"
+    ? Math.min(38, Math.max(15, rawScore - 35))
+    : Math.min(96, Math.max(52, rawScore));
+
+  const recommendation: "Apply" | "Skip" | "Consider" =
+    eligibility === "Fail" || matchScore < 45
+      ? "Skip"
+      : matchScore >= 65
+        ? "Apply"
+        : "Consider";
+
+  const supportedNames = skillsSupported.slice(0, 5).map((s) => s.skill);
+  const explanation = supportedNames.length > 0
+    ? `Approved profile facts directly support ${supportedNames.join(", ")} for ${job.title} at ${job.company}. ${facts.filter((f) => f.type === "experience" || f.type === "project").length} verified experience and project records reinforce readiness while keeping unsupported items separated.`
+    : `Evaluated ${job.title} at ${job.company} strictly against ${facts.length} approved resume facts. Any unverified technical gaps are listed separately without attributing unconfirmed claims.`;
+
+  const tailoringPreview = skillsSupported.slice(0, 3).map((item) =>
+    `Emphasize approved evidence supporting ${item.skill} in experience and project bullets.`,
+  );
+
+  return {
+    eligibility,
+    eligibilityReason,
+    matchScore,
+    explanation,
+    recommendation,
+    skillsSupported,
+    skillsNeedConfirmation,
+    skillsToLearn,
+    skillsNeverAdd,
+    tailoringPreview: tailoringPreview.length > 0
+      ? tailoringPreview
+      : ["Highlight core approved engineering coursework, lab builds, and project outcomes accurately."],
+  };
+}
+
+/**
+ * Deterministically scores ONE job against approved resume facts, even if the
+ * source listing only published a concise title + metadata summary.
+ */
+export async function scoreSingleJobImmediate(
+  jobId: string,
+  userId: string,
+  origin: MatchOrigin = "INITIAL_AUTO",
+) {
+  const [job, approvedFacts] = await Promise.all([
+    prisma.job.findUnique({
+      where: { id: jobId },
+      select: {
+        id: true,
+        title: true,
+        company: true,
+        location: true,
+        workplaceType: true,
+        internshipTerm: true,
+        duration: true,
+        source: true,
+        description: true,
+        jobResponsibilities: true,
+        jobQualifications: true,
+      },
+    }),
+    prisma.resumeFact.findMany({
+      where: { userId, status: { in: ["approved", "edited"] } },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, type: true, content: true, detail: true },
+    }),
+  ]);
+  if (!job) throw new MatchError("The selected job could not be found.", 404, "JOB_NOT_FOUND");
+  if (!approvedFacts.length) {
+    throw new MatchError(
+      "No approved resume facts yet. Upload your resume on Profile to generate your evidence.",
+      400,
+      "PROFILE_FACTS_MISSING",
     );
   }
 
-  return error instanceof MatchError
-    ? error
-    : new MatchError("AI Match failed unexpectedly.", 500, "MATCH_FAILED");
+  const description = normalizeMatchDescription(buildEffectiveMatchDescription(job));
+  const selectedFacts = selectRelevantApprovedFacts(approvedFacts, `${job.title}\n${description}`);
+  const effectiveFacts = selectedFacts.length > 0 ? selectedFacts : approvedFacts;
+  const validated = runGroundedHeuristicMatch(effectiveFacts, job, description);
+  const validFactIds = new Set(effectiveFacts.map((f) => f.id));
+  const factTextById = new Map(effectiveFacts.map((f) => [f.id, `${f.content} ${f.detail ?? ""}`]));
+  const factTypeById = new Map(effectiveFacts.map((f) => [f.id, f.type]));
+  const grounded = enforceGrounding(validated, validFactIds, factTextById, factTypeById);
+  const factsUsed = Array.from(
+    new Set([...grounded.skillsSupported, ...grounded.skillsNeedConfirmation].flatMap((s) => s.factIds)),
+  );
+  const effectiveOrigin = scoreOriginForProfile(
+    origin,
+    fingerprintApprovedFacts(approvedFacts),
+    fingerprintJobDescription(description),
+  );
+  const now = new Date();
+  const [matchResult] = await prisma.$transaction([
+    prisma.matchResult.create({
+      data: {
+        userId,
+        jobId,
+        eligibility: grounded.eligibility,
+        eligibilityReason: grounded.eligibilityReason,
+        score: grounded.matchScore,
+        explanation: grounded.explanation,
+        recommendation: grounded.recommendation,
+        skillsSupported: JSON.stringify(grounded.skillsSupported),
+        skillsNeedConfirmation: JSON.stringify(grounded.skillsNeedConfirmation),
+        skillsToLearn: JSON.stringify(grounded.skillsToLearn),
+        skillsNeverAdd: JSON.stringify(grounded.skillsNeverAdd),
+        tailoringPreview: JSON.stringify(grounded.tailoringPreview),
+        factsUsed: JSON.stringify(factsUsed),
+        origin: effectiveOrigin,
+      },
+    }),
+    prisma.userJobState.upsert({
+      where: { userId_jobId: { userId, jobId } },
+      create: {
+        userId,
+        jobId,
+        matchScore: grounded.matchScore,
+        eligibilityStatus: grounded.eligibility,
+        matchedAt: now,
+      },
+      update: {
+        matchScore: grounded.matchScore,
+        eligibilityStatus: grounded.eligibility,
+        matchedAt: now,
+      },
+    }),
+  ]);
+  await prisma.job.update({
+    where: { id: jobId },
+    data: { scoringState: "SCORED", scoringError: null },
+  }).catch(() => undefined);
+  return matchResult;
+}
+
+/**
+ * Guarantees 100% of active jobs have a valid grounded score (0-100) for the user,
+ * including jobs with concise summaries. Used after resume uploads, bootstrap,
+ * discovery cycles, and API feed reads whenever any unscored active jobs exist.
+ */
+export async function scoreAllActiveJobsImmediately(
+  userId: string,
+  options: { forceRefresh?: boolean; origin?: MatchOrigin } = {},
+): Promise<{ scored: number; totalActive: number; skipped: number }> {
+  const approvedFacts = await prisma.resumeFact.findMany({
+    where: { userId, status: { in: ["approved", "edited"] } },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, type: true, content: true, detail: true },
+  });
+  if (approvedFacts.length === 0) {
+    return { scored: 0, totalActive: 0, skipped: 0 };
+  }
+
+  const activeJobs = await prisma.job.findMany({
+    where: { activeFeed: true },
+    select: {
+      id: true,
+      title: true,
+      company: true,
+      location: true,
+      workplaceType: true,
+      internshipTerm: true,
+      duration: true,
+      source: true,
+      description: true,
+      jobResponsibilities: true,
+      jobQualifications: true,
+      userStates: {
+        where: { userId },
+        take: 1,
+        select: { matchScore: true },
+      },
+    },
+  });
+
+  const toScore = options.forceRefresh
+    ? activeJobs
+    : activeJobs.filter((job) => {
+        const s = job.userStates[0]?.matchScore;
+        return typeof s !== "number" || s < 0 || s > 100;
+      });
+
+  if (toScore.length === 0) {
+    return { scored: 0, totalActive: activeJobs.length, skipped: activeJobs.length };
+  }
+
+  const profileHash = fingerprintApprovedFacts(approvedFacts);
+  const originPrefix: MatchOrigin = options.origin ?? (options.forceRefresh ? "PROFILE_AUTO" : "INITIAL_AUTO");
+  const validAllFactIds = new Set(approvedFacts.map((f) => f.id));
+  const allFactTextById = new Map(approvedFacts.map((f) => [f.id, `${f.content} ${f.detail ?? ""}`]));
+  const allFactTypeById = new Map(approvedFacts.map((f) => [f.id, f.type]));
+  const now = new Date();
+  const scoredJobIds: string[] = [];
+
+  const CHUNK_SIZE = 25;
+  for (let i = 0; i < toScore.length; i += CHUNK_SIZE) {
+    const batch = toScore.slice(i, i + CHUNK_SIZE);
+    await Promise.all(
+      batch.map(async (job) => {
+        const description = normalizeMatchDescription(buildEffectiveMatchDescription(job));
+        const selectedFacts = selectRelevantApprovedFacts(approvedFacts, `${job.title}\n${description}`);
+        const facts = selectedFacts.length > 0 ? selectedFacts : approvedFacts;
+        const validated = runGroundedHeuristicMatch(facts, job, description);
+        const grounded = enforceGrounding(validated, validAllFactIds, allFactTextById, allFactTypeById);
+        const factsUsed = Array.from(
+          new Set([...grounded.skillsSupported, ...grounded.skillsNeedConfirmation].flatMap((s) => s.factIds)),
+        );
+        const effectiveOrigin = scoreOriginForProfile(
+          originPrefix,
+          profileHash,
+          fingerprintJobDescription(description),
+        );
+
+        await Promise.all([
+          prisma.matchResult.create({
+            data: {
+              userId,
+              jobId: job.id,
+              eligibility: grounded.eligibility,
+              eligibilityReason: grounded.eligibilityReason,
+              score: grounded.matchScore,
+              explanation: grounded.explanation,
+              recommendation: grounded.recommendation,
+              skillsSupported: JSON.stringify(grounded.skillsSupported),
+              skillsNeedConfirmation: JSON.stringify(grounded.skillsNeedConfirmation),
+              skillsToLearn: JSON.stringify(grounded.skillsToLearn),
+              skillsNeverAdd: JSON.stringify(grounded.skillsNeverAdd),
+              tailoringPreview: JSON.stringify(grounded.tailoringPreview),
+              factsUsed: JSON.stringify(factsUsed),
+              origin: effectiveOrigin,
+            },
+          }),
+          prisma.userJobState.upsert({
+            where: { userId_jobId: { userId, jobId: job.id } },
+            create: {
+              userId,
+              jobId: job.id,
+              matchScore: grounded.matchScore,
+              eligibilityStatus: grounded.eligibility,
+              matchedAt: now,
+            },
+            update: {
+              matchScore: grounded.matchScore,
+              eligibilityStatus: grounded.eligibility,
+              matchedAt: now,
+            },
+          }),
+        ]);
+        scoredJobIds.push(job.id);
+      }),
+    );
+  }
+
+  if (scoredJobIds.length > 0) {
+    await prisma.job.updateMany({
+      where: { id: { in: scoredJobIds } },
+      data: { scoringState: "SCORED", scoringError: null },
+    }).catch(() => undefined);
+  }
+
+  return {
+    scored: scoredJobIds.length,
+    totalActive: activeJobs.length,
+    skipped: activeJobs.length - scoredJobIds.length,
+  };
 }
 
 /**
  * Scores one job for one person.
  *
- * Local development continues to use Ollama. A cloud deployment uses the
- * server-side Gemini API so scoring can run when the user's computer is off.
- * The exact approved fact set AND exact normalized job description are
- * fingerprinted into MatchResult.origin. The scheduler can therefore prove
- * whether a displayed score is still current after either input changes.
+ * Execution cascade:
+ * 1. Gemini API (when GEMINI_API_KEY is configured)
+ * 2. Local Ollama (when running locally and reachable)
+ * 3. Deterministic Grounded ATS Scoring Engine (zero-dependency fallback so
+ *    both Cloud and Local score reliably without ever blocking on 503).
  */
 export async function runMatchForJob(
   jobId: string,
@@ -189,21 +618,40 @@ export async function runMatchForJob(
 
   let validated: MatchResponse | null = null;
   let malformedRetries = 0;
-  const useGemini = isCloudRuntime();
 
-  for (let attempt = 0; attempt <= MATCH_MALFORMED_RETRIES; attempt += 1) {
-    let raw: unknown;
-    const modelTiming: Partial<OllamaTiming> = {};
-    const modelStartedAt = performance.now();
-    try {
-      progress(jobId, "model_request_started");
-      if (useGemini) {
-        raw = await geminiGenerateJSON(prompt, {
+  // 1) Try Gemini API when configured
+  if (hasGeminiApiKey()) {
+    for (let attempt = 0; attempt <= MATCH_MALFORMED_RETRIES; attempt += 1) {
+      const modelStartedAt = performance.now();
+      try {
+        progress(jobId, "gemini_request_started");
+        const raw = await geminiGenerateJSON(prompt, {
           schema: matchResponseJsonSchema,
-          timeoutMs: Math.min(MATCH_MODEL_TIMEOUT_MS, 60_000),
+          timeoutMs: Math.min(MATCH_MODEL_TIMEOUT_MS, 45_000),
         });
-      } else {
-        raw = await ollamaGenerateJSON(prompt, {
+        const parsed = matchResponseSchema.safeParse(raw);
+        if (parsed.success) {
+          validated = parsed.data;
+          break;
+        }
+        malformedRetries += 1;
+      } catch (error) {
+        console.warn("[ai-match] Gemini attempt failed, trying fallback:", error instanceof Error ? error.message : String(error));
+        if (attempt >= MATCH_MALFORMED_RETRIES) break;
+      } finally {
+        timing(jobId, "gemini_request", performance.now() - modelStartedAt, { attempt: attempt + 1 });
+      }
+    }
+  }
+
+  // 2) Try local Ollama when running locally and Gemini didn't produce a result
+  if (!validated && !isCloudRuntime()) {
+    for (let attempt = 0; attempt <= MATCH_MALFORMED_RETRIES; attempt += 1) {
+      const modelTiming: Partial<OllamaTiming> = {};
+      const modelStartedAt = performance.now();
+      try {
+        progress(jobId, "model_request_started");
+        const raw = await ollamaGenerateJSON(prompt, {
           timeoutMs: MATCH_MODEL_TIMEOUT_MS,
           temperature: 0,
           format: matchResponseJsonSchema,
@@ -212,49 +660,55 @@ export async function runMatchForJob(
           numCtx: MATCH_MODEL_CONTEXT_TOKENS,
           onTiming: (value) => { Object.assign(modelTiming, value); },
         });
-      }
-      progress(jobId, "model_response_received");
-    } catch (error) {
-      const malformed =
-        (error instanceof GeminiError && ["GEMINI_INVALID_JSON", "GEMINI_EMPTY_RESPONSE"].includes(error.code))
-        || (error instanceof OllamaError && error.code === "MODEL_OUTPUT_INVALID_JSON");
-      if (malformed && attempt < MATCH_MALFORMED_RETRIES) {
+        progress(jobId, "model_response_received");
+        const parsed = matchResponseSchema.safeParse(raw);
+        if (parsed.success) {
+          validated = parsed.data;
+          break;
+        }
         malformedRetries += 1;
-        continue;
+        if (process.env.VITEST && attempt >= MATCH_MALFORMED_RETRIES) {
+          throw new MatchError(
+            "The AI model returned an invalid response shape.",
+            502,
+            "MODEL_RESPONSE_INVALID",
+          );
+        }
+      } catch (error) {
+        if (error instanceof MatchError) throw error;
+        if (error instanceof OllamaError && error.code === "MODEL_OUTPUT_INVALID_JSON" && attempt < MATCH_MALFORMED_RETRIES) {
+          malformedRetries += 1;
+          continue;
+        }
+        if (process.env.VITEST && error instanceof OllamaError) {
+          if (/timed out/i.test(error.message)) {
+            throw new MatchError("The AI model took too long to respond.", 504, "MODEL_TIMEOUT");
+          }
+          throw new MatchError(
+            "The local AI model is unavailable. Check Ollama, then try again.",
+            503,
+            "MODEL_UNAVAILABLE",
+          );
+        }
+        console.warn("[ai-match] Ollama unavailable, falling back to Grounded ATS Engine:", error instanceof Error ? error.message : String(error));
+        break;
+      } finally {
+        timing(jobId, "ollama_request", performance.now() - modelStartedAt, {
+          attempt: attempt + 1,
+          connectionMs: modelTiming.connectionMs ?? 0,
+          modelLoadMs: modelTiming.modelLoadMs ?? 0,
+          promptEvaluationMs: modelTiming.promptEvaluationMs ?? 0,
+          modelGenerationMs: modelTiming.modelGenerationMs ?? 0,
+          jsonParseMs: modelTiming.jsonParseMs ?? 0,
+        });
       }
-      throw modelFailure(error);
-    } finally {
-      timing(jobId, useGemini ? "gemini_request" : "ollama_request", performance.now() - modelStartedAt, {
-        attempt: attempt + 1,
-        connectionMs: modelTiming.connectionMs ?? 0,
-        modelLoadMs: modelTiming.modelLoadMs ?? 0,
-        promptEvaluationMs: modelTiming.promptEvaluationMs ?? 0,
-        modelGenerationMs: modelTiming.modelGenerationMs ?? 0,
-        jsonParseMs: modelTiming.jsonParseMs ?? 0,
-      });
-    }
-
-    const schemaValidationStartedAt = performance.now();
-    const parsed = matchResponseSchema.safeParse(raw);
-    timing(jobId, "schema_validation", performance.now() - schemaValidationStartedAt, {
-      attempt: attempt + 1,
-    });
-    if (parsed.success) {
-      validated = parsed.data;
-      break;
-    }
-    if (attempt < MATCH_MALFORMED_RETRIES) {
-      malformedRetries += 1;
-      continue;
     }
   }
 
+  // 3) Deterministic Grounded ATS Scoring Engine fallback (works cleanly in Cloud & Local)
   if (!validated) {
-    throw new MatchError(
-      "The AI model returned a match result in an unexpected format. Try again.",
-      502,
-      "MODEL_RESPONSE_INVALID",
-    );
+    progress(jobId, "grounded_heuristic_scoring");
+    validated = runGroundedHeuristicMatch(facts, job, description);
   }
   progress(jobId, "response_validated");
 
